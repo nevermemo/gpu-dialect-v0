@@ -31,17 +31,19 @@ been launched or contacted; claim the next bounded task here before editing.
   bridge parses the reported line and appends the nearest marker's kernel to the
   `CompilationFailed` diagnostic (kernel-level mapping; stable-Rust `proc_macro`
   spans do not expose line numbers). Goldens updated; two mapping tests added.
-  Evidence (2026-09-07): core 12 passed, macros 20 passed, wgpu semantics 2 passed
-  (RTX 5090). A full `-Full` re-run after the slice 2 commit was started but aborted
-  before completion; the last full pass in VALIDATION.json (2026-09-07 13:54 UTC)
-  predates the slice 2 commit.
+   Evidence (2026-09-07): core 12 passed, macros 20 passed, wgpu semantics 2 passed
+   (RTX 5090). Full `cargo test --workspace` re-run after the slice 2 commit:
+   **66 passed, 0 failed** (62 unit/integration incl. 5 example binaries on RTX 5090,
+   + 4 compile-fail doc tests). A full `verify.ps1 -Full` (fmt/clippy/examples/SPIR-V)
+   re-run after the slice 2 commit was not completed; the last full pass in
+   VALIDATION.json (2026-09-07 13:54 UTC) predates the slice 2 commit.
 
 ## Verified baseline
 
-- Checkout: `C:\Users\micro\Desktop\gpu-dialect-v0`. Git repository now exists
-  (owner-initialized 2026-09-07; branch `main`, 6 commits as of 17:30 local; working
-  tree clean except untracked `.agents/`). A Kilo worktree
-  `.kilo/worktrees/enchanted-farmhouse` sits on the same commit.
+- Checkout: `C:\Users\micro\Desktop\gpu-dialect-v0`. Git repository exists
+  (owner-initialized 2026-09-07; branch `main`, 9 commits as of this update; working
+  tree clean, `.agents/skills/` fully tracked). A Kilo worktree
+  (`.kilo/worktrees/enchanted-farmhouse`) sits on the same commit.
 - 34 workspace tests passed before code changes, including actual GPU tests.
 - Rust 1.98.0; Slang 2026.13.1-1-g84792eb15; SPIRV-Tools installed.
 - Source/artifact hashes before edits: `BASELINE.sha256` (not a content backup).

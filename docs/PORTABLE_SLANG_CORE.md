@@ -23,7 +23,8 @@ is true only when `slangc` actually emitted the target; `detail` carries the suc
 marker or the compiler diagnostic on failure. This is the first machine-readable
 capability record: downstream claims must cite a probe record, not an assumption.
 The probe is capability evidence, not a correctness test. Cross-target discovery
-(DXIL, Metal, browser WebGPU) and adapter/feature capture are later T05 slices.
+(DXIL, Metal, browser WebGPU) and adapter/feature capture remain future work beyond
+the completed T05 probe slice (T05 is complete; those are not part of its scope).
 
 ## Resource baseline
 
