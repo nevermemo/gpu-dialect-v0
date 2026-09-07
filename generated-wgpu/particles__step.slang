@@ -20,6 +20,7 @@ struct Particle
 [[vk::binding(2, 0)]] RWStructuredBuffer<Particle> out;
 [[vk::binding(3, 0)]] RWStructuredBuffer<float> energy;
 
+// @rust kernel: particles::step
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpu_particles_step(uint3 id : SV_DispatchThreadID)

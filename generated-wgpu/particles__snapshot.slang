@@ -18,6 +18,7 @@ struct Particle
 [[vk::binding(0, 0)]] StructuredBuffer<Particle> input;
 [[vk::binding(1, 0)]] RWStructuredBuffer<Particle> out;
 
+// @rust kernel: particles::snapshot
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpu_particles_snapshot(uint3 id : SV_DispatchThreadID)
