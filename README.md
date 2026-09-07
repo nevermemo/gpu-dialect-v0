@@ -62,8 +62,8 @@ Run every compiler, artifact, runtime, batch, persistent-buffer, and example tes
 cargo test --workspace
 ```
 
-For the full release-readiness check (including all five examples and mandatory
-external validation of all eight SPIR-V exports):
+For the full release-readiness check (including all six examples and mandatory
+external validation of all ten SPIR-V exports):
 
 ```powershell
 .\scripts\verify.ps1 -Full
@@ -185,9 +185,17 @@ Persistent typed buffers, heterogeneous struct/scalar bindings, batched command
 encoding, asynchronous jobs, and GPU timestamp queries remain available from
 `gpu-dialect-wgpu`.
 
+`StagedGraph` is the first explicit execution-graph slice: upload, dispatch, and
+readback nodes with host-declared dependencies, run as one ordered submission.
+Execution rejects a graph whose declared edges do not cover the buffer hazards its
+nodes create, and reports upload/readback bytes and the bytes that stayed resident.
+Nothing is inferred from kernels. `BufferBinding::independent_length()` opts one
+binding out of the shared element-count rule for settings buffers and reductions;
+the kernel must then guard that buffer with its own `.len()`.
+
 ## Examples
 
-The workspace contains five runnable programs:
+The workspace contains six runnable programs:
 
 - `vector-add` uses the preferred Slang-shaped Rust vocabulary and demonstrates
   artifact export.
@@ -203,6 +211,10 @@ The workspace contains five runnable programs:
   three compute kernels, and one ordered `calibrate → classify → finalize` batch.
   Every stage consumes the previous stage's typed output and exports its own
   Slang, WGSL, SPIR-V, and readable wgpu host code.
+- `staged-graph` runs one CPU settings upload → `transform` → `summarize` → summary
+  readback as an explicit `StagedGraph`, keeping the samples and the intermediate
+  resident and asserting transfer byte counts, ordering across settings updates, and
+  rejection of undeclared dependencies.
 
 Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function; there is currently no environment-variable size override:

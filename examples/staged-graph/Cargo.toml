@@ -1,0 +1,11 @@
+[package]
+name = "staged-graph"
+description = "Explicit CPU settings -> GPU stage A -> GPU stage B -> summary readback graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gpu-dialect.workspace = true
+gpu-dialect-wgpu.workspace = true

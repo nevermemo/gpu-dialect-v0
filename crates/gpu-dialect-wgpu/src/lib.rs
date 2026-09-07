@@ -25,6 +25,9 @@ use gpu_dialect::{
 };
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
+pub mod graph;
+pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
+
 static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Host data for one reflected `Storage<f32>` or `StorageMut<f32>` parameter.
@@ -131,6 +134,7 @@ pub struct BufferBinding<'a> {
     buffer_access: GpuBufferAccess,
     access: Access,
     device_id: u64,
+    independent_length: bool,
 }
 
 impl<'a> BufferBinding<'a> {
@@ -142,6 +146,19 @@ impl<'a> BufferBinding<'a> {
         Self::new(buffer, Access::ReadWrite)
     }
 
+    /// Allow this buffer's length to differ from the dispatch element count.
+    ///
+    /// The default rule requires every binding to hold exactly `element_count`
+    /// elements so one `if i < out.len()` guard covers all of them. Opting out is
+    /// for small settings buffers and reductions whose output is shorter than the
+    /// input. The kernel must then guard every access to this buffer with its own
+    /// `.len()`; the runtime cannot prove that. An empty buffer is rejected when the
+    /// dispatch has work, because the GPU would observe a one-element placeholder.
+    pub const fn independent_length(mut self) -> Self {
+        self.independent_length = true;
+        self
+    }
+
     fn new<T: GpuPod>(buffer: &'a GpuBuffer<T>, access: Access) -> Self {
         Self {
             raw: &buffer.raw,
@@ -150,7 +167,12 @@ impl<'a> BufferBinding<'a> {
             buffer_access: buffer.access,
             access,
             device_id: buffer.device_id,
+            independent_length: false,
         }
+    }
+
+    fn byte_len(&self) -> u64 {
+        self.len as u64 * u64::from(self.layout.stride)
     }
 }
 
@@ -1459,7 +1481,13 @@ fn validate_persistent_dispatch(
                 binding: binding.access,
             });
         }
-        if buffer.len != element_count as usize {
+        if binding.independent_length {
+            if buffer.len == 0 && element_count != 0 {
+                return Err(Error::IndependentLengthEmpty {
+                    parameter: parameter.name.to_owned(),
+                });
+            }
+        } else if buffer.len != element_count as usize {
             return Err(Error::BufferLength {
                 parameter: parameter.name.to_owned(),
                 expected: element_count as usize,
@@ -1630,6 +1658,22 @@ pub enum Error {
         actual: usize,
     },
     PersistentBufferNotReadable,
+    IndependentLengthEmpty {
+        parameter: String,
+    },
+    GraphDependencyOrder {
+        node: usize,
+        dependency: usize,
+    },
+    GraphMissingDependency {
+        node: usize,
+        producer: usize,
+    },
+    GraphUnknownReadback(usize),
+    GraphReadbackType {
+        expected: &'static str,
+        actual: &'static str,
+    },
     Poll(String),
     Map(String),
 }
@@ -1720,6 +1764,26 @@ impl fmt::Display for Error {
             Self::PersistentBufferNotReadable => write!(
                 formatter,
                 "readback requires a persistent buffer created with read-write access",
+            ),
+            Self::IndependentLengthEmpty { parameter } => write!(
+                formatter,
+                "parameter `{parameter}` was bound with an independent length but the buffer is empty; the GPU would observe a one-element placeholder",
+            ),
+            Self::GraphDependencyOrder { node, dependency } => write!(
+                formatter,
+                "graph node {node} depends on node {dependency}, which is not an earlier node of the same graph",
+            ),
+            Self::GraphMissingDependency { node, producer } => write!(
+                formatter,
+                "graph node {node} touches a buffer last written or read by node {producer} without declaring a dependency on it",
+            ),
+            Self::GraphUnknownReadback(node) => write!(
+                formatter,
+                "graph node {node} is not a readback node of this execution",
+            ),
+            Self::GraphReadbackType { expected, actual } => write!(
+                formatter,
+                "graph readback holds `{expected}` elements, but `{actual}` was requested",
             ),
             Self::Poll(error) => write!(formatter, "GPU synchronization failed: {error}"),
             Self::Map(error) => write!(formatter, "GPU readback failed: {error}"),

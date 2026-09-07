@@ -1,5 +1,60 @@
 # Current status
 
+## T07 — first explicit staged graph proof — COMPLETE (2026-09-07)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.
+Scope per NEXT_TASKS T07 and `docs/EXECUTION_GRAPH.md` "First bounded proof": CPU
+settings upload → GPU stage A → GPU stage B → small summary readback, with explicit
+host-declared dependencies, inspectable transfer byte counts, intermediate residency,
+and rejection of invalid resources/dependencies. No inference, no reordering, no
+transfer planner, no ECS (D15).
+
+Files: new `crates/gpu-dialect-wgpu/src/graph.rs` (`StagedGraph`, `NodeId`,
+`GraphReport`, `GraphOutput`, `HeadlessDevice::execute_graph`), `lib.rs`
+(`BufferBinding::independent_length`, `IndependentLengthEmpty`, four `Graph*` error
+variants, module wiring), new `examples/staged-graph/` (kernels `transform` and
+`summarize`, host reference, four tests), workspace `Cargo.toml`/`Cargo.lock`,
+`scripts/verify.ps1` (six examples, ten exports), README, `docs/{EXECUTION_GRAPH,
+DECISIONS}.md`, `.ai/` records, and eight new `generated-wgpu/staged__*` exports.
+No dependency or signing changes. Tests live in the example (no separate
+`tests/graph.rs`), matching the other examples.
+
+Runtime contract change, explicit and opt-in: `BufferBinding::independent_length()`
+lets one binding's length differ from the dispatch element count when the kernel
+guards that buffer with its own `.len()`; the default stays the strict shared-length
+rule, and an empty independent buffer is rejected when the dispatch has work. Needed
+because a one-element settings buffer and an N→N/8 reduction are impossible under
+the equal-length rule.
+
+Graph semantics: nodes execute in insertion order inside one command buffer.
+`validate` runs before any GPU object is created: dependencies must be earlier nodes
+(`GraphDependencyOrder`), every node passes the existing persistent-dispatch/buffer
+checks, and every earlier node that conflicts on a buffer (either side writes) must
+be a transitive ancestor (`GraphMissingDependency { node, producer }`). Uploads are
+encoded staging→target copies so they order with the dispatches (not
+`Queue::write_buffer`). `GraphReport` records per-transfer bytes, dispatch and
+workgroup counts, and `resident_bytes` for buffers only dispatches touched.
+
+Verification (Rust 1.98.0, Slang 2026.13.1, SPIRV-Tools v2026.3, RTX 5090/Vulkan):
+`cargo fmt --check` exit 0; `cargo clippy --workspace --all-targets -D warnings` exit 0;
+`cargo test --workspace` **94 passed, 0 failed, 0 ignored** (89 unit/integration +
+5 doctests; baseline 90). `staged-graph` tests: both targets compile and validate;
+CPU parity for N ∈ {0,1,7,8,9,63,64,65,257,1000} × two settings with exact upload
+(16 B), readback (N/8·16 B), resident (2·N·4 B), dispatch, workgroup, and transfer
+assertions; ordering across two settings updates; eight rejection cases (undeclared
+upload→A edge, undeclared A→B edge, foreign NodeId, read-only readback, wrong upload
+length, wrong readback type, unknown readback node, strict length rule, empty
+independent buffer). `cargo run -p staged-graph`: 262144 samples → 32768 summaries,
+upload 16 B, readback 524288 B, resident 2097152 B, second update 2.6 ms host.
+`scripts/verify.ps1 -Full` under pwsh 7.6.5: **GUST verification passed**, six
+examples, all ten SPIR-V exports validated; `.ai/VALIDATION.json` refreshed.
+Independent read-only review: **PASS**, no findings (hazard check, ordering, staging
+lifetime, zero-length paths, `independent_length`, test soundness).
+
+Next command: T08 (component pool / indirect workload proofs) per NEXT_TASKS; claim
+it here before editing. Its prerequisite — a specified logical length/capacity/
+retirement contract — must be written before code.
+
 ## `Option<T>` deterministic lowering to Slang `Optional<T>` — COMPLETE (2026-09-07)
 
 Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.

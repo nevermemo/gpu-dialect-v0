@@ -2,16 +2,24 @@
 
 Ownership released. The repository is ready for a local AI to resume manually.
 
-Latest pass (GitHub Copilot, VS Code agent): the quality patch below is now
-independently reviewed (PASS; see STATUS), `verify.ps1 -Full` passed after `3fd0aac`
-(VALIDATION.json refreshed, four stale kernel-marker `.slang` exports regenerated),
-and the T03 type-name frontier is closed: casts limited to 32-bit scalar targets,
-non-32-bit Rust primitives rejected in every type position, `const` blocks rejected
-by name. 82 tests became **86 passing**; fmt, strict Clippy, and both smoke examples
-pass. Everything from this pass is committed on top of `3fd0aac` in two scopes
-(`chore(artifacts)` for VALIDATION.json and the regenerated exports, `feat(validate)`
-for the frontier) and pushed to `origin/main`. Next unclaimed frontier: std-prelude
-type names such as `Option<uint>` still reach slangc (NEXT_TASKS T03).
+Latest passes (GitHub Copilot, VS Code agent), each committed and pushed to
+`origin/main` with fmt, strict Clippy, full workspace tests, smoke examples, and an
+independent read-only review (PASS) — see STATUS for evidence:
+- `Option<T>` lowers to Slang `Optional<T>` (D14): `Some`/`None`/`is_some`/`is_none`/
+  `unwrap_or`/`if let Some(x)`; Option stays out of struct fields and buffers.
+  Reviewed golden `tests/fixtures/option.slang` and a real-GPU test.
+- T07 staged graph (D15): `gpu_dialect_wgpu::StagedGraph` with checked host-declared
+  edges, ordered uploads, transfer/residency report; `examples/staged-graph`;
+  `BufferBinding::independent_length()`; `verify.ps1` now expects six examples and
+  ten SPIR-V exports. 94 workspace tests. Full `verify.ps1 -Full` passed.
+Next: T08 (component pool / indirect dispatch). Write the logical
+length/capacity/retirement contract before code, then claim in STATUS.
+
+Earlier in the same day: the quality patch below was independently reviewed (PASS),
+`verify.ps1 -Full` passed after `3fd0aac` (four stale kernel-marker exports were
+regenerated), and the T03 type-name frontier was closed: casts limited to 32-bit
+scalar targets, non-32-bit Rust primitives rejected in every type position, `const`
+blocks rejected by name.
 
 Note on git state: the "pending signed commit at `d99d176`" wording below is
 historical. The owner committed that work as `3fd0aac` ("T06 Continued", unsigned)

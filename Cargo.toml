@@ -6,6 +6,7 @@ members = [
     "examples/polynomial",
     "examples/particle-step",
     "examples/signal-pipeline",
+    "examples/staged-graph",
     "examples/typed-pipeline",
     "examples/vector-add",
 ]

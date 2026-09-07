@@ -60,7 +60,7 @@ try {
     Invoke-Checked cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
     Invoke-Checked cargo @('test', '--workspace')
     $examples = if ($Full) {
-        @('vector-add', 'polynomial', 'signal-pipeline', 'particle-step', 'typed-pipeline')
+        @('vector-add', 'polynomial', 'signal-pipeline', 'particle-step', 'typed-pipeline', 'staged-graph')
     } else { @('vector-add', 'typed-pipeline') }
     foreach ($example in $examples) {
         Invoke-Checked cargo @('run', '--quiet', '-p', $example)
@@ -68,7 +68,7 @@ try {
     if ($Full) {
         Invoke-Checked spirv-val @('--version')
         $artifacts = @(Get-ChildItem -LiteralPath (Join-Path $taskRoot 'generated-wgpu') -Filter '*.spv' -File)
-        if ($artifacts.Count -ne 8) { throw "Expected 8 exported kernels, found $($artifacts.Count); update this check deliberately for new examples." }
+        if ($artifacts.Count -ne 10) { throw "Expected 10 exported kernels, found $($artifacts.Count); update this check deliberately for new examples." }
         foreach ($artifact in $artifacts) {
             Invoke-Checked spirv-val @('--target-env', 'vulkan1.2', $artifact.FullName)
             $taskArtifacts.Add([ordered]@{
