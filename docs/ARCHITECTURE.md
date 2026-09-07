@@ -80,10 +80,11 @@ RWStructuredBuffer<float> o Storage RW, group 0 binding 2 RWStructuredBuffer<flo
 ```
 
 The current macro assigns bindings deterministically in resource-parameter order.
-This is a bootstrap mechanism, not compiler reflection. Slang reflection is deferred
-by the owner until the project is more stable and should become authoritative before
-textures, samplers, parameter blocks, multiple groups, or specialization enter the
-runtime contract.
+This remains a bootstrap mechanism. T06 slice 1 adds an explicit Slang JSON
+reflection API alongside it; runtime descriptors and bind groups are not yet
+derived from reflection. Compiler-authoritative layout validation remains a
+prerequisite before textures, samplers, parameter blocks, multiple groups, or
+specialization enter the runtime contract.
 
 ## Struct ABI
 
@@ -93,9 +94,19 @@ named-field structs therefore receive `repr(C)`, `Clone`, `Copy`, and a generate
 32-bit scalar fields and recursively padding-free structs with four-byte alignment.
 
 This host transfer ABI is not intended to reimplement Slang's full layout system.
-It is a temporary executable bridge. The planned reflection milestone will compare
-or derive the runtime layout from Slang's actual target reflection and reject any
-host type that does not match.
+It is a temporary executable bridge. `reflect::reflect` compiles the selected
+kernel and target with `slangc -reflection-json`; `Reflection::from_json` reads
+recorded JSON without launching the compiler. The dependency-free JSON parser
+rejects malformed input and unsupported resource/type layouts.
+
+`cross_check_pod::<T>` compares the reflected structured-buffer element with
+`T::LAYOUT`, including nested field identities, offsets, sizes, and scalar kinds.
+It returns an error on a mismatch and a coverage report on a match. **An `Ok`
+result is not a complete ABI proof:** the installed Slang 2026.13.1 CLI reports
+field sizes/offsets but omits aggregate size, alignment, and buffer element stride
+in the tested WGSL and SPIR-V JSON. Missing values remain unknown, not inferred
+from the host layout or from a field's `elementStride: 0`. This explicit API does
+not yet gate GPU uploads or pipeline creation, and does not widen `GpuPod`.
 
 ## Compiler process boundary
 
@@ -147,9 +158,11 @@ not one sequential backend path: WGSL execution and SPIR-V validation are branch
 6. wgpu validates the generated WGSL, bind-group layout, pipeline, and dispatch.
 7. Integration tests compare readback values with independent CPU references.
 
-Slang diagnostics currently point to generated `.slang` lines. Source maps back to
-Rust spans are a priority because they will make the compiler boundary feel like
-one coherent language tool rather than two disconnected compilation steps.
+Slang diagnostics point to generated `.slang` lines. The bridge recognizes current
+multiline and legacy locations and appends the nearest originating-kernel marker
+for an error in `kernel.slang`. Warnings, unrelated filenames, and out-of-range
+locations do not establish a kernel attribution. Exact Rust-span maps remain future
+work; current attribution is kernel-level only.
 
 ## Deliberate non-goals for this slice
 
@@ -190,15 +203,19 @@ initializers, so `Pair { first = 1 }` is not valid; the translator emits the por
 construct-then-assign form instead:
 
 ```slang
-Pair p;
-p.first = uint(1);
-p.second = uint(2);
+Pair __gust_struct_0;
+__gust_struct_0.first = uint(1);
+__gust_struct_0.second = uint(2);
+Pair p = __gust_struct_0;
 ```
 
 Fields are assigned by name in source order, which preserves both field identity
 (`Pair { second, first }` still assigns `first` and `second` correctly) and
-evaluation order. This is supported as a `let` initializer and as the right side of
-an assignment to a struct lvalue (`p = Pair { .. }`, `out[i] = Pair { .. }`). A
+evaluation order. A fresh temporary holds all fields before the destination is
+evaluated and assigned once. This preserves self-assignment swaps and reads of an
+outer binding in a shadowing initializer. This is supported as a `let` initializer
+and as the right side of an assignment to a struct lvalue. Functional record update
+syntax (`Pair { first: 1u32, ..old }`) is rejected, not partially initialized. A
 struct literal in any other expression position (a function argument, a nested
 expression) is still rejected with a diagnostic, as is a struct literal nested inside
 another struct literal's field value. Copying and updating an existing struct remains
@@ -213,8 +230,11 @@ the `numeric` fixture's golden Slang, both target compilations, and a real-GPU
 readback test against an independent host reference. Integer division or modulo by a
 literal zero is rejected at the Rust boundary with a diagnostic, because Slang makes
 it a compile error while rustc treats it as a runtime panic. Division or modulo by a
-runtime-zero variable, and float-to-int casts outside the representable range, remain
-undefined on both sides and are not portable guarantees.
+runtime-zero variable and float-to-int casts outside the representable range are
+not guaranteed to preserve Rust semantics in this GPU subset. Rust itself defines
+integer division/remainder by zero as a panic and float-to-integer `as` casts as
+saturating (NaN maps to zero); do not describe those Rust operations as undefined.
+See the [Rust operator reference](https://doc.rust-lang.org/reference/expressions/operator-expr.html).
 
 The syn translator still lacks rustc-resolved semantics. Inferred integer types,
 overflow, casts outside their safe input domain, evaluation ordering for effectful

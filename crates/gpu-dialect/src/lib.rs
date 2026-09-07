@@ -56,6 +56,7 @@
 mod abi;
 mod descriptor;
 mod job;
+pub mod reflect;
 mod runtime;
 pub mod slang;
 pub mod spirv;
@@ -70,6 +71,10 @@ pub use descriptor::{
 };
 pub use gpu_dialect_macros::gpu;
 pub use job::{Device, Job, JobStatus};
+pub use reflect::{
+    PodCrossCheck, ReflectedField, ReflectedResource, ReflectedType, ReflectedTypeKind, Reflection,
+    cross_check_pod,
+};
 pub use runtime::{
     Invocation, RWStructuredBuffer, SV_DispatchThreadID, Storage, StorageMut, StructuredBuffer,
     UVec3, Uniform, float, int, uint,

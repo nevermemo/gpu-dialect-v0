@@ -366,6 +366,17 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
     }
 
+    fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
+        if expression.rest.is_some() {
+            self.reject(
+                expression,
+                "struct update syntax (`..base`) is not supported; list every field explicitly",
+            );
+            return;
+        }
+        visit::visit_expr_struct(self, expression);
+    }
+
     fn visit_expr_try(&mut self, expression: &'ast syn::ExprTry) {
         self.reject(
             expression,

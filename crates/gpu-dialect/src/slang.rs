@@ -175,25 +175,77 @@ fn compile_in_directory(
 /// `proc_macro` spans don't expose line numbers.
 fn map_slang_diagnostic(slang_source: &str, diagnostic: &str) -> Option<String> {
     let target_line = parse_slang_line(diagnostic)?;
+    if target_line > slang_source.lines().count() {
+        return None;
+    }
     let mut kernel = None;
     for (index, line) in slang_source.lines().enumerate() {
         if index + 1 > target_line {
             break;
         }
         if let Some(name) = line.trim().strip_prefix("// @rust kernel: ") {
-            kernel = Some(name.to_string());
+            kernel = (!name.trim().is_empty()).then(|| name.trim().to_owned());
         }
     }
     kernel
 }
 
-/// Extract the line number from a `slangc` diagnostic like `kernel.slang(5): error: ...`.
+/// Select an error in this compilation unit, not an earlier warning or a filename
+/// that merely ends with `kernel.slang`. Both `(line)` and `(line,column)` occur
+/// in compiler diagnostics. Unrecognized locations remain unmapped.
 fn parse_slang_line(diagnostic: &str) -> Option<usize> {
-    let marker = "kernel.slang(";
-    let start = diagnostic.find(marker)? + marker.len();
-    let rest = &diagnostic[start..];
-    let end = rest.find(')')?;
-    rest[..end].parse().ok()
+    let mut error_header = false;
+    diagnostic.lines().find_map(|diagnostic| {
+        let diagnostic = diagnostic.trim();
+        // Current Slang prints an error header followed by a separate arrow
+        // location. Track severity so an earlier warning cannot claim the error.
+        if diagnostic.starts_with("error[") || diagnostic.starts_with("error:") {
+            error_header = true;
+        } else if ["warning[", "warning:", "note:", "help:"]
+            .iter()
+            .any(|prefix| diagnostic.starts_with(prefix))
+        {
+            error_header = false;
+        }
+        if error_header {
+            if let Some(location) = diagnostic.strip_prefix("--> ") {
+                let (path_line, column) = location.rsplit_once(':')?;
+                let (path, line) = path_line.rsplit_once(':')?;
+                if path.rsplit(['/', '\\']).next()? != "kernel.slang" {
+                    return None;
+                }
+                positive_coordinate(column)?;
+                return positive_coordinate(line);
+            }
+        }
+        let (location, message) = diagnostic.trim().split_once("):")?;
+        let message = message.trim_start();
+        let message = message.strip_prefix("fatal ").unwrap_or(message);
+        if !message.starts_with("error:") && !message.starts_with("error ") {
+            return None;
+        }
+        let (path, position) = location.rsplit_once('(')?;
+        if path.rsplit(['/', '\\']).next()? != "kernel.slang" {
+            return None;
+        }
+        let mut coordinates = position.split(',');
+        let line = positive_coordinate(coordinates.next()?)?;
+        if let Some(column) = coordinates.next() {
+            positive_coordinate(column)?;
+        }
+        if coordinates.next().is_some() {
+            return None;
+        }
+        Some(line)
+    })
+}
+
+fn positive_coordinate(value: &str) -> Option<usize> {
+    let value = value.trim();
+    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok().filter(|value| *value > 0)
 }
 
 pub struct TemporaryDirectory(PathBuf);
@@ -361,6 +413,96 @@ mod tests {
         );
         let diagnostic = "kernel.slang(3): error: expected an expression\n";
         assert!(map_slang_diagnostic(source, diagnostic).is_none());
+    }
+
+    #[test]
+    fn diagnostic_mapping_rejects_unrelated_files_and_invalid_lines() {
+        let source = "// @rust kernel: example::first\nvoid first() {}\n";
+        for diagnostic in [
+            "otherkernel.slang(2): error: bad expression",
+            "C:\\generated\\otherkernel.slang(2): error: bad expression",
+            "kernel.slang(0): error: bad expression",
+            "kernel.slang(3): error: bad expression",
+            "kernel.slang(2,0): error: bad expression",
+            "kernel.slang(2,1,4): error: bad expression",
+        ] {
+            assert_eq!(
+                map_slang_diagnostic(source, diagnostic),
+                None,
+                "{diagnostic}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_mapping_accepts_absolute_paths_and_columns() {
+        let source = "// @rust kernel: example::first\nvoid first() {}\n";
+        for diagnostic in [
+            "C:\\generated files\\kernel.slang(2): error 30015: bad expression",
+            "/tmp/generated/kernel.slang(2,7): error: bad expression",
+            "kernel.slang(2, 7): error: bad expression",
+        ] {
+            assert_eq!(
+                map_slang_diagnostic(source, diagnostic).as_deref(),
+                Some("example::first"),
+                "{diagnostic}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_mapping_prefers_error_over_warning_and_note() {
+        let source = concat!(
+            "// @rust kernel: example::first\nvoid first() {}\n",
+            "// @rust kernel: example::second\nvoid second() {}\n",
+        );
+        let diagnostic = concat!(
+            "kernel.slang(2): warning 1: first warning\n",
+            "kernel.slang(2): note: first note\n",
+            "kernel.slang(4,3): error 30015: actual failure\n",
+        );
+        assert_eq!(
+            map_slang_diagnostic(source, diagnostic).as_deref(),
+            Some("example::second")
+        );
+    }
+
+    #[test]
+    fn diagnostic_mapping_reads_current_multiline_slang_format() {
+        let source = "// @rust kernel: example::first\nvoid first() {}\n// @rust kernel: example::second\nvoid second() {}\n";
+        let diagnostics = "warning[W1]: warning\n --> C:\\generated\\kernel.slang:2:1\nnote: extra context\nerror[E30015]: undefined identifier\n --> C:\\generated\\kernel.slang:4:7\n";
+        assert_eq!(
+            map_slang_diagnostic(source, diagnostics).as_deref(),
+            Some("example::second")
+        );
+        assert_eq!(
+            map_slang_diagnostic(
+                source,
+                &diagnostics.replace("kernel.slang", "otherkernel.slang")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn compiler_failure_maps_originating_kernel_on_each_target() {
+        let source = concat!(
+            "// @rust kernel: example::broken\n",
+            "[shader(\"compute\")]\n[numthreads(1, 1, 1)]\n",
+            "void broken(uint3 id : SV_DispatchThreadID) {\n",
+            "    int value = undefined_symbol;\n}\n",
+        );
+        for target in [Target::Wgsl, Target::Spirv] {
+            let error = compile_source(source, "broken", target).unwrap_err();
+            let Error::CompilationFailed { diagnostics, .. } = error else {
+                panic!("expected actual compiler failure for {target:?}: {error}");
+            };
+            assert!(diagnostics.contains("undefined_symbol"), "{diagnostics}");
+            assert!(
+                diagnostics.contains("originating Rust kernel: example::broken"),
+                "{target:?}: {diagnostics}"
+            );
+        }
     }
 
     #[test]

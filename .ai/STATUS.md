@@ -1,30 +1,111 @@
 # Current status
 
-Updated: 2026-09-07. Owner: Kilo (co-maintainer), alongside the human owner; Codex
+## Active checkpoint and T06 investigation (2026-09-07)
+
+Owner: Codex at the user's request. Preserve the existing dirty checkpoint at
+`d99d176`. Scope: full validation (VALIDATION.json and derived example exports),
+independent review if available, bounded Slang layout probes under `target/`,
+and durable investigation/status/roadmap notes. No runtime ABI expansion or new
+dependencies. Signed commits still await the owner's existing public-key path.
+Independent read-only checkpoint review: PASS, no blocking findings. Probe Builder
+owns reproducible native Slang API sources under `scripts/probes/`; build outputs
+remain under `target/t06-layout/`. This is investigation tooling, not a Rust runtime
+dependency or broader supported GPU type contract.
+
+## Quality review completed (2026-09-07)
+
+Ownership released. Codex coordinated Scout/Builder work at the user's request. Baseline
+is the existing uncommitted T06 slice on `main` at `d99d176`; 74 workspace tests
+passed before this review. Preserve those edits. Bounded review scope: recent
+T03/T04 macro changes and T05 compiler diagnostics; targeted regression-backed
+fixes plus status/handoff/architecture corrections. No dependencies, ABI expansion,
+signing changes, or commit in this review. Core diagnostics Builder owns
+`crates/gpu-dialect/src/slang.rs`; Scout is read-only in macro sources.
+Scout found struct self-assignment and dropped `..base` correctness gaps. Workers
+then hit an allowance limit; Codex finished locally. Expanded bounded fix scope:
+macro `slang.rs`, `validate.rs`, `regression_tests.rs`, numeric golden, and new
+wgpu struct-assignment regression. Preserve all pre-existing T06 changes.
+
+Findings fixed:
+- T04 wrote struct fields into the destination while still reading the RHS. Real
+  GPU regression failed: `(11, 101)` swapped to `(101, 101)`, not `(101, 11)`.
+  Build a fresh reserved-name temporary in source field order, then assign once.
+  This also preserves outer-variable reads in shadowing initializers. Reviewed
+  numeric golden changed only to temporary construction and whole-value assignment.
+- T04 accepted `Pair { first: 9, ..old }` but silently omitted copied fields.
+  Failing-first validator regression now rejects record updates explicitly.
+- T05 mapping missed actual Slang 2026.13.1 multiline `error[E...]` / arrow locations,
+  accepted lookalike filenames, and could attribute a warning instead of an error.
+  Legacy and current format tests plus actual failing compilation on both targets
+  now cover correct kernel mapping and invalid/unrelated locations.
+
+Verification: baseline 74 tests; final `cargo test --workspace` **82 passed,
+0 failed, 0 ignored** (78 unit/integration + 4 doctests). Formatting check and
+strict workspace/all-target Clippy exit 0. New struct-assignment tests compile
+WGSL/SPIR-V and execute WGSL on NVIDIA RTX 5090/Vulkan at 1/63/64/65/257 elements.
+`cargo run -p vector-add` and `cargo run -p typed-pipeline` exit 0; derived exports
+unchanged. No full `verify.ps1 -Full` rerun; existing VALIDATION.json is historical.
+
+Review limitation: Scout identified the frontend bugs and Builder contributed
+diagnostic regressions, but worker allowance failures prevented an independent
+review of the final patches. Codex performed final diff review and deterministic
+checks; do not label these patches independently approved. No commit or signing
+configuration change. Next step: independent review of this quality delta, then
+resolve the existing signing-key-path blocker before the pending commits.
+
+Updated: 2026-09-07. T06 slice 1 implementation ownership released after verification.
+Files: core `reflect.rs`, `lib.rs`, reflection tests, and T06 status/architecture/
+decision/handoff notes. Delegated Builder and independent Verifier are finished;
+Codex integrated and ran workspace checks. Signed commit is pending the owner's
+existing signing public-key path. No local model endpoints were contacted.
+Prior completed work owner: Kilo (co-maintainer); Codex
 may collaborate for continuity. Completed scope: documentation, translator
 stability/tests, runtime cache/compiler bridge, validation tooling (incl. verify.ps1
 stderr capture), T04 (numeric semantics + field-aware struct construction), T05
 (capability probe records + kernel-level Slang→Rust diagnostic mapping), and the T03
 second slice (broader name resolution + effect analysis at unsupported frontend
 boundaries). P1 is complete except T06. The owner has now **lifted the T06 deferral**
-(2026-09-07); T06 slice 1 (compiler-authoritative layout reflection) is being claimed
-here. No agent process has been launched or contacted; claim the next bounded task
-here before editing.
+(2026-09-07); T06 slice 1 adds compiler JSON inspection and partial layout checks.
+This continuation implements that bounded slice; no wider ABI expansion.
 
 ## This pass (T06 slice 1 — compiler-authoritative layout reflection)
 
-T06 is the deferred P1 item: replace the hand-classified macro metadata with
-compiler-authoritative layouts so uniforms/textures/samplers/vectors can safely expand
-the runtime ABI. **Slice 1** (bounded): a `reflect` function in the bridge
-(`crates/gpu-dialect/src/reflect.rs`) that emits `slangc -reflection-json` and parses
-it into compiler-authoritative field offsets/sizes/strides + resource binding indices,
-plus a `cross_check_pod` that compares the macro-generated `GpuPod::LAYOUT` against the
-compiler's view (positive match + negative mismatch). No new dependencies: a minimal
-JSON parser is added because the workspace has no JSON crate and AGENTS.md forbids
-adding one. Files: `crates/gpu-dialect/src/reflect.rs` (new), `slang.rs`
-(`TemporaryDirectory` made public + `path()`), `lib.rs` (`pub mod reflect;` + re-exports).
-GPU upload/readback proof is carried by the existing struct examples (typed-pipeline);
-the new evidence is the reflection fixtures + cross-check.
+T06 was deferred; the owner authorized this bounded first slice. Added
+`crates/gpu-dialect/src/reflect.rs`: dependency-free strict JSON parser,
+`Reflection::from_json`, target-specific `reflect`, recursive field/resource records,
+and `cross_check_pod::<T>`. Added the public module/re-exports in `lib.rs` and
+`crates/gpu-dialect/tests/reflection.rs`. The existing public `TemporaryDirectory`
+from baseline commit `d99d176` is reused; no changes to `slang.rs` or dependencies.
+
+Actual Slang 2026.13.1 WGSL and SPIR-V JSON reports field offsets/sizes and resource
+binding indices/access, but omits aggregate size, alignment, and storage-buffer
+element stride. These remain `None`/unverified in `PodCrossCheck`; `Ok` does not
+mean complete ABI proof. A field's `elementStride: 0` is not buffer stride.
+Macro descriptors, wgpu uploads, and the four-byte storage ABI remain unchanged.
+The wider T06 milestone is not complete.
+
+Baseline: clean `main` at `d99d176`; `cargo test --workspace` 68 passed. Tools:
+Rust 1.98.0 (88d9e12ae), Slang 2026.13.1-1-g84792eb15; GPU NVIDIA GeForce RTX 5090.
+New API test failed first with expected unresolved imports. Existing vector-add
+and typed-pipeline programs both exit 0 on RTX 5090 after integration; generated
+artifacts unchanged.
+
+Final verification (2026-09-07): `cargo fmt --all -- --check` exit 0;
+`cargo clippy --workspace --all-targets -- -D warnings` exit 0;
+`cargo test --workspace` **74 passed, 0 failed, 0 ignored** (70 unit/integration,
+4 doctests). New evidence: strict JSON grammar/Unicode/depth tests; actual nested
+WGSL/SPIR-V reflection; negative offset/size/name/count/scalar/stride comparisons;
+binding space/access; compiler failures; failing-first rejection of unsupported
+entry-point resource parameters. Independent Verifier: **PASS**, including a
+separate run of all 5 reflection integration tests. No full `verify.ps1 -Full`
+run this slice; `.ai/VALIDATION.json` remains the prior full-run record.
+
+Commit blocker: the owner chose signing setup before commit, then chose an existing
+key but has not supplied its `.pub` path. No signing configuration was changed and
+no unsigned commit was made. HEAD remains `d99d176483a0c9bb9be42ae7f31879eb5238f54c`;
+all task edits are uncommitted. Next step: obtain the signing public-key path,
+configure repository-local SSH signing, verify signer availability, then commit
+the scoped files with `feat(reflect): add Slang JSON reflection and POD cross-checks`.
 
 ## This pass (T03 second slice — name resolution + effect analysis)
 

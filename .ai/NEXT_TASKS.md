@@ -66,6 +66,13 @@ Evidence (2026-09-07, slangc 2026.13.1-1-g84792eb15, Vulkan adapter present):
 
 ## T05 — P1: Capability/ABI evidence and diagnostic source mapping — COMPLETE
 
+Quality-review follow-up (2026-09-07): real compiler errors exposed the current
+multiline diagnostic format, now covered alongside legacy line/column locations.
+T04 follow-up builds struct RHS values in fresh temporaries before writing the
+destination and explicitly rejects record updates (`..base`). GPU regressions
+cover local/buffer swaps and shadowing at workgroup boundaries. Final independent
+review is outstanding after worker allowance failures; see STATUS.
+
 Status: complete (2026-09-07). Both slices done: capability probe records and
 kernel-level Slang→Rust diagnostic mapping.
 Goal: machine-readable probe records and useful Rust locations for Slang errors.
@@ -88,14 +95,21 @@ mapping tests); `cargo test -p gpu-dialect-macros` 20 passed (marker goldens);
 `cargo test -p gpu-dialect-wgpu --test semantics` 2 passed on RTX 5090.
 Verify: repeat probes and intentional failing input; no silent skips.
 
-## T06 — P1, deferred by owner: Slang reflection / broader shadows
+## T06 — P1, authorized: Slang reflection / broader shadows
 
 Goal: compiler-authoritative layouts before uniforms/textures/samplers/vectors expand
 the runtime ABI. Why: current hand-classified metadata is only a bootstrap contract.
-Files: core reflection/ABI, macro descriptors, wgpu bindings. Dependencies: stability
-milestones and explicit reconsideration of owner's deferral. Done: positive and
-negative target layout comparisons, no blanket POD assumption. Verify: reflection
-fixtures and actual GPU upload/readback. Do not start merely because it is listed.
+Owner lifted the deferral on 2026-09-07. Slice 1 adds the core JSON parser,
+`reflect`, and explicit `cross_check_pod` API with positive/negative comparisons.
+Compiler JSON supplies field offsets/sizes and resource bindings. The installed
+compiler omits aggregate size/alignment/storage stride for the tested resources;
+coverage reports must not claim those properties verified.
+
+Remaining: obtain authoritative aggregate size, alignment, and stride evidence
+before enforcing reflection at runtime or expanding shadows. Do not infer these
+from host metadata. Files for later work: core reflection/ABI, macro descriptors,
+wgpu bindings. Full T06 completion still requires complete target layout checks
+and actual GPU upload/readback; slice 1 alone does not replace the bootstrap ABI.
 
 ## T07 — P2: First explicit staged graph proof
 

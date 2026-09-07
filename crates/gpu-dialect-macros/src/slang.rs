@@ -197,13 +197,15 @@ fn emit_statements(
                 let initial = local.init.as_ref().ok_or_else(|| {
                     syn::Error::new_spanned(local, "Slang let bindings require an initializer")
                 })?;
-                // Field-aware struct construction: lower `let p = Pair { .. }` to
-                // `Pair p; p.first = ..; p.second = ..;`, preserving field identity
-                // and source evaluation order. Slang has no field-name initializers.
+                // Finish the initializer before introducing its binding: an inner
+                // `let p = Pair { first: p.second, ... }` reads the outer `p`.
                 if let syn::Expr::Struct(value) = initial.expr.as_ref() {
-                    let ty = struct_literal_type(value)?;
-                    writeln!(output, "{padding}{} {};", ty, pattern.ident).unwrap();
-                    emit_struct_assign(output, &pattern.ident.to_string(), value, indent)?;
+                    let temporary = emit_struct_value(output, value, indent, index)?;
+                    let ty = match annotation {
+                        Some(ty) => emit_type(ty)?,
+                        None => struct_literal_type(value)?,
+                    };
+                    writeln!(output, "{padding}{ty} {} = {temporary};", pattern.ident).unwrap();
                     continue;
                 }
                 let declaration = annotation
@@ -235,14 +237,15 @@ fn emit_statements(
                 syn::Expr::Assign(assign)
                     if matches!(assign.right.as_ref(), syn::Expr::Struct(_)) =>
                 {
-                    // `p = Pair { .. }` / `out[i] = Pair { .. }` lower to per-field
-                    // assignments on the existing lvalue, preserving field identity.
+                    // Rust evaluates the complete RHS before evaluating/writing the
+                    // destination. Direct field writes break swaps and aliasing.
                     let target = emit_expression(&assign.left)?;
                     let value = match assign.right.as_ref() {
                         syn::Expr::Struct(value) => value,
                         _ => unreachable!("guarded by the match arm"),
                     };
-                    emit_struct_assign(output, &target, value, indent)?;
+                    let temporary = emit_struct_value(output, value, indent, index)?;
+                    writeln!(output, "{padding}{target} = {temporary};").unwrap();
                 }
                 _ => {
                     let prefix = if is_tail
@@ -270,11 +273,31 @@ fn emit_statements(
     Ok(())
 }
 
-/// Lower a struct literal to per-field assignments on `target`, in source order.
+/// Build a value before assigning its destination. Statement indices are unique
+/// within each emitted lexical block, and the validator reserves `__gust_` names.
+fn emit_struct_value(
+    output: &mut String,
+    value: &syn::ExprStruct,
+    indent: usize,
+    index: usize,
+) -> syn::Result<String> {
+    let temporary = format!("__gust_struct_{index}");
+    writeln!(
+        output,
+        "{}{} {temporary};",
+        "    ".repeat(indent),
+        struct_literal_type(value)?
+    )
+    .unwrap();
+    emit_struct_assign(output, &temporary, value, indent)?;
+    Ok(temporary)
+}
+
+/// Lower a struct literal to per-field assignments on a fresh temporary.
 ///
 /// Slang has no field-name or designated initializers, so `Pair { first = 1 }`
-/// is not valid; the portable form is `target.first = 1;`. Emitting the fields in
-/// source order preserves both field identity (by name) and evaluation order.
+/// is not valid; fields are initialized by name in source order. The caller must
+/// not pass the final destination, which may be referenced by the initializer.
 fn emit_struct_assign(
     output: &mut String,
     target: &str,

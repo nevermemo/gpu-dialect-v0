@@ -9,9 +9,9 @@ and independent inspection. Chat research is design input, not proof of code sta
 | D02 | Keep syn → Slang vertical slice | Existing real GPU behavior is useful; no custom instruction IR or SPIR-V emitter |
 | D03 | Separate implemented, researched, aspirational claims | Engine and graph plans are not a shipped subsystem |
 | D04 | No CPU execution contract for shader shadows | Independent test references and intentional future CPU nodes remain distinct |
-| D05 | Reflection deferred | Owner explicitly requested stability first; prerequisite before wide resource/ABI expansion |
+| D05 | Reflection slice 1 authorized on 2026-09-07 | Explicit compiler JSON inspection and POD cross-checks; missing layout evidence must remain unknown. Runtime ABI expansion and automatic reflection enforcement remain separate work |
 | D06 | Fix translation correctness before language breadth | Reproduced tail-return, literal, precedence, and struct-constructor issues |
-| D07 | Field-aware struct construction in bounded contexts (supersedes the temporary rejection) | Slang has no field-name initializers, so lower to construct-then-assign by name in source order; this preserves field identity and evaluation order. Supported as a `let` initializer and assignment RHS; other expression positions and nested literals remain rejected |
+| D07 | Field-aware struct construction in bounded contexts (supersedes the temporary rejection) | Construct a fresh temporary by field name in source order, then assign the destination once; never overwrite a value while evaluating its replacement. Supported as a `let` initializer and assignment RHS; record updates (`..base`), other expression positions, and nested literals remain rejected |
 | D08 | Portable tiers plus capability-gated native paths | Avoid both universal feature claims and permanent bans on native acceleration |
 | D09 | Fixed-size elements plus separate dynamic metadata | No nested runtime-sized structured-buffer element layout |
 | D10 | Extract a small explicit staged graph later | Typed ordered batches already provide a useful proof; no speculative graph framework now |
