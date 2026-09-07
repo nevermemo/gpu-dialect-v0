@@ -11,7 +11,7 @@ and independent inspection. Chat research is design input, not proof of code sta
 | D04 | No CPU execution contract for shader shadows | Independent test references and intentional future CPU nodes remain distinct |
 | D05 | Reflection deferred | Owner explicitly requested stability first; prerequisite before wide resource/ABI expansion |
 | D06 | Fix translation correctness before language breadth | Reproduced tail-return, literal, precedence, and struct-constructor issues |
-| D07 | Reject shader struct literals temporarily | Positional emission loses field identity; future field-aware lowering must preserve effects/order |
+| D07 | Field-aware struct construction in bounded contexts (supersedes the temporary rejection) | Slang has no field-name initializers, so lower to construct-then-assign by name in source order; this preserves field identity and evaluation order. Supported as a `let` initializer and assignment RHS; other expression positions and nested literals remain rejected |
 | D08 | Portable tiers plus capability-gated native paths | Avoid both universal feature claims and permanent bans on native acceleration |
 | D09 | Fixed-size elements plus separate dynamic metadata | No nested runtime-sized structured-buffer element layout |
 | D10 | Extract a small explicit staged graph later | Typed ordered batches already provide a useful proof; no speculative graph framework now |
@@ -23,6 +23,7 @@ Rejected for this pass: rebuilding the shader backend, crate renaming, automatic
 CPU fallback, presenting manual metadata as Slang reflection, unrestricted Rust
 acceptance, and using copied research examples as untested portable engine code.
 
-Open decisions: rustc integration and version pinning; source maps; struct construction
-and typed inference policy; layouts after reflection; first engine user's unaided
-acceptance result; entity storage; shader/module hygiene; capability manifest schema.
+Open decisions: rustc integration and version pinning; source maps; typed inference
+policy (struct construction is now bounded and proven, see D07); layouts after
+reflection; first engine user's unaided acceptance result; entity storage;
+shader/module hygiene; capability manifest schema.

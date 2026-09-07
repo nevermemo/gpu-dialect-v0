@@ -5,6 +5,88 @@ GUST is the project; GPU Dialect is the existing Rust → Slang subsystem. Read
 `docs/DECISIONS.md` and `docs/ARCHITECTURE.md` for constraints. Design aspirations
 are not implemented features or permission to perform external actions.
 
+# AI Swarm Instructions
+
+## Goal
+
+Build and maintain this project using a small heterogeneous AI swarm.
+
+The repository, tests and documentation are the shared source of truth.
+Do not use long conversations as project memory.
+
+## Routing
+
+Use the cheapest capable worker.
+
+- Scout:
+  repository discovery, symbol search, dependency tracing, context gathering.
+
+- Builder:
+  implementation, Rust/compiler work, Slang generation, refactoring and debugging.
+
+- Verifier:
+  independent review, adversarial testing, compiler/test execution and failure analysis.
+
+The orchestrator coordinates. It should avoid doing implementation itself.
+
+## Workflow
+
+For meaningful changes:
+
+Scout → Builder → Verifier
+
+Skip Scout when the affected files are already obvious.
+
+Skip Builder for read-only questions.
+
+Skip Verifier only for trivial changes.
+
+Do not have multiple agents perform identical work unless:
+- there is disagreement,
+- confidence is low,
+- tests fail,
+- or the decision is architecturally important.
+
+## Token discipline
+
+Workers receive only the context required for their subtask.
+
+Worker reports must be concise.
+Do not return raw logs unless a failure requires them.
+Do not paste large source files into reports.
+Prefer file paths, symbols and line references.
+
+Use repository files for durable knowledge.
+
+## Truth hierarchy
+
+Prefer, in order:
+
+1. Tests and compiler/runtime results
+2. Existing project invariants
+3. Official language/tool documentation
+4. Independent agent reasoning
+5. Agent consensus
+
+Never treat majority vote as proof.
+
+## Architecture
+
+Preserve the current working Rust AST → Slang pipeline unless explicitly asked to redesign it.
+
+Load relevant Rust/Slang/testing skills only when needed.
+
+## Completion
+
+A meaningful code change is complete only when:
+
+- Builder reports what changed.
+- Relevant deterministic checks have run.
+- Verifier reports PASS, or remaining uncertainty is explicitly surfaced.
+
+Codex is used separately for important review, explanation and architectural guidance.
+Do not wait for Codex during normal local swarm work.
+
 ## Invariants
 
 - Preserve `#[gpu]` whole-module authoring, direct syn → Slang, readable artifacts,

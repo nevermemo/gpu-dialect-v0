@@ -1,9 +1,34 @@
 # Current status
 
-Updated: 2026-09-07. Owner: none; ready for local-AI pickup. Completed scope:
-documentation, translator stability/tests, runtime cache/compiler bridge, validation
-tooling. No agent process has been launched or contacted; claim the next bounded
-task here before editing.
+Updated: 2026-09-07. Owner: Kilo (co-maintainer), alongside the human owner; Codex
+may collaborate for continuity. Completed scope: documentation, translator
+stability/tests, runtime cache/compiler bridge, validation tooling (incl. verify.ps1
+stderr capture), and T04 (numeric semantics + field-aware struct construction). No
+agent process has been launched or contacted; claim the next bounded task here before
+editing.
+
+## Claimed now (this pass)
+
+- Bounded tooling fix: `scripts/verify.ps1` `Invoke-Checked` now captures **both**
+  stdout and stderr (via temp files) and records them in `VALIDATION.json` as `stdout`
+  and a new `stderr` field. Exit-code/throw behavior is unchanged. Why: a failing
+  command's diagnostic (cargo/clippy emit on stderr) was previously absent from the
+  JSON record, leaving only the generic `"... failed (exit N)"` message. File scope:
+  `scripts/verify.ps1` only; no Rust/ABI/translator changes.
+  - **Verified end-to-end (2026-09-07, PowerShell 7.6.5):** full `-Full` run passed
+    (`VALIDATION.json` `passed: true`, 19 checks exit 0). `slangc -version` now lands
+    in `stderr` (record line 33); `cargo clippy`/`cargo test` runner lines captured in
+    `stderr` (lines 59, 69); the `µs` timings render correctly (UTF-8 fix confirmed —
+    no more `┬╡`). 57 tests, all 5 examples on RTX 5090, 8 SPIR-V artifacts validated.
+  - **Environment note:** run the script under **PowerShell 7** (`pwsh`, 7.6.5), not
+    Windows PowerShell 5.1. `pwsh` is on PATH; `$PSHOME` confirms 7.6.5.
+- **T05 (P1) claimed — first slice: capability probe records.** Goal: machine-readable
+  probe records so target capability claims follow evidence, not assumption
+  (PORTABLE_SLANG_CORE.md:12-16). First bounded slice: a `TargetProbe` record + `probe`
+  function in `crates/gpu-dialect/src/slang.rs` that compiles a known-good minimal
+  kernel to a target and records `supported`/`detail`, with a failing-first test.
+  File scope: `crates/gpu-dialect/src/slang.rs`, `docs/PORTABLE_SLANG_CORE.md`.
+  Diagnostic source mapping (Slang→Rust spans) is the **next** T05 slice, not this one.
 
 ## Verified baseline
 
@@ -32,6 +57,16 @@ task here before editing.
   not release benchmarking or browser/Metal/DXIL certification.
 - Deliberate missing-tool test confirmed the verification script records failure
   and stops; the final successful full run replaced that failure report.
+- T04 (this pass): numeric semantics proven on a real GPU (signed/unsigned div/mod,
+  float→int casts, overflow wrap) against an independent host reference; integer
+  div/rem by a literal zero diagnosed at the Rust boundary; field-aware struct
+  construction lowered to construct-then-assign (field identity + source order),
+  supported as a `let` initializer and assignment RHS and rejected elsewhere. New
+  `numeric` fixture (golden + GPU test) and macro regression tests.
+- `scripts/verify.ps1`: `Invoke-Checked` captures stderr in addition to stdout and
+  records both in `VALIDATION.json` (`stdout` + new `stderr` field). Failure records
+  now carry the actual compiler/test diagnostic, not just the exit code. Behavior
+  (stop on first failure, always write the JSON record) is unchanged.
 
 ## Current executable scope
 

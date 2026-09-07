@@ -185,11 +185,36 @@ distinguish boolean negation from integer complement; `__gust_` and `__gpu_` are
 reserved source prefixes. The shared semantics fixture tests exact Slang, target
 compilation, and real GPU output at workgroup boundaries.
 
-Struct literal lowering was unsound: it ignored Rust field names and passed values
-positionally. It is now explicitly rejected, including update syntax, until lowering
-can preserve field identity and source evaluation order. Copying and updating an
-existing struct remains executable. This is a safety restriction, not new struct
-construction support.
+Struct literals are now lowered field-aware. Slang has no field-name or designated
+initializers, so `Pair { first = 1 }` is not valid; the translator emits the portable
+construct-then-assign form instead:
+
+```slang
+Pair p;
+p.first = uint(1);
+p.second = uint(2);
+```
+
+Fields are assigned by name in source order, which preserves both field identity
+(`Pair { second, first }` still assigns `first` and `second` correctly) and
+evaluation order. This is supported as a `let` initializer and as the right side of
+an assignment to a struct lvalue (`p = Pair { .. }`, `out[i] = Pair { .. }`). A
+struct literal in any other expression position (a function argument, a nested
+expression) is still rejected with a diagnostic, as is a struct literal nested inside
+another struct literal's field value. Copying and updating an existing struct remains
+executable.
+
+Numeric semantics are proven, not assumed. For the supported 32-bit scalar subset the
+GPU matches Rust: signed and unsigned division truncate toward zero, signed modulo
+keeps the dividend's sign, unsigned modulo is non-negative, and in-range float-to-int
+casts truncate toward zero. Integer overflow wraps on the GPU (matching Rust
+`wrapping_*` / release semantics, not the debug panic). These cases are locked in by
+the `numeric` fixture's golden Slang, both target compilations, and a real-GPU
+readback test against an independent host reference. Integer division or modulo by a
+literal zero is rejected at the Rust boundary with a diagnostic, because Slang makes
+it a compile error while rustc treats it as a runtime panic. Division or modulo by a
+runtime-zero variable, and float-to-int casts outside the representable range, remain
+undefined on both sides and are not portable guarantees.
 
 The syn translator still lacks rustc-resolved semantics. Inferred integer types,
 overflow, casts outside their safe input domain, evaluation ordering for effectful
