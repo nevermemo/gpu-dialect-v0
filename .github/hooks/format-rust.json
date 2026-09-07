@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "pwsh -NoProfile -NonInteractive -File scripts/hooks/format-rust-after-edit.ps1",
+        "timeout": 60
+      }
+    ]
+  }
+}
