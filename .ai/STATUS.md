@@ -1,5 +1,49 @@
 # Current status
 
+## `Option<T>` deterministic lowering to Slang `Optional<T>` — COMPLETE (2026-09-07)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.
+The owner chose to represent `Option<T>` in Slang instead of banning std-prelude type
+names (D14; supersedes the allowlist suggestion in NEXT_TASKS T03). This is the
+VISION "deterministic lowering" row for `Option`; `Result`, `match`, `?`, and payload
+enums stay out of scope. `f64`/`u64`/8-bit primitives are NOT emulated: WGSL has no
+such scalars and the storage ABI stays four-byte (D08/D09).
+
+Files: `crates/gpu-dialect-macros/src/{validate,slang,regression_tests}.rs`, new
+`tests/fixtures/option.{rs,slang}` (reviewed golden), new
+`crates/gpu-dialect-wgpu/tests/option.rs`, `docs/{ARCHITECTURE,DECISIONS}.md`,
+`.ai/` records. No runtime, ABI, dependency, or signing changes.
+
+Evidence before editing (slangc 2026.13.1, WGSL + SPIR-V + `spirv-val`, all exit 0):
+Slang `Optional<T>` supports `none`, implicit `T -> Optional<T>` returns, generic
+`Optional<T> __gust_some<T>(T)` and `T __gust_unwrap_or<T>(Optional<T>, T)` helpers,
+reassignment, `Optional<bool|int|uint|struct>`, `.hasValue` on call results, and a
+`var __gust_opt_N = e; if (__gust_opt_N.hasValue) { var x = __gust_opt_N.value; ... }`
+shape for `if let`. WGSL lowers it to a `{ value, hasValue }` struct.
+
+Implemented (failing-first: `option_golden` and `option_unsafe_forms_are_rejected`
+both failed against `f3ec044`): validator accepts `Option<T>` (T = supported scalar or
+module struct) in locals and helper params/returns, `Some(x)`, `None`, `.is_some()`,
+`.is_none()`, `.unwrap_or(d)`, `if let Some(x) = e { } else { }`; rejects Option in
+struct fields and resource element types, nested/resource payloads, `.unwrap()`/
+`.expect()`, non-`Some(ident)` patterns, let chains (11 rejection cases). Emitter maps
+`Option`→`Optional`, emits the two generic helpers when any Option feature is used,
+and lowers `if let` through a per-statement `__gust_opt_{index}` temporary (an
+`else if let` gets its own scope).
+
+Verification (Rust 1.98.0, Slang 2026.13.1, RTX 5090/Vulkan): `cargo fmt --check`
+exit 0; `cargo clippy --workspace --all-targets -D warnings` exit 0; `cargo test
+--workspace` **90 passed, 0 failed, 0 ignored** (85 unit/integration + 5 doctests;
+baseline 86). Existing goldens unchanged. GPU test compiles both targets and matches
+an independent host `Option` reference at 1/63/64/65/257 elements across presence
+tests, `unwrap_or`, `if let` on a local and on a call result, `Option<Pair>`, and
+helpers returning/accepting Options. `vector-add` and `typed-pipeline` exit 0; no
+derived-artifact drift. Independent read-only review: **PASS**, no findings; its
+hand-traced reference values for x = 0, 3, 7, 8, 1001 match.
+
+Next command: T07 (first explicit staged graph proof) per NEXT_TASKS and
+`docs/EXECUTION_GRAPH.md` "First bounded proof"; claim it here before editing.
+
 ## Validator frontier — cast targets, primitive types, const blocks (2026-09-07)
 
 Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.

@@ -35,6 +35,43 @@ const UNSUPPORTED_PRIMITIVES: &[&str] = &[
     "char", "str",
 ];
 
+/// The `Option<T>` shape this dialect lowers to Slang `Optional<T>`: a single
+/// segment with exactly one type argument.
+fn option_payload(ty: &syn::TypePath) -> Option<Option<&syn::Type>> {
+    if ty.qself.is_some() || ty.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = &ty.path.segments[0];
+    if segment.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return Some(None);
+    };
+    let mut types = arguments.args.iter().filter_map(|argument| match argument {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+    match (types.next(), types.next(), arguments.args.len()) {
+        (Some(payload), None, 1) => Some(Some(payload)),
+        _ => Some(None),
+    }
+}
+
+/// `Some(identifier)` in an `if let`, the only pattern with a direct Slang lowering.
+pub fn option_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
+    let syn::Pat::TupleStruct(tuple) = pattern else {
+        return None;
+    };
+    if !tuple.path.is_ident("Some") || tuple.elems.len() != 1 {
+        return None;
+    }
+    match &tuple.elems[0] {
+        syn::Pat::Ident(ident) => Some(ident),
+        _ => None,
+    }
+}
+
 /// Whether an expression is an integer literal with value zero, including a
 /// unary negation of one. Float zeros are excluded: floating-point division by
 /// zero is defined (it yields infinity/NaN), so only integer div/rem by zero is
@@ -139,6 +176,7 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
         }
     }
     let mut visitor = RestrictedVisitor::new(HashSet::new());
+    visitor.option_forbidden = Some("GPU struct fields");
     visitor.visit_item_struct(item);
     visitor.finish()
 }
@@ -204,6 +242,8 @@ struct RestrictedVisitor {
     function_names: HashSet<String>,
     resources: HashSet<String>,
     invocations: HashSet<String>,
+    /// Set while inside a type position where `Option` has no proven layout.
+    option_forbidden: Option<&'static str>,
     error: Option<syn::Error>,
 }
 
@@ -213,6 +253,7 @@ impl RestrictedVisitor {
             function_names,
             resources: HashSet::new(),
             invocations: HashSet::new(),
+            option_forbidden: None,
             error: None,
         }
     }
@@ -279,6 +320,36 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+        use crate::slang::{ParameterFlavor, parameter_flavor};
+
+        if let Some(payload) = option_payload(ty) {
+            if let Some(context) = self.option_forbidden {
+                self.reject(
+                    ty,
+                    &format!(
+                        "`Option` is not supported in {context}: it has no proven storage layout; keep Option values in locals and helper functions"
+                    ),
+                );
+                return;
+            }
+            let supported = payload.is_some_and(|payload| match payload {
+                syn::Type::Path(inner) => {
+                    inner.path.get_ident().is_some()
+                        && option_payload(inner).is_none()
+                        && parameter_flavor(payload) == ParameterFlavor::Value
+                }
+                _ => false,
+            });
+            if !supported {
+                self.reject(
+                    ty,
+                    "`Option` payload must be a supported scalar or a module struct; nested Options and resources are not lowered",
+                );
+                return;
+            }
+            visit::visit_type_path(self, ty);
+            return;
+        }
         if let Some(ident) = ty.path.get_ident() {
             let name = ident.to_string();
             if UNSUPPORTED_PRIMITIVES.contains(&name.as_str()) {
@@ -290,6 +361,18 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 );
                 return;
             }
+        }
+        let is_resource = matches!(
+            parameter_flavor(&syn::Type::Path(ty.clone())),
+            ParameterFlavor::StorageRead
+                | ParameterFlavor::StorageReadWrite
+                | ParameterFlavor::Uniform
+        );
+        if is_resource {
+            let previous = self.option_forbidden.replace("resource element types");
+            visit::visit_type_path(self, ty);
+            self.option_forbidden = previous;
+            return;
         }
         visit::visit_type_path(self, ty);
     }
@@ -333,6 +416,15 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 );
                 return;
             }
+            if path.path.is_ident("Some") {
+                if call.args.len() != 1 {
+                    self.reject(call, "`Some` takes exactly one argument");
+                    return;
+                }
+                // The callee is the prelude constructor, not a bare path value.
+                self.visit_expr(&call.args[0]);
+                return;
+            }
         }
         let allowed = match call.func.as_ref() {
             syn::Expr::Path(path) => path
@@ -364,18 +456,48 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if !call.args.is_empty() || call.turbofish.is_some() {
+        if call.turbofish.is_some() {
+            self.reject(call, "GPU built-ins do not accept type arguments");
+            return;
+        }
+        let method = call.method.to_string();
+        match method.as_str() {
+            "is_some" | "is_none" if call.args.is_empty() => {
+                visit::visit_expr_method_call(self, call);
+                return;
+            }
+            "unwrap_or" if call.args.len() == 1 => {
+                visit::visit_expr_method_call(self, call);
+                return;
+            }
+            "is_some" | "is_none" => {
+                self.reject(call, "`is_some` and `is_none` take no arguments");
+                return;
+            }
+            "unwrap_or" => {
+                self.reject(call, "`unwrap_or` takes exactly one argument");
+                return;
+            }
+            "unwrap" | "expect" => {
+                self.reject(
+                    call,
+                    "`Option::unwrap`/`expect` panics on `None` in Rust and GPU code cannot panic; use `unwrap_or` or `if let Some(x) = ..`",
+                );
+                return;
+            }
+            _ => {}
+        }
+        if !call.args.is_empty() {
             self.reject(
                 call,
                 "GPU built-ins do not accept arguments or type arguments",
             );
             return;
         }
-        let method = call.method.to_string();
         if !matches!(method.as_str(), "global_id" | "len") {
             self.reject(
                 call,
-                "only the compatibility built-ins `.global_id()` and `.len()` are supported",
+                "only the compatibility built-ins `.global_id()` and `.len()` and the Option methods `.is_some()`, `.is_none()`, `.unwrap_or(default)` are supported",
             );
             return;
         }
@@ -415,7 +537,45 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 path,
                 "associated constants and foreign paths are not in the Rust-to-Slang subset; reference local variables, parameters, or same-module helpers",
             );
+        } else if path.path.is_ident("Some") {
+            self.reject(path, "`Some` must be called with one argument");
         }
+    }
+
+    fn visit_expr_if(&mut self, expression: &'ast syn::ExprIf) {
+        let syn::Expr::Let(binding) = expression.cond.as_ref() else {
+            visit::visit_expr_if(self, expression);
+            return;
+        };
+        let Some(name) = option_pattern(&binding.pat) else {
+            self.reject(
+                &binding.pat,
+                "`if let` supports only the `Some(identifier)` pattern",
+            );
+            return;
+        };
+        let text = name.ident.to_string();
+        if self.resources.contains(&text) || self.invocations.contains(&text) {
+            self.reject(
+                name,
+                "GPU locals cannot shadow resource or dispatch-thread parameters",
+            );
+            return;
+        }
+        self.visit_pat_ident(name);
+        self.visit_expr(&binding.expr);
+        self.visit_block(&expression.then_branch);
+        if let Some((_, alternative)) = &expression.else_branch {
+            self.visit_expr(alternative);
+        }
+    }
+
+    fn visit_expr_let(&mut self, expression: &'ast syn::ExprLet) {
+        // Reached only outside the direct `if let` condition position.
+        self.reject(
+            expression,
+            "`if let` is supported only as `if let Some(x) = value { .. }`; let chains and other let positions are not",
+        );
     }
 
     fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
