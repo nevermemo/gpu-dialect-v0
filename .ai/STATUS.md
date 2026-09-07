@@ -6,9 +6,25 @@ stability/tests, runtime cache/compiler bridge, validation tooling (incl. verify
 stderr capture), T04 (numeric semantics + field-aware struct construction), T05
 (capability probe records + kernel-level Slang→Rust diagnostic mapping), and the T03
 second slice (broader name resolution + effect analysis at unsupported frontend
-boundaries). P1 is complete except T06, which the owner has explicitly deferred. No
-agent process has been launched or contacted; claim the next bounded task here before
-editing.
+boundaries). P1 is complete except T06. The owner has now **lifted the T06 deferral**
+(2026-09-07); T06 slice 1 (compiler-authoritative layout reflection) is being claimed
+here. No agent process has been launched or contacted; claim the next bounded task
+here before editing.
+
+## This pass (T06 slice 1 — compiler-authoritative layout reflection)
+
+T06 is the deferred P1 item: replace the hand-classified macro metadata with
+compiler-authoritative layouts so uniforms/textures/samplers/vectors can safely expand
+the runtime ABI. **Slice 1** (bounded): a `reflect` function in the bridge
+(`crates/gpu-dialect/src/reflect.rs`) that emits `slangc -reflection-json` and parses
+it into compiler-authoritative field offsets/sizes/strides + resource binding indices,
+plus a `cross_check_pod` that compares the macro-generated `GpuPod::LAYOUT` against the
+compiler's view (positive match + negative mismatch). No new dependencies: a minimal
+JSON parser is added because the workspace has no JSON crate and AGENTS.md forbids
+adding one. Files: `crates/gpu-dialect/src/reflect.rs` (new), `slang.rs`
+(`TemporaryDirectory` made public + `path()`), `lib.rs` (`pub mod reflect;` + re-exports).
+GPU upload/readback proof is carried by the existing struct examples (typed-pipeline);
+the new evidence is the reflection fixtures + cross-check.
 
 ## This pass (T03 second slice — name resolution + effect analysis)
 

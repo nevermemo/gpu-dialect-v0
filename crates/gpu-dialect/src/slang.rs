@@ -196,10 +196,14 @@ fn parse_slang_line(diagnostic: &str) -> Option<usize> {
     rest[..end].parse().ok()
 }
 
-struct TemporaryDirectory(PathBuf);
+pub struct TemporaryDirectory(PathBuf);
 
 impl TemporaryDirectory {
-    fn create() -> Result<Self, std::io::Error> {
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+
+    pub fn create() -> Result<Self, std::io::Error> {
         for _ in 0..128 {
             let id = NEXT_INVOCATION.fetch_add(1, Ordering::Relaxed);
             let path =
