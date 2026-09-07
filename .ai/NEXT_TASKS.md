@@ -39,8 +39,18 @@ items like `f32::INFINITY`, `u32::MAX`, `core::f32::consts::PI`); `core` added t
 blocks. `asm!` already covered (syn 2.0 parses it as `Expr::Macro`). Failing-first
 tests: `unsupported_name_paths_are_rejected` (4 cases) and
 `unsupported_effects_are_rejected` (3 cases).
-Remaining frontier (not claimed): cast target types and `const` blocks are still
-accepted by the validator and only fail at Slang compile time.
+Slice 3 (done 2026-09-07): type-name frontier. `visit_expr_cast` limits
+`as` targets to `f32`/`float`, `i32`/`int`, `u32`/`uint`; `visit_type_path` rejects
+Rust primitives outside the four-byte subset in every type position (`let v: f64`,
+`fn helper(x: u64)`, `-> usize`, struct fields, `RWStructuredBuffer<i64>`);
+`visit_expr_const` rejects inline `const { .. }` blocks by name. Failing-first tests:
+`casts_to_unproven_targets_are_rejected`, `non_32_bit_primitive_types_are_rejected_before_slang`,
+`const_blocks_are_rejected`; one `compile_fail` doctest in core `lib.rs`.
+Remaining frontier (not claimed): std-prelude type names are not banned, so
+`fn maybe() -> Option<uint> { None }` passes the validator and rustc and emits
+`Option<uint> maybe()`, failing only in slangc (verified by probe 2026-09-07). A
+fix needs an allowlist of type names (prelude + module structs) per the validator
+contract, plus a test-order update for `unsupported_effects_are_rejected`.
 Verify: `cargo test -p gpu-dialect-macros` and `cargo test --workspace`.
 
 ## T04 — P1: Resolved numeric semantics and struct construction — COMPLETE

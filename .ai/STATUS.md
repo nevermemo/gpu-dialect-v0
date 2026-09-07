@@ -1,6 +1,74 @@
 # Current status
 
-## Active checkpoint and T06 investigation (2026-09-07)
+## Validator frontier — cast targets, primitive types, const blocks (2026-09-07)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.
+Bounded scope, as claimed: the T03 remaining frontier only. Files changed:
+`crates/gpu-dialect-macros/src/validate.rs`, `crates/gpu-dialect-macros/src/regression_tests.rs`,
+one `compile_fail` doctest in `crates/gpu-dialect/src/lib.rs`, a limits paragraph in
+`docs/ARCHITECTURE.md`, and the `.ai/` records. No emitter, runtime, ABI, dependency,
+or signing changes. Committed on top of `3fd0aac` in two scopes (below) and pushed
+to `origin/main` at the user's request; unsigned like `3fd0aac` (no signing configured).
+
+What changed (failing-first; all three new tests failed against `3fd0aac`):
+- `visit_expr_cast`: `as` targets must be a single identifier in
+  `f32`/`float`, `i32`/`int`, `u32`/`uint`. Previously `id.x as f64` translated to
+  `f64(id.x)`, passed rustc (`uint` is a plain `u32` alias), and failed only in slangc.
+- `visit_type_path`: Rust primitives outside the four-byte subset (`i8`..`i128`,
+  `isize`, `u8`..`u128`, `usize`, `f16`, `f64`, `f128`, `char`, `str`) are rejected in
+  every type position (let annotations, helper params/returns, struct fields, buffer
+  element types). `let v: f64 = 1.0;` previously became `f64 v = 1.0;` — accepted by
+  rustc and the macro, failing only at pipeline creation.
+- `visit_expr_const`: inline `const { .. }` blocks are rejected by name. They were
+  already stopped by the emitter's generic "not in the subset yet" fallback; the
+  validator now owns the diagnostic, consistent with the other constructs.
+- `bool` stays a supported type but is not a cast target (rustc rejects numeric→bool;
+  bool→integer casts are unproven on the GPU).
+
+Verification (Rust 1.98.0, Slang 2026.13.1, SPIRV-Tools v2026.3, RTX 5090/Vulkan):
+`cargo fmt --all -- --check` exit 0; `cargo clippy --workspace --all-targets -D warnings`
+exit 0; `cargo test --workspace` **86 passed, 0 failed, 0 ignored** (81 unit/integration
++ 5 doctests; baseline 82). Both golden fixtures unchanged. `cargo run -p vector-add`
+and `cargo run -p typed-pipeline` exit 0; no further derived-artifact drift.
+Independent read-only review of this change: **PASS** — traversal reaches all type
+positions, no escape to `emit_type`, no test passes for the wrong reason. Its design
+note: the primitive rule is a denylist (exhaustive over Rust's finite primitive set),
+but std-prelude type names such as `Option<uint>` still pass the validator and fail
+only in slangc. That sibling gap is pre-existing and recorded in NEXT_TASKS T03.
+
+Queue state found at pickup: the working tree was clean and the formerly pending
+T06 slice 1 + quality patch is committed as `3fd0aac` ("T06 Continued", unsigned,
+author = owner) and pushed to `origin/main`. The signing-key blocker recorded below
+no longer gates that work; HEAD `3fd0aac`, 82 workspace tests passing at pickup.
+
+Independent review of the quality patch (`d99d176..3fd0aac`, macro `slang.rs`,
+`validate.rs`, core `slang.rs` diagnostics): **PASS**. A separate read-only reviewer
+traced both `emit_struct_value` call sites (one per statement, fresh `enumerate`
+per block), found no `Expr::Struct` reaching emission unrejected, and found no
+diagnostic input that maps to a *wrong* kernel (only `None`). A hand-written Slang
+unit re-declaring `__gust_struct_0` in nested blocks compiled on WGSL and SPIR-V
+and passed `spirv-val`, so per-block temporary indices are valid Slang. One
+low-severity note: nested struct literals (`Pair { a: Inner { .. } }`) are rejected
+by the emitter, not the validator — correct behavior, pre-existing, not a regression.
+The "do not label these patches independently approved" caveat below is now lifted.
+
+`scripts/verify.ps1 -Full` re-run under pwsh 7.6.5 after `3fd0aac` (before this
+validator change): **GUST verification passed**, 19 checks exit 0, five examples on
+NVIDIA GeForce RTX 5090, all eight SPIR-V exports validated. `.ai/VALIDATION.json`
+refreshed. The run regenerated four stale derived exports (`particles__snapshot`,
+`particles__step`, `polynomial__evaluate`, `signal_pipeline__transform` `.slang`):
+each differs only by the T05 `// @rust kernel:` marker line; WGSL/SPIR-V unchanged.
+
+Commits: `chore(artifacts): refresh VALIDATION.json and stale kernel-marker exports`
+(VALIDATION.json + four `generated-wgpu/*.slang`) and `feat(validate): fail closed on
+cast targets, non-32-bit primitives, and const blocks` (validate.rs,
+regression_tests.rs, lib.rs doctest, ARCHITECTURE.md, .ai records).
+
+Next command: claim one bounded task in this file before editing — either the
+std-prelude type-name allowlist frontier (NEXT_TASKS T03) or T06 slice 2
+(authoritative aggregate size/alignment/stride evidence via `scripts/probes/`).
+
+## Checkpoint and T06 investigation (2026-09-07)
 
 Owner: Codex at the user's request. Preserve the existing dirty checkpoint at
 `d99d176`. Scope: full validation (VALIDATION.json and derived example exports),

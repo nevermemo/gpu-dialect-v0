@@ -24,6 +24,17 @@ const BANNED_NAMES: &[&str] = &[
     "TcpStream",
 ];
 
+/// Numeric conversions with a proven Slang lowering and GPU-verified semantics.
+const CAST_TARGETS: &[&str] = &["f32", "float", "i32", "int", "u32", "uint"];
+
+/// Rust primitives outside the four-byte scalar subset. They are not shadowed by
+/// the prelude, so rustc accepts them, and `emit_type` would pass the Rust
+/// spelling through to Slang unchanged.
+const UNSUPPORTED_PRIMITIVES: &[&str] = &[
+    "i8", "i16", "i64", "i128", "isize", "u8", "u16", "u64", "u128", "usize", "f16", "f64", "f128",
+    "char", "str",
+];
+
 /// Whether an expression is an integer literal with value zero, including a
 /// unary negation of one. Float zeros are excluded: floating-point division by
 /// zero is defined (it yields infinity/NaN), so only integer div/rem by zero is
@@ -265,6 +276,47 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
         }
         visit::visit_path(self, path);
+    }
+
+    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+        if let Some(ident) = ty.path.get_ident() {
+            let name = ident.to_string();
+            if UNSUPPORTED_PRIMITIVES.contains(&name.as_str()) {
+                self.reject(
+                    ty,
+                    &format!(
+                        "`{name}` is not a supported GPU type; use the 32-bit scalars `f32`/`float`, `i32`/`int`, `u32`/`uint`, or `bool`"
+                    ),
+                );
+                return;
+            }
+        }
+        visit::visit_type_path(self, ty);
+    }
+
+    fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
+        let supported = match cast.ty.as_ref() {
+            syn::Type::Path(path) => path
+                .path
+                .get_ident()
+                .is_some_and(|ident| CAST_TARGETS.contains(&ident.to_string().as_str())),
+            _ => false,
+        };
+        if !supported {
+            self.reject(
+                &cast.ty,
+                "casts are supported only to the 32-bit scalar types `f32`/`float`, `i32`/`int`, and `u32`/`uint`",
+            );
+            return;
+        }
+        visit::visit_expr_cast(self, cast);
+    }
+
+    fn visit_expr_const(&mut self, expression: &'ast syn::ExprConst) {
+        self.reject(
+            expression,
+            "const blocks are not in the Rust-to-Slang subset; write the value directly",
+        );
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
