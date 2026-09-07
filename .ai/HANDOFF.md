@@ -39,6 +39,13 @@ reset was used. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming 
    failure the bridge appends the nearest marker's kernel to the `CompilationFailed`
    diagnostic. Line-level mapping is not possible on stable Rust (`proc_macro`
    spans do not expose line numbers).
+9. Completed the T03 second slice (P0): broader name resolution and effect analysis.
+   `visit_expr_path` rejects multi-segment bare path values (associated constants /
+   foreign items such as `f32::INFINITY`, `u32::MAX`, `core::f32::consts::PI`) that
+   the translator would otherwise emit as invalid Slang; `core` added to
+   `BANNED_NAMES`; `visit_expr_try` rejects the `?` operator; `visit_expr_unsafe`
+   rejects `unsafe` blocks. `asm!` needs no new rule (syn 2.0 parses it as
+   `Expr::Macro`, already rejected). Two failing-first regression tests added.
 
 ## Important files
 
@@ -114,11 +121,18 @@ See the T04 evidence block in NEXT_TASKS.md and `docs/ARCHITECTURE.md`.
 **T05 (P1) is complete** — slice 1 is capability probe records (`TargetProbe` +
 `probe` in `crates/gpu-dialect/src/slang.rs`, failing-first WGSL/SPIR-V tests);
 slice 2 is kernel-level diagnostic source mapping (`// @rust kernel:` markers,
-nearest-marker lookup appended to `CompilationFailed`). With T04 and T05 done, the
-P1 row is complete except T06, which the owner has explicitly deferred — do not start
-it without the owner's reconsideration. The remaining S1 work is the T03 second
-slice (broader name resolution and effect analysis at unsupported frontend
-boundaries). Do not bundle reflection (T06) or an ECS framework (T08) into that work.
+nearest-marker lookup appended to `CompilationFailed`).
+
+**T03 (P0) is complete (both slices)** — slice 1 is fail-closed signature/attribute/
+builtin diagnostics; slice 2 (this pass) is broader name resolution and effect
+analysis: `visit_expr_path` rejects multi-segment bare path values (associated
+constants / foreign items), `core` is banned, `visit_expr_try` rejects `?`, and
+`visit_expr_unsafe` rejects `unsafe` blocks. Failing-first tests in
+`regression_tests.rs`. With T03, T04, and T05 done, the P0 and P1 rows are complete
+except T06, which the owner has explicitly deferred — do not start it without the
+owner's reconsideration. Do not bundle reflection (T06) or an ECS framework (T08)
+into follow-up work. Remaining bounded frontier: cast target types and `const` blocks
+are still accepted by the validator and only fail at Slang compile time.
 
 Start from the workspace root:
 

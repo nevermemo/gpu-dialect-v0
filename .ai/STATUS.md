@@ -3,10 +3,38 @@
 Updated: 2026-09-07. Owner: Kilo (co-maintainer), alongside the human owner; Codex
 may collaborate for continuity. Completed scope: documentation, translator
 stability/tests, runtime cache/compiler bridge, validation tooling (incl. verify.ps1
-stderr capture), T04 (numeric semantics + field-aware struct construction), and T05
-(capability probe records + kernel-level Slang→Rust diagnostic mapping). P1 is
-complete except T06, which the owner has explicitly deferred. No agent process has
-been launched or contacted; claim the next bounded task here before editing.
+stderr capture), T04 (numeric semantics + field-aware struct construction), T05
+(capability probe records + kernel-level Slang→Rust diagnostic mapping), and the T03
+second slice (broader name resolution + effect analysis at unsupported frontend
+boundaries). P1 is complete except T06, which the owner has explicitly deferred. No
+agent process has been launched or contacted; claim the next bounded task here before
+editing.
+
+## This pass (T03 second slice — name resolution + effect analysis)
+
+Fail-closed the gap between what the validator accepted and what the translator can
+lower. Two classes of diagnostic added in `crates/gpu-dialect-macros/src/validate.rs`:
+
+- **Name resolution.** A bare path *value* must be a single identifier (a local or
+  parameter). Multi-segment paths are associated constants or foreign items (`f32::
+  INFINITY`, `u32::MAX`, `core::f32::consts::PI`) that the translator would emit as
+  invalid Slang (`f32.INFINITY`). New `visit_expr_path` rejects them; callee paths are
+  unaffected because `visit_expr_call` only descends for single-identifier helpers.
+  `core` added to `BANNED_NAMES` so `core::` in path *types* is also rejected.
+- **Effect analysis.** New `visit_expr_try` rejects the `?` operator and
+  `visit_expr_unsafe` rejects `unsafe` blocks — both previously accepted by the
+  validator and only caught later by the translator's generic "not in the subset"
+  error. `asm!` needs no new rule: syn 2.0 parses it as `Expr::Macro`, already
+  rejected by the existing macro rule.
+
+Failing-first tests added in `regression_tests.rs`: `unsupported_name_paths_are_rejected`
+(4 cases) and `unsupported_effects_are_rejected` (3 cases). Verified 2026-09-07:
+`cargo fmt --check` clean; `cargo clippy --workspace --all-targets -- -D warnings`
+clean; `cargo test --workspace` **68 passed, 0 failed** (66 prior + 2 new, incl. 5
+example binaries on RTX 5090 + 4 compile-fail doc tests); `cargo run -p vector-add`
+and `cargo run -p typed-pipeline` both exit 0 on the RTX 5090. Known remaining
+frontier (not claimed here): cast target types and `const` blocks are still accepted
+by the validator and only fail at Slang compile time.
 
 ## This pass (both items complete)
 
@@ -78,6 +106,12 @@ been launched or contacted; claim the next bounded task here before editing.
   WGSL/SPIR-V tests, PORTABLE_SLANG_CORE.md record format) and kernel-level
   Slang→Rust diagnostic mapping (`// @rust kernel:` markers + nearest-marker lookup
   appended to `CompilationFailed`); goldens updated, two mapping tests.
+- T03 second slice (this pass): fail-closed name resolution and effect analysis —
+  `visit_expr_path` rejects multi-segment bare path values (associated constants /
+  foreign items like `f32::INFINITY`, `u32::MAX`), `core` added to `BANNED_NAMES`,
+  `visit_expr_try` rejects `?`, `visit_expr_unsafe` rejects `unsafe` blocks. Two
+  failing-first regression tests (7 cases total). 68 tests pass, fmt/clippy clean,
+  both examples run on RTX 5090.
 - `scripts/verify.ps1`: `Invoke-Checked` captures stderr in addition to stdout and
   records both in `VALIDATION.json` (`stdout` + new `stderr` field). Failure records
   now carry the actual compiler/test diagnostic, not just the exit code. Behavior
@@ -96,7 +130,10 @@ Known correctness debt: implicit inference versus Rust-resolved types, evaluatio
 order/alias analysis, full name hygiene, and line-level Slang-to-Rust source maps
 (kernel-level mapping exists; line-level needs non-stable spans). Numeric edge
 semantics and field-aware struct construction are proven in bounded contexts (T04).
-Resource helper parameters and shader struct literals are explicitly rejected. Concurrent cache misses may duplicate
+Resource helper parameters, shader struct literals, multi-segment path values
+(associated constants / foreign items), the `?` operator, and `unsafe` blocks are
+explicitly rejected. Cast target types and `const` blocks are still accepted by the
+validator and only fail at Slang compile time. Concurrent cache misses may duplicate
 compilation. See `NEXT_TASKS.md` for bounded follow-up.
 
 ## Allowance and handoff

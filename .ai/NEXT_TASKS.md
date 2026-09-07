@@ -23,15 +23,25 @@ Done: regression proves two entries in one source cannot share the wrong pipelin
 exclusive temp creation, cleanup on failures, bounded artifact validation.
 Verify: targeted core/wgpu tests, then `scripts/verify.ps1 -Full`.
 
-## T03 — P0: Fail closed at unsupported frontend boundaries
+## T03 — P0: Fail closed at unsupported frontend boundaries — COMPLETE
 
-Status: first slice complete. Goal: actionable errors for invalid signatures, options, attributes,
-and resource helpers. Why: syntactic acceptance currently exceeds proven lowering.
+Status: complete (both slices, 2026-09-07). Goal: actionable errors for invalid
+signatures, options, attributes, and resource helpers. Why: syntactic acceptance
+currently exceeds proven lowering.
 Files: macro validate/expand/slang and negative fixtures. Dependencies: T01.
-Done: reject duplicate/missing invocation, non-unit kernels, zero/duplicate workgroups,
-semantic attributes that are dropped, malformed builtin receivers/arguments; include
-compile-fail evidence (implemented). Broader name resolution and effect analysis
-remain separate work. Verify: macro unit tests and `cargo test --workspace`.
+Slice 1 (done): reject duplicate/missing invocation, non-unit kernels, zero/duplicate
+workgroups, semantic attributes that are dropped, malformed builtin receivers/arguments;
+compile-fail evidence.
+Slice 2 (done this pass): broader name resolution and effect analysis.
+`visit_expr_path` rejects multi-segment bare path values (associated constants / foreign
+items like `f32::INFINITY`, `u32::MAX`, `core::f32::consts::PI`); `core` added to
+`BANNED_NAMES`; `visit_expr_try` rejects `?`; `visit_expr_unsafe` rejects `unsafe`
+blocks. `asm!` already covered (syn 2.0 parses it as `Expr::Macro`). Failing-first
+tests: `unsupported_name_paths_are_rejected` (4 cases) and
+`unsupported_effects_are_rejected` (3 cases).
+Remaining frontier (not claimed): cast target types and `const` blocks are still
+accepted by the validator and only fail at Slang compile time.
+Verify: `cargo test -p gpu-dialect-macros` and `cargo test --workspace`.
 
 ## T04 — P1: Resolved numeric semantics and struct construction — COMPLETE
 
