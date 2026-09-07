@@ -33,6 +33,12 @@ reset was used. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming 
    cargo/clippy emit on stderr — was missing from the JSON record, leaving only the
    generic `"... failed (exit N)"` message. Exit-code/throw behavior and the
    stop-on-first-failure / always-write-record contract are unchanged.
+8. Completed T05 (P1): `TargetProbe` capability records with failing-first
+   WGSL/SPIR-V tests, and kernel-level Slang→Rust diagnostic mapping — `emit_kernel`
+   writes a `// @rust kernel: {module}::{kernel}` marker per kernel, and on `slangc`
+   failure the bridge appends the nearest marker's kernel to the `CompilationFailed`
+   diagnostic. Line-level mapping is not possible on stable Rust (`proc_macro`
+   spans do not expose line numbers).
 
 ## Important files
 
@@ -46,7 +52,9 @@ reset was used. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming 
   shader grouping and typed-pipeline source changed. Some binary/WGSL outputs remain
   byte-identical because Slang optimizes equivalent expressions.
 - `.ai/CHANGED_FILES.md` inventories added/modified files against `BASELINE.sha256`.
-  No Git repository, commits, backups, or ZIP were created; hashes are not rollback data.
+  The owner then initialized Git (2026-09-07); `main` carries 6 commits through the
+  T05 slice 2 work, and a Kilo worktree
+  (`.kilo/worktrees/enchanted-farmhouse`) sits on the same commit.
 
 ## Verification evidence
 
@@ -72,18 +80,26 @@ The stderr-capture patch was then **verified end-to-end** on 2026-09-07 under
 `stderr` (lines 59, 69); the `µs` timings render correctly (UTF-8 fix confirmed — no
 more `┬╡`). **Environment note for future runs: use `pwsh` (PowerShell 7), not 5.1.**
 
+T05 (both slices) was then verified on 2026-09-07: `cargo test -p gpu-dialect --lib`
+12 passed (incl. both diagnostic-mapping tests), `cargo test -p gpu-dialect-macros`
+20 passed (marker goldens), `cargo test -p gpu-dialect-wgpu --test semantics` 2 passed
+on RTX 5090. A full `-Full` re-run after the slice 2 commit was started but aborted
+before completion; the last full pass in VALIDATION.json (2026-09-07 13:54 UTC)
+predates the slice 2 commit.
+
 ## Deferred and known risks
 
 - Reflection remains deferred by the owner. Metadata is macro-assigned, not Slang
   reflection. No wide vectors/matrices/uniform/texture ABI was introduced.
 - No rustc semantic integration, execution-graph compiler, ECS/renderer, dynamic
   pool growth, indirect execution, CPU fallback, or custom shader instruction IR.
-- Explicit local types help but do not provide full Rust inference. Numeric edge
-  behavior, effect/evaluation order, aliases, and complete identifier hygiene remain
-  open. Shader struct literals and resource-valued helpers fail explicitly until
-  their lowering is proven. Source maps still point at generated Slang, not Rust.
+- Explicit local types help but do not provide full Rust inference. Effect/evaluation
+  order, aliases, and complete identifier hygiene remain open. Shader struct literals
+  and resource-valued helpers fail explicitly until their lowering is proven.
+  Slang→Rust source maps are kernel-level only: `slangc` diagnostics now name the
+  originating Rust kernel, but line-level mapping needs non-stable spans.
 - Concurrent first cache misses can compile twice; this is not a single-flight cache.
-- Full future capability probing and graph/engine APIs remain planned, not completed.
+- Graph/engine APIs (T07/T08) remain planned, not completed.
 
 ## Recommended pickup
 
@@ -93,11 +109,14 @@ casts, and struct field identity + source order, integer div/rem by a literal ze
 diagnosed at the Rust boundary, and struct literals lower to construct-then-assign.
 See the T04 evidence block in NEXT_TASKS.md and `docs/ARCHITECTURE.md`.
 
-**T05 (P1) is now claimed** — first slice is capability probe records (a `TargetProbe`
-+ `probe` in `crates/gpu-dialect/src/slang.rs` with a failing-first test); diagnostic
-source mapping (Slang→Rust spans) is the next T05 slice. The remaining S1 work is the
-T05 source-mapping slice and the negative-diagnostics coverage (T03). Do not bundle
-reflection (T06, deferred by the owner) or an ECS framework (T08) into that work.
+**T05 (P1) is complete** — slice 1 is capability probe records (`TargetProbe` +
+`probe` in `crates/gpu-dialect/src/slang.rs`, failing-first WGSL/SPIR-V tests);
+slice 2 is kernel-level diagnostic source mapping (`// @rust kernel:` markers,
+nearest-marker lookup appended to `CompilationFailed`). With T04 and T05 done, the
+P1 row is complete except T06, which the owner has explicitly deferred — do not start
+it without the owner's reconsideration. The remaining S1 work is the T03 second
+slice (broader name resolution and effect analysis at unsupported frontend
+boundaries). Do not bundle reflection (T06) or an ECS framework (T08) into that work.
 
 Start from the workspace root:
 
