@@ -82,6 +82,7 @@ float classification_score(CalibratedSample sample, AlertThresholds thresholds)
     return (temperature_score + humidity_score);
 }
 
+// @rust kernel: sensor_pipeline::finalize
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpu_sensor_pipeline_finalize(uint3 id : SV_DispatchThreadID)

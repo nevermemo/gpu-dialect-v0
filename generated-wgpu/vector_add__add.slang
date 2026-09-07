@@ -4,6 +4,7 @@
 [[vk::binding(1, 0)]] StructuredBuffer<float> b;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> out;
 
+// @rust kernel: vector_add::add
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpu_vector_add_add(uint3 id : SV_DispatchThreadID)
