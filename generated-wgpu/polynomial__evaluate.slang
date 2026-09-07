@@ -3,6 +3,7 @@
 [[vk::binding(0, 0)]] StructuredBuffer<float> input;
 [[vk::binding(1, 0)]] RWStructuredBuffer<float> out;
 
+// @rust kernel: polynomial::evaluate
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void gpu_polynomial_evaluate(uint3 id : SV_DispatchThreadID)

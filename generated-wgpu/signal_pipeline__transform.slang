@@ -7,6 +7,7 @@
 [[vk::binding(4, 0)]] StructuredBuffer<float> scale;
 [[vk::binding(5, 0)]] RWStructuredBuffer<float> out;
 
+// @rust kernel: signal_pipeline::transform
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void gpu_signal_pipeline_transform(uint3 id : SV_DispatchThreadID)
