@@ -3,6 +3,9 @@ param([switch]$Full)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# Decode native command output as UTF-8 so captured diagnostics (e.g. the "µs"
+# timings) are not mangled by the console code page before they reach the record.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskChecks = [System.Collections.Generic.List[object]]::new()
 $taskArtifacts = [System.Collections.Generic.List[object]]::new()
@@ -12,14 +15,33 @@ $taskStarted = [DateTime]::UtcNow.ToString('o')
 
 function Invoke-Checked {
     param([string]$Program, [string[]]$Arguments)
-    $taskOutput = @(& $Program @Arguments)
-    $taskExit = $LASTEXITCODE
-    foreach ($line in $taskOutput) { Write-Host $line }
+    # Capture stdout and stderr to separate temp files via Start-Process (which
+    # redirects at the process level, avoiding PowerShell's error stream so a
+    # failing command's stderr is recorded instead of becoming a terminating
+    # error under $ErrorActionPreference='Stop'). A failing command's diagnostic
+    # (cargo/clippy emit on stderr) is thus preserved in the JSON record.
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    $taskExit = $null
+    $taskStdout = ''
+    $taskStderr = ''
+    try {
+        $proc = Start-Process -FilePath $Program -ArgumentList $Arguments -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $taskExit = $proc.ExitCode
+        $taskStdout = [string](Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue)
+        $taskStderr = [string](Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue)
+    } finally {
+        Remove-Item -LiteralPath $outFile, $errFile -ErrorAction SilentlyContinue
+    }
+    if ($taskStdout) { Write-Host $taskStdout }
+    if ($taskStderr) { Write-Host $taskStderr }
     $taskChecks.Add([ordered]@{
         program = $Program
         arguments = $Arguments
         exit_code = $taskExit
-        stdout = ($taskOutput -join "`n")
+        stdout = $taskStdout
+        stderr = $taskStderr
     })
     if ($taskExit -ne 0) {
         throw "$Program $($Arguments -join ' ') failed (exit $taskExit)"
