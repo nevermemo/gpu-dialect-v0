@@ -1,11 +1,27 @@
 # GUST handoff — 2026-09-07
 
 Ownership released. The repository is ready for a local AI to resume manually.
-Latest quality review: Codex fixed struct RHS self-aliasing/shadowing, rejected
+
+Latest pass (GitHub Copilot, VS Code agent): the quality patch below is now
+independently reviewed (PASS; see STATUS), `verify.ps1 -Full` passed after `3fd0aac`
+(VALIDATION.json refreshed, four stale kernel-marker `.slang` exports regenerated),
+and the T03 type-name frontier is closed: casts limited to 32-bit scalar targets,
+non-32-bit Rust primitives rejected in every type position, `const` blocks rejected
+by name. 82 tests became **86 passing**; fmt, strict Clippy, and both smoke examples
+pass. Everything from this pass is committed on top of `3fd0aac` in two scopes
+(`chore(artifacts)` for VALIDATION.json and the regenerated exports, `feat(validate)`
+for the frontier) and pushed to `origin/main`. Next unclaimed frontier: std-prelude
+type names such as `Option<uint>` still reach slangc (NEXT_TASKS T03).
+
+Note on git state: the "pending signed commit at `d99d176`" wording below is
+historical. The owner committed that work as `3fd0aac` ("T06 Continued", unsigned)
+and pushed it to `origin/main` before this pass started.
+
+Earlier quality review: Codex fixed struct RHS self-aliasing/shadowing, rejected
 dropped record-update fields, and fixed current Slang diagnostic mapping. Baseline
 74 tests became 82 passing tests; fmt, strict Clippy, and both smoke examples pass.
-Worker allowance failures prevented independent review of the final quality patch;
-the earlier T06 verifier PASS below does not cover these later changes. See STATUS.
+Worker allowance failures prevented independent review of the final quality patch
+at the time; that review has since been completed (PASS). See STATUS.
 T06 slice 1 is implemented and independently reviewed: 74 workspace tests,
 formatting, strict Clippy, vector-add, and typed-pipeline verified on 2026-09-07.
 The signed commit is pending the owner's existing signing public-key path; edits

@@ -35,6 +35,17 @@
 //!     }
 //! }
 //! ```
+//! Types and casts outside the 32-bit scalar subset are rejected by the macro,
+//! even though rustc would accept them in the shadow body:
+//! ```compile_fail
+//! #[gpu_dialect::gpu]
+//! mod invalid {
+//!     #[kernel]
+//!     fn run(id: SV_DispatchThreadID) {
+//!         let wide: f64 = id.x as f64;
+//!     }
+//! }
+//! ```
 //!
 //! # Supported source
 //!

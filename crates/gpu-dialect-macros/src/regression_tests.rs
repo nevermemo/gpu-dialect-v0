@@ -262,6 +262,109 @@ fn unsupported_numeric_width_is_diagnosed() {
 }
 
 #[test]
+fn casts_to_unproven_targets_are_rejected() {
+    // `uint` is a plain `u32` alias, so rustc accepts every numeric target below in
+    // the shadow body; only the macro can stop `f64(id.x)` reaching slangc.
+    for target in [
+        "f64",
+        "u64",
+        "i64",
+        "usize",
+        "isize",
+        "u8",
+        "u16",
+        "i8",
+        "i16",
+        "bool",
+        "char",
+        "double",
+        "Pair",
+        "_",
+        "*const uint",
+        "gpu_dialect::uint",
+    ] {
+        let source = format!(
+            "mod bad {{ struct Pair {{ first: uint, second: uint }} #[kernel] fn run(id: SV_DispatchThreadID) {{ let v = id.x as {target}; }} }}"
+        );
+        let error = translate(&source).unwrap_err();
+        assert!(error.to_string().contains("cast"), "{error}: {source}");
+    }
+    for (target, expected) in [
+        ("f32", "float(id.x)"),
+        ("float", "float(id.x)"),
+        ("i32", "int(id.x)"),
+        ("int", "int(id.x)"),
+        ("u32", "uint(id.x)"),
+        ("uint", "uint(id.x)"),
+    ] {
+        let source = format!(
+            "mod ok {{ #[kernel] fn run(id: SV_DispatchThreadID) {{ let v = id.x as {target}; }} }}"
+        );
+        let ok = translate(&source).unwrap();
+        assert!(ok.contains(expected), "{ok}");
+    }
+}
+
+#[test]
+fn non_32_bit_primitive_types_are_rejected_before_slang() {
+    // rustc accepts each of these in the shadow; without a validator rule they
+    // became `f64 v = 1.0;` and failed only inside slangc at pipeline creation.
+    for (source, name) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v: f64 = 1.0; } }",
+            "f64",
+        ),
+        (
+            "mod bad { fn helper(x: u64) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "u64",
+        ),
+        (
+            "mod bad { fn helper(x: uint) -> usize { 1 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "usize",
+        ),
+        (
+            "mod bad { struct Wide { value: f64 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "f64",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<i64>) {} }",
+            "i64",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let c: char = 'a'; } }",
+            "char",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("not a supported GPU type") && message.contains(name),
+            "{error}: {source}"
+        );
+    }
+    let ok = translate(
+        "mod ok { struct Mixed { a: float, b: int, c: uint, d: bool, e: f32, f: i32, g: u32 } #[kernel] fn run(id: SV_DispatchThreadID) { let flag: bool = true; } }",
+    )
+    .unwrap();
+    assert!(ok.contains("bool flag = true;"), "{ok}");
+}
+
+#[test]
+fn const_blocks_are_rejected() {
+    for source in [
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = const { 1u32 }; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = const { 2u32 } + 1u32; } }",
+        "mod bad { fn helper() -> uint { const { 3u32 } } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(
+            error.to_string().contains("const blocks"),
+            "{error}: {source}"
+        );
+    }
+}
+
+#[test]
 fn unsupported_name_paths_are_rejected() {
     for (source, message) in [
         (

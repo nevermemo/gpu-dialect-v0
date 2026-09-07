@@ -236,6 +236,15 @@ integer division/remainder by zero as a panic and float-to-integer `as` casts as
 saturating (NaN maps to zero); do not describe those Rust operations as undefined.
 See the [Rust operator reference](https://doc.rust-lang.org/reference/expressions/operator-expr.html).
 
+Type names are fail-closed at the macro boundary. `as` casts accept only the proven
+32-bit scalar targets (`f32`/`float`, `i32`/`int`, `u32`/`uint`); Rust primitives
+outside the four-byte subset (`u8`, `i64`, `usize`, `f64`, `char`, ...) are rejected
+in every type position, and inline `const { .. }` blocks are rejected by name. These
+names are not shadowed by the prelude, so rustc accepts them in the shadow body and
+the translator previously passed the Rust spelling through to a `slangc` failure at
+pipeline creation. `bool` remains a supported type but not a cast target: rustc
+already rejects numeric-to-`bool` casts, and `bool`-to-integer casts stay unproven.
+
 The syn translator still lacks rustc-resolved semantics. Inferred integer types,
 overflow, casts outside their safe input domain, evaluation ordering for effectful
 expressions, resource aliases, and comprehensive identifier hygiene need further
