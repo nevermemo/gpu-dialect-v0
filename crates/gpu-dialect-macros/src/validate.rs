@@ -23,6 +23,23 @@ const BANNED_NAMES: &[&str] = &[
     "TcpStream",
 ];
 
+/// Whether an expression is an integer literal with value zero, including a
+/// unary negation of one. Float zeros are excluded: floating-point division by
+/// zero is defined (it yields infinity/NaN), so only integer div/rem by zero is
+/// a portable-semantic hazard.
+fn is_literal_zero(expression: &syn::Expr) -> bool {
+    match expression {
+        syn::Expr::Lit(literal) => matches!(
+            &literal.lit,
+            syn::Lit::Int(value) if value.base10_digits().bytes().all(|digit| digit == b'0')
+        ),
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            is_literal_zero(&unary.expr)
+        }
+        _ => false,
+    }
+}
+
 pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
     let Some((_, items)) = &module.content else {
         return Err(syn::Error::new_spanned(
@@ -279,6 +296,18 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_binary(&mut self, binary: &'ast syn::ExprBinary) {
+        let is_div_or_rem = matches!(binary.op, syn::BinOp::Div(_) | syn::BinOp::Rem(_));
+        if is_div_or_rem && is_literal_zero(&binary.right) {
+            self.reject(
+                binary,
+                "integer division or modulo by a literal zero has no portable GPU result; guard the divisor before dividing",
+            );
+            return;
+        }
+        visit::visit_expr_binary(self, binary);
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
