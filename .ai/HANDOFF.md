@@ -1,8 +1,18 @@
 # GUST handoff — 2026-09-07
 
 Ownership released. The repository is ready for a local AI to resume manually.
-No local model endpoint was configured, no other agent was started, and no account
-reset was used. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming work.
+Latest quality review: Codex fixed struct RHS self-aliasing/shadowing, rejected
+dropped record-update fields, and fixed current Slang diagnostic mapping. Baseline
+74 tests became 82 passing tests; fmt, strict Clippy, and both smoke examples pass.
+Worker allowance failures prevented independent review of the final quality patch;
+the earlier T06 verifier PASS below does not cover these later changes. See STATUS.
+T06 slice 1 is implemented and independently reviewed: 74 workspace tests,
+formatting, strict Clippy, vector-add, and typed-pipeline verified on 2026-09-07.
+The signed commit is pending the owner's existing signing public-key path; edits
+remain uncommitted at baseline HEAD `d99d176`. See STATUS for scope and evidence.
+No local model endpoint was configured and no account reset was used. T06 slice 1
+uses delegated Codex Builder/Verifier review under AGENTS; no local AI service was
+contacted. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming work.
 
 ## What changed and why
 
@@ -98,8 +108,11 @@ VALIDATION.json (2026-09-07 13:54 UTC) predates the slice 2 commit.
 
 ## Deferred and known risks
 
-- Reflection remains deferred by the owner. Metadata is macro-assigned, not Slang
-  reflection. No wide vectors/matrices/uniform/texture ABI was introduced.
+- The owner authorized T06 slice 1 on 2026-09-07. The new explicit reflection API
+  reads Slang JSON and cross-checks nested POD fields. Runtime metadata remains
+  macro-assigned, not reflection-derived. JSON from the tested compiler omits
+  aggregate size, alignment, and buffer stride; successful cross-check reports are
+  partial evidence, not complete ABI certification. No broader ABI was introduced.
 - No rustc semantic integration, execution-graph compiler, ECS/renderer, dynamic
   pool growth, indirect execution, CPU fallback, or custom shader instruction IR.
 - Explicit local types help but do not provide full Rust inference. Effect/evaluation
@@ -129,9 +142,11 @@ analysis: `visit_expr_path` rejects multi-segment bare path values (associated
 constants / foreign items), `core` is banned, `visit_expr_try` rejects `?`, and
 `visit_expr_unsafe` rejects `unsafe` blocks. Failing-first tests in
 `regression_tests.rs`. With T03, T04, and T05 done, the P0 and P1 rows are complete
-except T06, which the owner has explicitly deferred — do not start it without the
-owner's reconsideration. Do not bundle reflection (T06) or an ECS framework (T08)
-into follow-up work. Remaining bounded frontier: cast target types and `const` blocks
+except T06, whose first slice is now authorized. See STATUS for the slice 1
+implementation and verification record. The next reflection step needs actual
+compiler aggregate size/alignment/stride evidence before runtime enforcement.
+Do not bundle a wider ABI or an ECS framework (T08) into this slice.
+Remaining bounded frontier: cast target types and `const` blocks
 are still accepted by the validator and only fail at Slang compile time.
 
 Start from the workspace root:

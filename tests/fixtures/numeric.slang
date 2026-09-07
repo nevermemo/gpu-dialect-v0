@@ -46,12 +46,15 @@ void gpu_numeric_run(uint3 id : SV_DispatchThreadID)
         signed_out[i] = (((a[i] / 2) * 100) + (a[i] % 3));
         unsigned_out[i] = (((b[i] / 2) * 100) + (b[i] % 3));
         cast_out[i] = int(f[i]);
-        Pair p;
-        p.second = (b[i] + uint(1));
-        p.first = (b[i] + uint(2));
+        Pair __gust_struct_3;
+        __gust_struct_3.second = (b[i] + uint(1));
+        __gust_struct_3.first = (b[i] + uint(2));
+        Pair p = __gust_struct_3;
         p.first = (p.first + uint(1));
         p.second = (p.second + uint(1));
-        pair_out[i].first = p.first;
-        pair_out[i].second = p.second;
+        Pair __gust_struct_6;
+        __gust_struct_6.first = p.first;
+        __gust_struct_6.second = p.second;
+        pair_out[i] = __gust_struct_6;
     }
 }

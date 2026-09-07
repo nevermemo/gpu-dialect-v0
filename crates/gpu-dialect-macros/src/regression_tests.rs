@@ -205,12 +205,20 @@ fn struct_constructor_preserves_field_identity_and_source_order() {
     )
     .unwrap();
     // Field identity is preserved by name even though `second` is written first.
-    assert!(source.contains("Pair p;"), "{source}");
-    assert!(source.contains("p.second = uint(1);"), "{source}");
-    assert!(source.contains("p.first = uint(2);"), "{source}");
+    assert!(source.contains("Pair __gust_struct_0;"), "{source}");
+    assert!(
+        source.contains("__gust_struct_0.second = uint(1);"),
+        "{source}"
+    );
+    assert!(
+        source.contains("__gust_struct_0.first = uint(2);"),
+        "{source}"
+    );
+    assert!(source.contains("Pair p = __gust_struct_0;"), "{source}");
     // Source evaluation order is preserved: `second` is assigned before `first`.
     assert!(
-        source.find("p.second = uint(1);").unwrap() < source.find("p.first = uint(2);").unwrap(),
+        source.find("__gust_struct_0.second = uint(1);").unwrap()
+            < source.find("__gust_struct_0.first = uint(2);").unwrap(),
         "{source}"
     );
 }
@@ -226,6 +234,20 @@ fn struct_literal_in_expression_position_is_diagnosed() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("struct literals"), "{error}");
+}
+
+#[test]
+fn struct_update_syntax_is_rejected_instead_of_dropping_fields() {
+    for statement in [
+        "let q = Pair { first: 9u32, ..p };",
+        "p = Pair { first: 9u32, ..p };",
+    ] {
+        let source = format!(
+            "mod update {{ struct Pair {{ first: uint, second: uint }} #[kernel] fn run(id: SV_DispatchThreadID) {{ let mut p = Pair {{ first: 1u32, second: 2u32 }}; {statement} }} }}"
+        );
+        let error = translate(&source).unwrap_err();
+        assert!(error.to_string().contains("struct update"), "{error}");
+    }
 }
 
 #[test]
