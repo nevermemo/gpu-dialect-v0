@@ -54,21 +54,28 @@ Evidence (2026-09-07, slangc 2026.13.1-1-g84792eb15, Vulkan adapter present):
 - Struct literals lower to construct-then-assign by name in source order; supported
   as a `let` initializer and assignment RHS, rejected elsewhere.
 
-## T05 — P1: Capability/ABI evidence and diagnostic source mapping
+## T05 — P1: Capability/ABI evidence and diagnostic source mapping — COMPLETE
 
-Status: **claimed 2026-09-07** — slice 1 (capability probe records) in progress;
-slice 2 (diagnostic source mapping, Slang→Rust spans) planned next.
-Goal: machine-readable probe records and useful Rust locations for
-Slang errors. Why: target claims and layouts must follow evidence. Files: proposed
-probe utility, core bridge, macro source metadata, docs/PORTABLE_SLANG_CORE.md.
-Dependencies: T02/T03. Done: versions/options/adapter captured, unsupported targets
-explicit, scalar/nested ABI matrix, known Slang failure mapped to originating Rust.
-Slice 1 (this pass): `TargetProbe` record + `probe` in `crates/gpu-dialect/src/slang.rs`
+Status: complete (2026-09-07). Both slices done: capability probe records and
+kernel-level Slang→Rust diagnostic mapping.
+Goal: machine-readable probe records and useful Rust locations for Slang errors.
+Why: target claims and layouts must follow evidence. Files:
+`crates/gpu-dialect/src/slang.rs`, `crates/gpu-dialect-macros/src/slang.rs`,
+`tests/fixtures/{numeric,semantics}.slang`, docs/PORTABLE_SLANG_CORE.md.
+Dependencies: T02/T03.
+Slice 1: `TargetProbe` record + `probe` in `crates/gpu-dialect/src/slang.rs`
 compiles a known-good minimal kernel to a target and records `supported`/`detail`;
-failing-first test; PORTABLE_SLANG_CORE.md documents the probe record format.
-Slice 2 (next): emit Rust source markers during Slang emission and map `slangc`
-diagnostics back to originating Rust lines (the HANDOFF "source maps still point at
-generated Slang" gap).
+failing-first tests (WGSL + SPIR-V); PORTABLE_SLANG_CORE.md documents the record
+format.
+Slice 2: `emit_kernel` writes a `// @rust kernel: {module}::{kernel}` marker before
+each kernel; on `slangc` failure the core bridge parses the reported line and
+appends `originating Rust kernel: {module}::{kernel}` (nearest marker at or before
+that line) to the `CompilationFailed` diagnostic. Kernel-level, not line-level:
+stable-Rust `proc_macro` spans do not expose line numbers. Golden fixtures updated
+with the marker; two tests cover mapping with a marker and `None` without.
+Evidence (2026-09-07): `cargo test -p gpu-dialect --lib` 12 passed (incl. both
+mapping tests); `cargo test -p gpu-dialect-macros` 20 passed (marker goldens);
+`cargo test -p gpu-dialect-wgpu --test semantics` 2 passed on RTX 5090.
 Verify: repeat probes and intentional failing input; no silent skips.
 
 ## T06 — P1, deferred by owner: Slang reflection / broader shadows
