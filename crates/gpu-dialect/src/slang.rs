@@ -96,7 +96,7 @@ pub fn compile_spirv(kernel: &KernelDescriptor) -> Result<Vec<u32>, Error> {
     decode_spirv(&bytes)
 }
 
-fn decode_spirv(bytes: &[u8]) -> Result<Vec<u32>, Error> {
+pub(crate) fn decode_spirv(bytes: &[u8]) -> Result<Vec<u32>, Error> {
     if !bytes.len().is_multiple_of(size_of::<u32>()) {
         return Err(Error::InvalidSpirvLength(bytes.len()));
     }

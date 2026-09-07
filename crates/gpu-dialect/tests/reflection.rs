@@ -1,6 +1,6 @@
 use gpu_dialect::{
     cross_check_pod,
-    reflect::{Reflection, reflect},
+    reflect::{Reflection, compile_reflected, compile_reflected_with_helper, reflect},
     slang::Target,
 };
 
@@ -23,6 +23,107 @@ mod sample {
         if id.x < output.len() {
             output[id.x] = input[id.x];
         }
+    }
+    #[kernel]
+    pub fn scalar(
+        id: SV_DispatchThreadID,
+        input: StructuredBuffer<uint>,
+        mut output: RWStructuredBuffer<uint>,
+    ) {
+        if id.x < output.len() {
+            output[id.x] = input[id.x];
+        }
+    }
+}
+
+#[test]
+fn native_compilation_is_complete_for_both_targets() {
+    for target in [Target::Wgsl, Target::Spirv] {
+        for kernel in [sample::run::DESCRIPTOR, sample::scalar::DESCRIPTOR] {
+            let compiled = compile_reflected(&kernel, target).unwrap();
+            assert!(!compiled.artifact.is_empty());
+            assert!(!compiled.compiler_version.is_empty());
+            assert_eq!(compiled.entry_point, kernel.entry_point);
+            assert_eq!(compiled.workgroup_size, kernel.workgroup_size);
+            assert_eq!(compiled.reflection.target, target);
+            let reports = compiled.reflection.cross_check_kernel(&kernel).unwrap();
+            assert_eq!(reports.len(), 2);
+            assert!(reports.iter().all(|report| report.is_full_abi_match()));
+            if kernel.name == "run" {
+                let resource = &compiled.reflection.resources[0];
+                assert_eq!(resource.element.size, Some(12));
+                assert_eq!(resource.element.alignment, Some(4));
+                assert_eq!(resource.element.stride, Some(12));
+                assert_eq!(resource.element_stride, Some(12));
+                assert_eq!(
+                    cross_check_pod::<sample::Outer>(resource)
+                        .unwrap()
+                        .checked_fields,
+                    4
+                );
+            } else {
+                assert!(
+                    cross_check_pod::<u32>(&compiled.reflection.resources[0])
+                        .unwrap()
+                        .is_full_abi_match()
+                );
+            }
+            match target {
+                Target::Wgsl => assert!(
+                    String::from_utf8(compiled.artifact)
+                        .unwrap()
+                        .contains(kernel.entry_point)
+                ),
+                Target::Spirv => {
+                    let words: Vec<_> = compiled
+                        .artifact
+                        .chunks_exact(4)
+                        .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+                        .collect();
+                    gpu_dialect::spirv::validate_structure(&words).unwrap();
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn native_missing_helper_is_an_explicit_error() {
+    let directory = gpu_dialect::slang::TemporaryDirectory::create().unwrap();
+    let error = compile_reflected_with_helper(
+        &sample::run::DESCRIPTOR,
+        Target::Wgsl,
+        directory.path().join("missing reflection compiler.exe"),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        gpu_dialect::reflect::Error::HelperUnavailable { .. }
+    ));
+    assert!(error.to_string().contains("GUST_SLANG_REFLECT"));
+}
+
+#[test]
+fn native_rejects_padded_vector_layout_without_widening_storage_v1() {
+    let mut kernel = sample::run::DESCRIPTOR;
+    kernel.slang_source = include_str!("../../../scripts/probes/layout.slang");
+    kernel.entry_point = "main";
+    for target in [Target::Wgsl, Target::Spirv] {
+        let error = compile_reflected(&kernel, target).unwrap_err();
+        // The helper itself must refuse, not the Rust JSON reader after the fact.
+        assert!(
+            matches!(
+                &error,
+                gpu_dialect::reflect::Error::Compiler(
+                    gpu_dialect::slang::Error::CompilationFailed { target: failed, .. }
+                ) if *failed == target
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("unsupported element type"),
+            "{error}"
+        );
     }
 }
 
@@ -71,6 +172,17 @@ fn compiler_reports_nested_fields_for_both_targets() {
             );
         }
     }
+}
+
+#[test]
+fn outer_size_does_not_certify_missing_nested_sizes() {
+    let reflection = reflect(&sample::run::DESCRIPTOR, Target::Wgsl).unwrap();
+    let mut input = reflection.resources[0].clone();
+    input.element.size = Some(12);
+    input.element_stride = Some(12);
+    let checked = cross_check_pod::<sample::Outer>(&input).unwrap();
+    assert!(!checked.aggregate_size_verified);
+    assert!(!checked.is_full_abi_match());
 }
 
 #[test]

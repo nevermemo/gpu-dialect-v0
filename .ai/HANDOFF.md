@@ -1,8 +1,27 @@
-# GUST handoff — 2026-09-07
+# GUST handoff — 2026-09-08
 
 Ownership released. The repository is ready for a local AI to resume manually.
 
-Latest passes (GitHub Copilot, VS Code agent), each committed and pushed to
+Latest pass (GitHub Copilot, VS Code agent, "GUST Builder" profile), committed to
+`main` with fmt, strict Clippy, full workspace tests (107), full `verify.ps1 -Full`,
+and an independent read-only review (PASS WITH NOTES, notes applied) — see STATUS:
+- T06 complete (D17): the wgpu runtime refuses a pipeline unless the native Slang
+  reflection helper `gust-slang-reflect` proves the descriptor's StorageV1 contract
+  (names, slots, access, workgroup size, every nested offset/size/alignment/stride)
+  against the same linked program whose WGSL it then executes. New tool
+  requirement: build the helper once with `pwsh -File scripts/build-slang-reflect.ps1`
+  (needs the Slang SDK from `VULKAN_SDK`/`SLANG_SDK` and MSVC); `verify.ps1` does
+  this automatically. A missing helper is an explicit `HelperUnavailable` error.
+- Agent customizations under `.github/` (GUST Builder and GUST Verifier agents, a
+  `gust-status` prompt) and a PostToolUse `cargo fmt` hook (`.github/hooks`,
+  `scripts/hooks`). They are operating profiles on top of AGENTS.md, not new rules.
+Next: nothing claimed. The owner pre-authorized the ordered compiler extensions
+T09 bounded loops → T10 atomics → T11 std-prelude lowering (NEXT_TASKS). Claim T09
+in STATUS, write the contract (ARCHITECTURE + D18) and the failing tests first.
+
+## Previous handoff — 2026-09-07
+
+Earlier passes (GitHub Copilot, VS Code agent), each committed and pushed to
 `origin/main` with fmt, strict Clippy, full workspace tests, smoke examples, and an
 independent read-only review (PASS) — see STATUS for evidence:
 - `Option<T>` lowers to Slang `Optional<T>` (D14): `Some`/`None`/`is_some`/`is_none`/

@@ -1,7 +1,6 @@
-//! Opt-in Slang JSON reflection for the restricted scalar/struct storage ABI.
-//!
-//! Slang 2026.13.1 JSON omits aggregate size, alignment and buffer stride.
-//! Successful cross-checks are therefore explicitly partial, not upload safety proofs.
+//! Slang reflection for the restricted scalar/struct storage ABI.
+//! Native compilation returns the artifact and complete layout from one linked program.
+//! CLI JSON remains an explicit partial-evidence compatibility path.
 //! Only global structured-buffer resources are supported. Entry-point parameters
 //! must be the generated `SV_DispatchThreadID` system value, not resources/uniforms.
 
@@ -9,20 +8,36 @@ use crate::{
     GpuPod, KernelDescriptor, ScalarKind, TypeLayout, TypeLayoutKind,
     slang::{self, Target, TemporaryDirectory},
 };
-use std::{collections::BTreeMap, error, fmt, fs, process::Command};
+use std::{
+    collections::BTreeMap,
+    error, fmt, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 #[derive(Debug)]
 pub enum Error {
     Compiler(slang::Error),
+    HelperUnavailable {
+        helper: PathBuf,
+        source: std::io::Error,
+    },
     Invalid(String),
     Mismatch(String),
+    Incomplete(String),
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Compiler(e) => e.fmt(f),
+            Self::HelperUnavailable { helper, source } => write!(
+                f,
+                "could not launch Slang reflection compiler {}: {source}; run pwsh -File scripts/build-slang-reflect.ps1 or set GUST_SLANG_REFLECT to the helper executable",
+                helper.display()
+            ),
             Self::Invalid(s) => write!(f, "invalid Slang reflection: {s}"),
             Self::Mismatch(s) => write!(f, "POD reflection mismatch: {s}"),
+            Self::Incomplete(s) => write!(f, "incomplete Slang layout evidence: {s}"),
         }
     }
 }
@@ -30,6 +45,7 @@ impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::Compiler(e) => Some(e),
+            Self::HelperUnavailable { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -62,6 +78,8 @@ pub struct ReflectedResource {
 pub struct ReflectedType {
     pub name: Option<String>,
     pub size: Option<u32>,
+    pub alignment: Option<u32>,
+    pub stride: Option<u32>,
     pub kind: ReflectedTypeKind,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,7 +94,7 @@ pub struct ReflectedField {
     pub size: u32,
     pub ty: ReflectedType,
 }
-/// A partial evidence report. `Ok` is NOT confirmation of a complete ABI match.
+/// Coverage includes every nested type, not just the outer element.
 #[must_use = "Inspect coverage: a successful cross-check may still lack full ABI evidence"]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PodCrossCheck {
@@ -88,6 +106,153 @@ pub struct PodCrossCheck {
 impl PodCrossCheck {
     pub fn is_full_abi_match(&self) -> bool {
         self.aggregate_size_verified && self.element_stride_verified && self.alignment_verified
+    }
+}
+
+#[derive(Debug)]
+pub struct CompiledReflection {
+    pub artifact: Vec<u8>,
+    pub reflection: Reflection,
+    pub compiler_version: String,
+    pub entry_point: String,
+    pub workgroup_size: [u32; 3],
+}
+
+pub fn native_compiler_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("GUST_SLANG_REFLECT") {
+        return path.into();
+    }
+    let executable = format!("gust-slang-reflect{}", std::env::consts::EXE_SUFFIX);
+    let local = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/slang-reflect")
+        .join(&executable);
+    if local.is_file() {
+        local
+    } else {
+        executable.into()
+    }
+}
+
+/// Compile and reflect the same linked program using the native Slang helper.
+pub fn compile_reflected(
+    kernel: &KernelDescriptor,
+    target: Target,
+) -> Result<CompiledReflection, Error> {
+    compile_reflected_with_helper(kernel, target, native_compiler_path())
+}
+
+pub fn compile_reflected_with_helper(
+    kernel: &KernelDescriptor,
+    target: Target,
+    helper: impl AsRef<Path>,
+) -> Result<CompiledReflection, Error> {
+    let directory = TemporaryDirectory::create()?;
+    let source = directory.path().join("kernel.slang");
+    let artifact = directory.path().join("kernel.artifact");
+    let json = directory.path().join("reflection.json");
+    fs::write(&source, kernel.slang_source)?;
+    let output = Command::new(helper.as_ref())
+        .arg(&source)
+        .arg(kernel.entry_point)
+        .arg(target_name(target))
+        .arg(&artifact)
+        .arg(&json)
+        .output()
+        .map_err(|source| Error::HelperUnavailable {
+            helper: helper.as_ref().to_owned(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(Error::Compiler(slang::Error::CompilationFailed {
+            target,
+            diagnostics: format!(
+                "{}\n{}\ncompiler exit: {}\nreflection helper: {}\noriginating Rust kernel: {}",
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout),
+                output.status,
+                helper.as_ref().display(),
+                kernel.qualified_name()
+            ),
+        }));
+    }
+    CompiledReflection::from_output(
+        kernel,
+        target,
+        fs::read(artifact)?,
+        &fs::read_to_string(json)?,
+    )
+}
+
+fn target_name(target: Target) -> &'static str {
+    match target {
+        Target::Wgsl => "wgsl",
+        Target::Spirv => "spirv",
+    }
+}
+
+fn fingerprint(bytes: &[u8]) -> String {
+    let hash = bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("{hash:016x}")
+}
+
+impl CompiledReflection {
+    fn from_output(
+        kernel: &KernelDescriptor,
+        target: Target,
+        artifact: Vec<u8>,
+        json: &str,
+    ) -> Result<Self, Error> {
+        let root = Parser::parse(json)?;
+        if root.get("schemaVersion")?.u32()? != 1 {
+            return Err(invalid("unsupported native reflection schema version"));
+        }
+        let compiler_version = root.get("compiler")?.string()?.to_owned();
+        if compiler_version.trim().is_empty() {
+            return Err(invalid("missing native compiler build identity"));
+        }
+        if root.get("target")?.string()? != target_name(target)
+            || root.get("entryPoint")?.string()? != kernel.entry_point
+            || root.get("sourceHash")?.string()? != fingerprint(kernel.slang_source.as_bytes())
+            || root.get("artifactHash")?.string()? != fingerprint(&artifact)
+        {
+            return Err(invalid(
+                "native target, entry point, source or artifact identity mismatch",
+            ));
+        }
+        let workgroup_size = root
+            .get("workgroupSize")?
+            .array()?
+            .iter()
+            .map(Json::u32)
+            .collect::<Result<Vec<_>, _>>()?;
+        let workgroup_size: [u32; 3] = workgroup_size
+            .try_into()
+            .map_err(|_| invalid("expected three workgroup dimensions"))?;
+        if workgroup_size.contains(&0) || workgroup_size != kernel.workgroup_size {
+            return Err(Error::Mismatch(
+                "compute workgroup dimensions differ".into(),
+            ));
+        }
+        if artifact.is_empty() {
+            return Err(invalid("empty native artifact"));
+        }
+        match target {
+            Target::Wgsl => {
+                std::str::from_utf8(&artifact).map_err(|_| invalid("native WGSL is not UTF-8"))?;
+            }
+            Target::Spirv => {
+                slang::decode_spirv(&artifact).map_err(Error::Compiler)?;
+            }
+        }
+        Ok(Self {
+            artifact,
+            reflection: Reflection::read_json(target, &root, true)?,
+            compiler_version,
+            entry_point: kernel.entry_point.to_owned(),
+            workgroup_size,
+        })
     }
 }
 
@@ -146,6 +311,10 @@ impl Reflection {
     /// Entry-point resources and ordinary value/uniform parameters are unsupported.
     pub fn from_json(target: Target, source: &str) -> Result<Self, Error> {
         let root = Parser::parse(source)?;
+        Self::read_json(target, &root, false)
+    }
+
+    fn read_json(target: Target, root: &Json, complete: bool) -> Result<Self, Error> {
         if let Some(entries) = root.optional("entryPoints")? {
             for entry in entries.array()? {
                 if let Some(parameters) = entry.optional("parameters")? {
@@ -184,11 +353,15 @@ impl Reflection {
                 return Err(invalid("unsupported resource binding kind"));
             }
             let index = binding.get("index")?.u32()?;
-            let space = binding
-                .optional("space")?
-                .map(Json::u32)
-                .transpose()?
-                .unwrap_or(0);
+            let space = if complete {
+                binding.get("space")?.u32()?
+            } else {
+                binding
+                    .optional("space")?
+                    .map(Json::u32)
+                    .transpose()?
+                    .unwrap_or(0)
+            };
             let ty = value.get("type")?;
             if ty.get("kind")?.string()? != "resource"
                 || ty.get("baseShape")?.string()? != "structuredBuffer"
@@ -196,10 +369,14 @@ impl Reflection {
                 return Err(invalid("only structured buffers are supported"));
             }
             let access = match ty.optional("access")?.map(Json::string).transpose()? {
-                None | Some("read") => crate::Access::ReadOnly,
+                Some("read") => crate::Access::ReadOnly,
+                None if !complete => crate::Access::ReadOnly,
                 Some("readWrite") => crate::Access::ReadWrite,
                 _ => return Err(invalid("unsupported resource access")),
             };
+            if complete && binding.get("count")?.u32()? != 1 {
+                return Err(invalid("binding arrays are unsupported"));
+            }
             if let Some(count) = binding.optional("count")? {
                 if count.u32()? != 1 {
                     return Err(invalid("binding arrays are unsupported"));
@@ -215,11 +392,117 @@ impl Reflection {
                 access,
                 binding: index,
                 space,
-                element: read_type(ty.get("resultType")?)?,
-                element_stride: None,
+                element: read_type(ty.get("resultType")?, complete)?,
+                element_stride: if complete {
+                    Some(value.get("elementStride")?.u32()?)
+                } else {
+                    None
+                },
             });
         }
         Ok(Self { target, resources })
+    }
+
+    /// Require complete StorageV1 evidence for every descriptor binding, with no extras.
+    pub fn cross_check_kernel(
+        &self,
+        kernel: &KernelDescriptor,
+    ) -> Result<Vec<PodCrossCheck>, Error> {
+        for (index, resource) in self.resources.iter().enumerate() {
+            if self.resources[..index].iter().any(|previous| {
+                previous.name == resource.name
+                    || (previous.space, previous.binding) == (resource.space, resource.binding)
+            }) {
+                return Err(invalid("duplicate resource name or binding"));
+            }
+        }
+        let mut reports = Vec::new();
+        let mut bindings = BTreeMap::new();
+        for (index, parameter) in kernel.parameters.iter().enumerate() {
+            if kernel.parameters[..index]
+                .iter()
+                .any(|previous| previous.name == parameter.name)
+            {
+                return Err(Error::Mismatch(
+                    "duplicate descriptor parameter name".into(),
+                ));
+            }
+            if parameter.kind == crate::ParameterKind::Invocation {
+                if parameter.binding.is_some()
+                    || parameter.resource_layout.is_some()
+                    || parameter.access != crate::Access::NotApplicable
+                {
+                    return Err(Error::Mismatch(
+                        "invocation parameter has a resource contract".into(),
+                    ));
+                }
+                continue;
+            }
+            if parameter.kind != crate::ParameterKind::Storage {
+                return Err(Error::Mismatch(
+                    "only StorageV1 descriptor resources are supported".into(),
+                ));
+            }
+            let binding = parameter
+                .binding
+                .ok_or_else(|| Error::Mismatch("missing descriptor binding".into()))?;
+            let layout = parameter
+                .resource_layout
+                .ok_or_else(|| Error::Mismatch("missing descriptor element layout".into()))?;
+            if bindings
+                .insert((binding.group, binding.binding), parameter.name)
+                .is_some()
+            {
+                return Err(Error::Mismatch("duplicate descriptor binding".into()));
+            }
+            if layout.element_stride != layout.element.stride {
+                return Err(Error::Mismatch(format!(
+                    "{}.stride: inconsistent host resource layout",
+                    parameter.name
+                )));
+            }
+            let resource = self
+                .resources
+                .iter()
+                .find(|resource| resource.name == parameter.name)
+                .ok_or_else(|| {
+                    Error::Mismatch(format!("missing compiler binding {}", parameter.name))
+                })?;
+            equal(
+                binding.group,
+                resource.space,
+                &format!("{}.group", parameter.name),
+            )?;
+            equal(
+                binding.binding,
+                resource.binding,
+                &format!("{}.binding", parameter.name),
+            )?;
+            if !matches!(
+                parameter.access,
+                crate::Access::ReadOnly | crate::Access::ReadWrite
+            ) || parameter.access != resource.access
+            {
+                return Err(Error::Mismatch(format!(
+                    "{}.access differs",
+                    parameter.name
+                )));
+            }
+            let report = cross_check_layout(layout.element, resource)?;
+            if !report.is_full_abi_match() {
+                return Err(Error::Incomplete(format!(
+                    "{} requires all nested sizes, alignments and strides",
+                    parameter.name
+                )));
+            }
+            reports.push(report);
+        }
+        if reports.len() != self.resources.len() {
+            return Err(Error::Mismatch(
+                "unexpected compiler resource bindings".into(),
+            ));
+        }
+        Ok(reports)
     }
 }
 
@@ -256,7 +539,7 @@ mod tests {
     }
 }
 
-fn read_type(value: &Json) -> Result<ReflectedType, Error> {
+fn read_type(value: &Json, complete: bool) -> Result<ReflectedType, Error> {
     let kind = match value.get("kind")?.string()? {
         "scalar" => ReflectedTypeKind::Scalar(match value.get("scalarType")?.string()? {
             "float32" => ScalarKind::F32,
@@ -279,7 +562,7 @@ fn read_type(value: &Json) -> Result<ReflectedType, Error> {
                     name,
                     offset: binding.get("offset")?.u32()?,
                     size: binding.get("size")?.u32()?,
-                    ty: read_type(field.get("type")?)?,
+                    ty: read_type(field.get("type")?, complete)?,
                 });
             }
             if fields.is_empty() {
@@ -299,13 +582,26 @@ fn read_type(value: &Json) -> Result<ReflectedType, Error> {
             .map(Json::string)
             .transpose()?
             .map(str::to_owned),
-        size: None,
+        size: if complete {
+            Some(value.get("size")?.u32()?)
+        } else {
+            None
+        },
+        alignment: if complete {
+            Some(value.get("alignment")?.u32()?)
+        } else {
+            None
+        },
+        stride: if complete {
+            Some(value.get("stride")?.u32()?)
+        } else {
+            None
+        },
         kind,
     })
 }
 
 /// Check all available compiler field metadata against `T`, retaining explicit gaps.
-/// The result never certifies alignment: current Slang JSON does not expose it.
 pub fn cross_check_pod<T: GpuPod>(resource: &ReflectedResource) -> Result<PodCrossCheck, Error> {
     let host = T::LAYOUT;
     if !host.is_storage_v1()
@@ -316,17 +612,27 @@ pub fn cross_check_pod<T: GpuPod>(resource: &ReflectedResource) -> Result<PodCro
             "host layout is not a valid storage-v1 Rust layout".into(),
         ));
     }
-    let mut checked_fields = 0;
-    check_type(host, &resource.element, &resource.name, &mut checked_fields)?;
+    cross_check_layout(host, resource)
+}
+
+fn cross_check_layout(
+    host: TypeLayout,
+    resource: &ReflectedResource,
+) -> Result<PodCrossCheck, Error> {
+    if !host.is_storage_v1() {
+        return Err(Error::Mismatch("host layout is not StorageV1".into()));
+    }
+    let mut report = PodCrossCheck {
+        checked_fields: 0,
+        aggregate_size_verified: true,
+        element_stride_verified: resource.element_stride.is_some(),
+        alignment_verified: true,
+    };
+    check_type(host, &resource.element, &resource.name, &mut report)?;
     if let Some(stride) = resource.element_stride {
         equal(host.stride, stride, &format!("{}.stride", resource.name))?;
     }
-    Ok(PodCrossCheck {
-        checked_fields,
-        aggregate_size_verified: resource.element.size.is_some(),
-        element_stride_verified: resource.element_stride.is_some(),
-        alignment_verified: false,
-    })
+    Ok(report)
 }
 fn equal(host: u32, compiler: u32, path: &str) -> Result<(), Error> {
     if host == compiler {
@@ -341,10 +647,22 @@ fn check_type(
     host: TypeLayout,
     compiler: &ReflectedType,
     path: &str,
-    count: &mut usize,
+    report: &mut PodCrossCheck,
 ) -> Result<(), Error> {
     if let Some(size) = compiler.size {
         equal(host.size, size, &format!("{path}.size"))?;
+    } else {
+        report.aggregate_size_verified = false;
+    }
+    if let Some(alignment) = compiler.alignment {
+        equal(host.alignment, alignment, &format!("{path}.alignment"))?;
+    } else {
+        report.alignment_verified = false;
+    }
+    if let Some(stride) = compiler.stride {
+        equal(host.stride, stride, &format!("{path}.stride"))?;
+    } else {
+        report.element_stride_verified = false;
     }
     match (host.kind, &compiler.kind) {
         (TypeLayoutKind::Scalar(a), ReflectedTypeKind::Scalar(b)) if a == *b => Ok(()),
@@ -356,8 +674,8 @@ fn check_type(
                 let path = format!("{path}.{}", host.name);
                 equal(host.offset, compiler.offset, &format!("{path}.offset"))?;
                 equal(host.ty.size, compiler.size, &format!("{path}.size"))?;
-                *count += 1;
-                check_type(host.ty, &compiler.ty, &path, count)?;
+                report.checked_fields += 1;
+                check_type(host.ty, &compiler.ty, &path, report)?;
             }
             Ok(())
         }

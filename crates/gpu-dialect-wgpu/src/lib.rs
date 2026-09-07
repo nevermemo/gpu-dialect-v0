@@ -1274,6 +1274,14 @@ impl HeadlessDevice {
         kernel: &KernelDescriptor,
         resources: &[&ParameterDescriptor],
     ) -> Result<CachedKernel, Error> {
+        let compiled = gpu_dialect::reflect::compile_reflected(kernel, slang::Target::Wgsl)
+            .map_err(Error::Reflection)?;
+        let _ = compiled
+            .reflection
+            .cross_check_kernel(kernel)
+            .map_err(Error::Reflection)?;
+        let wgsl = std::str::from_utf8(&compiled.artifact)
+            .expect("WGSL validated by the native compiler bridge");
         let label = kernel.qualified_name().to_string();
         let layout_entries = resources
             .iter()
@@ -1306,7 +1314,6 @@ impl HeadlessDevice {
                 bind_group_layouts: &[Some(&bind_group_layout)],
                 immediate_size: 0,
             });
-        let wgsl = slang::compile_wgsl(kernel).map_err(Error::Slang)?;
         let shader = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1634,6 +1641,7 @@ pub enum Error {
     RequestDevice(String),
     MissingSlangSource(String),
     Slang(gpu_dialect::slang::Error),
+    Reflection(gpu_dialect::reflect::Error),
     UnsupportedWorkgroupSize([u32; 3]),
     UnsupportedParameter {
         name: String,
@@ -1715,6 +1723,9 @@ impl fmt::Display for Error {
                 write!(formatter, "kernel `{kernel}` has no generated Slang source")
             }
             Self::Slang(error) => write!(formatter, "could not compile kernel with Slang: {error}"),
+            Self::Reflection(error) => {
+                write!(formatter, "could not validate kernel reflection: {error}")
+            }
             Self::UnsupportedWorkgroupSize(size) => {
                 write!(
                     formatter,
@@ -1831,6 +1842,7 @@ impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             Self::Slang(error) => Some(error),
+            Self::Reflection(error) => Some(error),
             _ => None,
         }
     }

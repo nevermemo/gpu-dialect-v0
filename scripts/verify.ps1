@@ -56,6 +56,9 @@ try {
     if ($Full) { Get-Command spirv-val -ErrorAction Stop | Out-Null }
     Invoke-Checked rustc @('--version')
     Invoke-Checked slangc @('-version')
+    # The runtime refuses pipeline creation without the native reflection helper, so
+    # build it (and prove it loads its Slang library) before any cargo test runs.
+    Invoke-Checked pwsh @('-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'build-slang-reflect.ps1'))
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
     Invoke-Checked cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
     Invoke-Checked cargo @('test', '--workspace')

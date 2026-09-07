@@ -80,11 +80,12 @@ RWStructuredBuffer<float> o Storage RW, group 0 binding 2 RWStructuredBuffer<flo
 ```
 
 The current macro assigns bindings deterministically in resource-parameter order.
-This remains a bootstrap mechanism. T06 slice 1 adds an explicit Slang JSON
-reflection API alongside it; runtime descriptors and bind groups are not yet
-derived from reflection. Compiler-authoritative layout validation remains a
-prerequisite before textures, samplers, parameter blocks, multiple groups, or
-specialization enter the runtime contract.
+The macro still *assigns* this contract; since T06 the runtime *verifies* it against
+the compiler before creating a pipeline (see "Struct ABI"). Runtime descriptors and
+bind groups are not derived from reflection. Compiler-authoritative layout validation
+now exists for the StorageV1 subset only; textures, samplers, parameter blocks,
+multiple groups, and specialization still need their own evidence before entering the
+runtime contract.
 
 ## Struct ABI
 
@@ -94,19 +95,44 @@ named-field structs therefore receive `repr(C)`, `Clone`, `Copy`, and a generate
 32-bit scalar fields and recursively padding-free structs with four-byte alignment.
 
 This host transfer ABI is not intended to reimplement Slang's full layout system.
-It is a temporary executable bridge. `reflect::reflect` compiles the selected
-kernel and target with `slangc -reflection-json`; `Reflection::from_json` reads
-recorded JSON without launching the compiler. The dependency-free JSON parser
-rejects malformed input and unsupported resource/type layouts.
+It is a narrow executable bridge whose every claim is checked by the compiler.
 
-`cross_check_pod::<T>` compares the reflected structured-buffer element with
-`T::LAYOUT`, including nested field identities, offsets, sizes, and scalar kinds.
-It returns an error on a mismatch and a coverage report on a match. **An `Ok`
-result is not a complete ABI proof:** the installed Slang 2026.13.1 CLI reports
-field sizes/offsets but omits aggregate size, alignment, and buffer element stride
-in the tested WGSL and SPIR-V JSON. Missing values remain unknown, not inferred
-from the host layout or from a field's `elementStride: 0`. This explicit API does
-not yet gate GPU uploads or pipeline creation, and does not widen `GpuPod`.
+`reflect::compile_reflected` runs the native helper `gust-slang-reflect`
+(`scripts/probes/slang-layout.cpp`, built by `scripts/build-slang-reflect.ps1`
+against the installed Slang SDK). The helper links one entry point for one target
+through the Slang API, emits the artifact, and walks the *same linked program's*
+`TypeLayoutReflection` to write a schema-1 JSON record: compiler build tag, target,
+entry point, source and artifact FNV-1a fingerprints, compute workgroup size, and for
+every global structured buffer its name, descriptor slot and space, access, element
+stride, and the element type with size, alignment, stride, scalar kind, and nested
+fields (name, offset, size, type). Anything outside StorageV1 (vectors, matrices,
+non-32-bit scalars, arrays, counters, entry-point resources, uniform parameters,
+binding arrays) makes the helper fail with a message instead of emitting a partial
+record. `CompiledReflection::from_output` re-derives both fingerprints, rejects
+identity or schema mismatches, decodes SPIR-V structurally, and requires every layout
+field to be present.
+
+`Reflection::cross_check_kernel` then compares the descriptor with that evidence:
+no duplicate names or slots on either side, one compiler resource per storage
+parameter and none left over, equal group/binding/access, and
+`cross_check_pod`-style recursive equality of field identity, offset, size,
+alignment, and stride down to scalars. The private `HeadlessDevice::compile_kernel`
+(reached through `cached_kernel`) calls both on every pipeline-cache miss and refuses
+to build the pipeline on any error; the WGSL it feeds to wgpu is the helper's
+artifact, so the executed shader and the reflected layout come from one compilation.
+The cache key is descriptor identity (`&'static` source and parameter slices plus
+entry point), so a descriptor whose contract differs from a cached one produces a
+different key, misses, and is checked before it can run (see
+`crates/gpu-dialect-wgpu/tests/reflection.rs`). The helper's SPIR-V is byte-identical
+to `slang::compile_spirv`; its WGSL differs from `slang::compile_wgsl` only in line
+endings.
+
+`reflect::reflect` and `Reflection::from_json` still read `slangc -reflection-json`.
+That CLI record omits aggregate size, alignment, and buffer stride in the tested
+Slang 2026.13.1, so `cross_check_pod` on it returns an explicitly partial report
+(`aggregate_size_verified`, `alignment_verified`, `element_stride_verified` false).
+It is kept as inspectable evidence and is not consulted by the runtime. Missing
+values are never inferred from the host layout. Nothing widens `GpuPod`.
 
 ## Compiler process boundary
 

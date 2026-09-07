@@ -96,8 +96,10 @@ Do not wait for Codex during normal local swarm work.
 - Shadow signatures exist for Rust checking; their bodies are not a CPU execution
   contract. No `.cpu()` wrappers or CPU fallback. Independent host test references
   and intentional future CPU nodes are different things and remain allowed.
-- Do not claim compiler reflection: bindings and restricted POD layouts are assigned
-  by the macro. Reflection was explicitly deferred by the owner.
+- Do not claim compiler reflection in the macro: bindings and restricted POD layouts
+  are assigned by the macro. The runtime verifies them against Slang's reflection
+  through the native helper before creating a pipeline (D17); that check is a gate,
+  not a source of bindings.
 - Portable behavior is required; native accelerations need capability gates and
   the same visible semantics. No GPU inter-workgroup spin waits.
 - Prefer a diagnostic over silently translating unsupported Rust semantics.

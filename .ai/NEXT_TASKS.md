@@ -111,21 +111,29 @@ mapping tests); `cargo test -p gpu-dialect-macros` 20 passed (marker goldens);
 `cargo test -p gpu-dialect-wgpu --test semantics` 2 passed on RTX 5090.
 Verify: repeat probes and intentional failing input; no silent skips.
 
-## T06 — P1, authorized: Slang reflection / broader shadows
+## T06 — P1: Slang reflection / broader shadows — COMPLETE
 
-Goal: compiler-authoritative layouts before uniforms/textures/samplers/vectors expand
-the runtime ABI. Why: current hand-classified metadata is only a bootstrap contract.
-Owner lifted the deferral on 2026-09-07. Slice 1 adds the core JSON parser,
-`reflect`, and explicit `cross_check_pod` API with positive/negative comparisons.
-Compiler JSON supplies field offsets/sizes and resource bindings. The installed
-compiler omits aggregate size/alignment/storage stride for the tested resources;
-coverage reports must not claim those properties verified.
-
-Remaining: obtain authoritative aggregate size, alignment, and stride evidence
-before enforcing reflection at runtime or expanding shadows. Do not infer these
-from host metadata. Files for later work: core reflection/ABI, macro descriptors,
-wgpu bindings. Full T06 completion still requires complete target layout checks
-and actual GPU upload/readback; slice 1 alone does not replace the bootstrap ABI.
+Status: complete (2026-09-08, D17). Goal: compiler-authoritative layouts before
+uniforms/textures/samplers/vectors expand the runtime ABI. Why: hand-classified
+metadata was only a bootstrap contract.
+Slice 1 (2026-09-07): core JSON parser, `reflect`, explicit `cross_check_pod` with
+positive/negative comparisons. The CLI JSON omits aggregate size/alignment/stride, so
+that path reports explicitly partial coverage and stays as inspectable evidence only.
+Slice 2 (2026-09-08): native helper `gust-slang-reflect` (`scripts/probes/
+slang-layout.cpp`, `scripts/build-slang-reflect.ps1`) compiles and reflects one
+linked program through the Slang API and emits complete StorageV1 layouts or fails;
+`reflect::compile_reflected` + `Reflection::cross_check_kernel` verify names, slots,
+access, workgroup size and every nested offset/size/alignment/stride; the wgpu
+runtime gates every pipeline-cache miss on that check and executes the helper's WGSL.
+Tests: core 5→9, new GPU `crates/gpu-dialect-wgpu/tests/reflection.rs` (4). Full
+`verify.ps1 -Full` passed; it now builds the helper first.
+Not done (by design): textures, samplers, uniforms, vectors/matrices, multiple
+binding groups, specialization — each needs its own reflected evidence before it
+enters the runtime contract. Follow-ups: exported `.rs` host snippets still show the
+ungated `compile_wgsl` path; consider a content-hash `KernelCacheKey` if descriptors
+ever stop being `&'static`.
+Verify: `cargo test -p gpu-dialect --test reflection` and
+`cargo test -p gpu-dialect-wgpu --test reflection`.
 
 ## T07 — P2: First explicit staged graph proof — COMPLETE
 
@@ -170,3 +178,45 @@ Not done (by design): freelists, compaction, entity IDs/generations, atomics, GP
 count generation beyond clamping (the dialect has no atomics or loops), culling,
 rendering. Open follow-ups: a growth benchmark separating allocate/copy/submit, and
 multi-buffer pools (SoA) once a second engine user needs them.
+
+## T09 — P1, authorized: bounded loops in the dialect
+
+Status: not claimed. Owner pre-authorized (2026-09-08) as the first of the ordered
+compiler extensions: loops, then atomics (T10), then standard-prelude lowering (T11).
+Goal: `for i in a..b` (and `..=`) over 32-bit integer ranges, plus `while` with a
+provable local bound, lowered to Slang `for`/`while` with a per-loop iteration budget
+so a kernel can never spin unboundedly (AGENTS: no inter-workgroup spin waits; a GPU
+thread must always terminate). Why: every engine proof after T08 (culling, compaction,
+prefix sums, neighbour loops) needs iteration; today the validator rejects all loops.
+Contract to write first (in `docs/ARCHITECTURE.md` "Translation stability" and a
+D18): supported forms, `break`/`continue` policy, loop-variable typing (explicit
+`u32`/`i32` only, no inference), nested-loop limit, and the diagnostic for
+`loop {}`, iterator adaptors, `for x in buffer`, and non-literal-bounded `while`.
+Done means: validator rules with single-cause rejection tests; emitter change;
+reviewed golden `tests/fixtures/loops.{rs,slang}`; both targets compile;
+`spirv-val`; a real-GPU differential test (e.g. per-element prefix sum over a
+bounded window and a nested 2-level loop) at 1/63/64/65/257 elements; no
+regression in existing goldens. Files: macro `validate.rs`, `slang.rs`,
+`regression_tests.rs`; new fixture; new wgpu test.
+Verify: `cargo test -p gpu-dialect-macros` then `cargo test --workspace`.
+
+## T10 — P2, authorized: atomics on `RWStructuredBuffer<u32|i32>`
+
+Status: not claimed; depends on T09. Goal: a small proven set — `atomic_add`,
+`atomic_min`/`max`, `atomic_exchange`, `atomic_compare_exchange` — as explicit
+methods on buffer elements, lowered to Slang `InterlockedAdd`/... and verified on
+WGSL (`atomicAdd` on `atomic<u32>` storage) and SPIR-V. Why: GPU-side active-count
+generation and compaction (T08 follow-ups, culling) need them. Contract first:
+portable memory-order semantics (relaxed only), which element types, no atomics on
+struct fields until layout evidence exists, host-side buffer declaration changes if
+WGSL requires `atomic<T>` storage types. Done means the same six-layer evidence as
+T09 plus a contention test (257 threads incrementing one counter equals 257).
+
+## T11 — P2, authorized: standard-prelude lowering
+
+Status: not claimed; depends on T09/T10 for its tests. Goal: either lower or
+fail-close the remaining std-prelude names that still pass the validator in helper
+*signatures* (`Result<T, E>`, tuples, slices) — see T03 "Still open". Deterministic
+lowering follows the D14 `Option` precedent (Slang type, generic helpers, reviewed
+golden, GPU test); anything not lowered gets a type-name allowlist diagnostic.
+Done means no std-prelude type name can reach `slangc` unlowered.
