@@ -15,6 +15,16 @@ and unsupported reasons. The initial `.ai/VALIDATION.json` records local command
 outcomes, versions in stdout, and exported SPIR-V hashes; it is not that full
 cross-target capability matrix. Missing tools cannot count as successful probes.
 
+## Capability probe records
+
+`gpu_dialect::slang::probe(target)` compiles a known-good minimal compute kernel to
+`target` and returns a `TargetProbe { target, supported, detail }` record. `supported`
+is true only when `slangc` actually emitted the target; `detail` carries the success
+marker or the compiler diagnostic on failure. This is the first machine-readable
+capability record: downstream claims must cite a probe record, not an assumption.
+The probe is capability evidence, not a correctness test. Cross-target discovery
+(DXIL, Metal, browser WebGPU) and adapter/feature capture are later T05 slices.
+
 ## Resource baseline
 
 Keep element data in `StructuredBuffer<T>` / `RWStructuredBuffer<T>` with fixed-size

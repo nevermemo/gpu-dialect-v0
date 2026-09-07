@@ -205,6 +205,44 @@ pub fn write_source(kernel: &KernelDescriptor, path: impl AsRef<Path>) -> Result
     fs::write(path, kernel.slang_source).map_err(Error::Io)
 }
 
+/// Machine-readable record of whether the installed Slang compiler can emit a
+/// target. Capability claims must follow this evidence, not assumption.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TargetProbe {
+    /// The probed target.
+    pub target: Target,
+    /// Whether `slangc` compiled the known-good probe kernel to this target.
+    pub supported: bool,
+    /// Evidence: a success marker, or the compiler diagnostic on failure.
+    pub detail: String,
+}
+
+/// A minimal, known-good compute kernel used only to probe target capability.
+const PROBE_KERNEL: &str = concat!(
+    "[shader(\"compute\")]\n",
+    "[numthreads(1, 1, 1)]\n",
+    "void gpu_probe_entry(uint3 id : SV_DispatchThreadID) {}\n",
+);
+
+/// Probe whether `slangc` can emit `target` by compiling a known-good kernel.
+///
+/// This is capability evidence, not a correctness test: it records whether the
+/// target is supported and, if not, why, so downstream claims can cite it.
+pub fn probe(target: Target) -> TargetProbe {
+    match compile_source(PROBE_KERNEL, "gpu_probe_entry", target) {
+        Ok(_) => TargetProbe {
+            target,
+            supported: true,
+            detail: "compiled".to_string(),
+        },
+        Err(error) => TargetProbe {
+            target,
+            supported: false,
+            detail: error.to_string(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +286,18 @@ mod tests {
             Err(Error::Io(_))
         ));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn probe_records_wgsl_capability() {
+        let probe = probe(Target::Wgsl);
+        assert!(probe.supported, "WGSL should compile: {}", probe.detail);
+    }
+
+    #[test]
+    fn probe_records_spirv_capability() {
+        let probe = probe(Target::Spirv);
+        assert!(probe.supported, "SPIR-V should compile: {}", probe.detail);
     }
 
     #[test]
