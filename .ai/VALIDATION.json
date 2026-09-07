@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "started_utc": "2026-09-07T03:54:03.0956115Z",
+  "finished_utc": "2026-09-07T03:55:04.1301455Z",
+  "mode": "full",
+  "passed": true,
+  "failure": null,
+  "scope": "Debug native Vulkan wgpu execution of Slang-generated WGSL; SPIR-V export validation is separate.",
+  "untested": [
+    "browser WebGPU",
+    "Metal",
+    "DXIL",
+    "other GPU vendors",
+    "declared minimum Rust version"
+  ],
+  "checks": [
+    {
+      "program": "rustc",
+      "arguments": [
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout": "rustc 1.98.0 (88d9e12ae 2026-08-18)"
+    },
+    {
+      "program": "slangc",
+      "arguments": [
+        "-version"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "test",
+        "--workspace"
+      ],
+      "exit_code": 0,
+      "stdout": "\nrunning 8 tests\ntest abi::tests::pod_bytes_preserve_scalar_bits ... ok\ntest slang::tests::malformed_compiler_artifacts_are_rejected ... ok\ntest job::tests::completion_state_is_explicit ... ok\ntest abi::tests::scalar_layouts_are_explicit ... ok\ntest spirv::tests::rejects_truncated_instruction ... ok\ntest slang::tests::early_io_failure_also_cleans_owned_files ... ok\ntest slang::tests::never_claims_or_removes_an_existing_directory ... ok\ntest slang::tests::compiler_failure_reports_diagnostics_and_cleans_owned_files ... ok\n\ntest result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s\n\n\nrunning 17 tests\ntest validate::tests::rejects_cpu_allocation ... ok\ntest regression_tests::binary_grouping_preserves_rust_precedence ... ok\ntest regression_tests::helper_tail_branches_return_values ... ok\ntest validate::tests::accepts_vector_add_subset ... ok\ntest regression_tests::binding_modes_and_typed_resource_shadowing_fail_explicitly ... ok\ntest regression_tests::generated_symbol_prefixes_are_reserved ... ok\ntest validate::tests::rejects_empty_or_manually_represented_gpu_structs ... ok\ntest regression_tests::unproven_struct_constructor_is_rejected_not_reordered ... ok\ntest regression_tests::unsupported_numeric_width_is_diagnosed ... ok\ntest slang::tests::emits_slang_resources_semantic_and_body ... ok\ntest validate::tests::accepts_non_abi_derives_on_gpu_structs ... ok\ntest expand::tests::descriptor_contains_slang_not_custom_ir_or_spirv ... ok\ntest regression_tests::invalid_kernel_contracts_are_rejected_early ... ok\ntest regression_tests::typed_locals_preserve_numeric_type ... ok\ntest regression_tests::rust_literals_are_lowered_not_copied ... ok\ntest regression_tests::semantics_golden ... ok\ntest regression_tests::unsupported_attributes_and_builtin_receivers_are_diagnosed ... ok\n\ntest result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n\nrunning 5 tests\ntest tests::pipeline_cache_identity_includes_entrypoint ... ok\ntest tests::rejects_resource_layout_that_does_not_match_f32_backend ... ok\ntest tests::renders_descriptor_specific_wgpu_source ... ok\ntest tests::rejects_incorrect_binding_count_before_gpu_work ... ok\ntest tests::shared_source_entrypoints_execute_distinct_pipelines ... ok\n\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.59s\n\n\nrunning 2 tests\ntest semantics_compile_to_both_targets ... ok\ntest translated_semantics_execute_on_gpu ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s\n\n\nrunning 6 tests\ntest tests::cpu_step_has_expected_physics_and_preserves_metadata ... ok\ntest tests::nested_layout_matches_executable_artifacts ... ok\ntest tests::spirv_tools_accepts_struct_artifacts_when_installed ... ok\ntest tests::scalar_read_after_write ... ok\ntest tests::field_read_after_write ... ok\ntest tests::gpu_nested_structs_and_dependent_batches_match_cpu ... ok\n\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.11s\n\n\nrunning 4 tests\ntest tests::cpu_reference_evaluates_all_steps ... ok\ntest tests::descriptor_and_generated_host_code_are_executable ... ok\ntest tests::spirv_tools_accepts_artifact_when_installed ... ok\ntest tests::headless_gpu_matches_cpu_reference ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s\n\n\nrunning 4 tests\ntest tests::cpu_reference_runs_the_full_pipeline ... ok\ntest tests::descriptor_and_generated_host_code_are_executable ... ok\ntest tests::spirv_tools_accepts_artifact_when_installed ... ok\ntest tests::headless_gpu_matches_cpu_reference ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s\n\n\nrunning 4 tests\ntest tests::descriptors_cover_distinct_types_helpers_and_bindings ... ok\ntest tests::struct_layouts_are_distinct_and_storage_compatible ... ok\ntest tests::dependent_multi_dispatch_pipeline_matches_cpu ... ok\ntest tests::every_stage_compiles_to_wgsl_and_valid_spirv ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s\n\n\nrunning 3 tests\ntest tests::descriptor_is_slang_first_and_reflects_bindings ... ok\ntest tests::slang_compiles_to_valid_spirv_and_readable_wgsl ... ok\ntest tests::rust_to_slang_executes_on_headless_wgpu ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.11s\n\n\nrunning 4 tests\ntest crates\\gpu-dialect\\src\\lib.rs - (line 10) - compile fail ... ok\ntest crates\\gpu-dialect\\src\\lib.rs - (line 18) - compile fail ... ok\ntest crates\\gpu-dialect\\src\\lib.rs - (line 29) - compile fail ... ok\ntest crates\\gpu-dialect\\src\\lib.rs - (line 40) - compile fail ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "run",
+        "--quiet",
+        "-p",
+        "vector-add"
+      ],
+      "exit_code": 0,
+      "stdout": "Rust -> Slang -> WGSL -> wgpu (plus SPIR-V export)\nkernel: vector_add::add\nadapter: NVIDIA GeForce RTX 5090\nGPU result: [11.0, 22.0, 33.0, 44.0]\ngenerated artifacts: \\\\?\\C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\n\nGenerated Slang:\n// Generated by gpu-dialect from Rust syntax. Slang is the compiler backend.\n\n[[vk::binding(0, 0)]] StructuredBuffer<float> a;\n[[vk::binding(1, 0)]] StructuredBuffer<float> b;\n[[vk::binding(2, 0)]] RWStructuredBuffer<float> out;\n\n[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid gpu_vector_add_add(uint3 id : SV_DispatchThreadID)\n{\n    uint __gpu_len_a;\n    uint __gpu_stride_a;\n    a.GetDimensions(__gpu_len_a, __gpu_stride_a);\n    uint __gpu_len_b;\n    uint __gpu_stride_b;\n    b.GetDimensions(__gpu_len_b, __gpu_stride_b);\n    uint __gpu_len_out;\n    uint __gpu_stride_out;\n    out.GetDimensions(__gpu_len_out, __gpu_stride_out);\n    var i = id.x;\n    if ((i < __gpu_len_out))\n    {\n        out[i] = (a[i] + b[i]);\n    }\n}\n"
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "run",
+        "--quiet",
+        "-p",
+        "polynomial"
+      ],
+      "exit_code": 0,
+      "stdout": "Polynomial benchmark\nkernel: polynomial::evaluate\nadapter: NVIDIA GeForce RTX 5090\nelements: 262144\noperations per element: 4 mul, 1 sub, 2 add\nhardware GPU timestamps: true\npipeline cache: PipelineCacheStats { entries: 1, hits: 82, misses: 1 }\nCPU reference: 3.8438ms\nGPU end-to-end: 26.0724ms\nGPU persistent dispatch: 830.19µs\nGPU batch (20 dispatches): 3.41ms total, 170.5µs per dispatch\nGPU input upload (1048576 bytes): 951.3µs\nGPU batch timestamp: 119.584µs total, 5.979µs per dispatch\nGPU output readback (1048576 bytes): 1.7408ms\nCPU is 6.78x faster than GPU end-to-end\nGPU persistent dispatch is 4.63x faster than CPU\nbatching improves host throughput by 4.87x\nGPU asynchronous batch submission: 2.4319ms\njob status after submission: Pending\noverlapped CPU reference: 3.878ms\njob status after CPU work: Complete\nfinal job wait: 14.4µs\nmaximum absolute error: 2.3841858e-7\npersistent maximum absolute error: 2.3841858e-7\ngenerated wgpu source: \\\\?\\C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\polynomial__evaluate.rs"
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "run",
+        "--quiet",
+        "-p",
+        "signal-pipeline"
+      ],
+      "exit_code": 0,
+      "stdout": "Signal pipeline benchmark\nkernel: signal_pipeline::transform\nadapter: NVIDIA GeForce RTX 5090\nelements: 262144\noperations per element: 3 mul, 1 sub, 2 add, 1 div\nhardware GPU timestamps: true\npipeline cache: PipelineCacheStats { entries: 1, hits: 82, misses: 1 }\nCPU reference: 8.9225ms\nGPU end-to-end: 26.9306ms\nGPU persistent dispatch: 740.645µs\nGPU batch (20 dispatches): 3.9097ms total, 195.485µs per dispatch\nGPU input upload (5242880 bytes): 3.3631ms\nGPU batch timestamp: 120.608µs total, 6.03µs per dispatch\nGPU output readback (1048576 bytes): 1.3606ms\nCPU is 3.02x faster than GPU end-to-end\nGPU persistent dispatch is 12.05x faster than CPU\nbatching improves host throughput by 3.79x\nGPU asynchronous batch submission: 2.6685ms\njob status after submission: Pending\noverlapped CPU reference: 8.9424ms\njob status after CPU work: Complete\nfinal job wait: 34.4µs\nmaximum absolute error: 7.6293945e-6\npersistent maximum absolute error: 7.6293945e-6\ngenerated wgpu source: \\\\?\\C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\signal_pipeline__transform.rs"
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "run",
+        "--quiet",
+        "-p",
+        "particle-step"
+      ],
+      "exit_code": 0,
+      "stdout": "Particle step: 1048576 particles on NVIDIA GeForce RTX 5090\nParticle storage ABI: 28 bytes, alignment 4, stride 28\nCPU step including output allocation: 50.5169ms\nGPU resident step + snapshot, host time: 1.6182ms\nGPU resident step + snapshot, hardware time: Some(116.608µs)\nNested fields, integer metadata, energy output, and dependent snapshot match the CPU reference.\ngenerated shader artifacts: \\\\?\\C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\particles__step.rs\ngenerated shader artifacts: \\\\?\\C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\particles__snapshot.rs"
+    },
+    {
+      "program": "cargo",
+      "arguments": [
+        "run",
+        "--quiet",
+        "-p",
+        "typed-pipeline"
+      ],
+      "exit_code": 0,
+      "stdout": "Typed sensor pipeline: 262144 elements\nadapter: NVIDIA GeForce RTX 5090\nshader entry points: 3\nordered dispatches per batch: 3\ndistinct GPU struct types: 6\nCPU reference: 22.1805ms\nGPU end-to-end: 1.2750489s\npipeline cache: PipelineCacheStats { entries: 3, hits: 0, misses: 3 }\ngenerated artifacts: \\\\?\\C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\nfirst report: Some(Report { adjusted_score: 1.9077706, confidence: 0.887775, sensor_id: 10000, action: 1 })"
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--version"
+      ],
+      "exit_code": 0,
+      "stdout": "SPIRV-Tools v2026.3 v2026.3.rc1-0-gb707790a\nTargets:\n  SPIR-V 1.0\n  SPIR-V 1.1\n  SPIR-V 1.2\n  SPIR-V 1.3\n  SPIR-V 1.4\n  SPIR-V 1.5\n  SPIR-V 1.6\n  SPIR-V 1.2 (under OpenCL 2.2 Full Profile semantics)\n  SPIR-V 1.0 (under Vulkan 1.0 semantics)\n  SPIR-V 1.3 (under Vulkan 1.1 semantics)\n  SPIR-V 1.4 (under Vulkan 1.1 semantics)\n  SPIR-V 1.5 (under Vulkan 1.2 semantics)\n  SPIR-V 1.6 (under Vulkan 1.3 semantics) SPIR-V 1.6 (under Vulkan 1.4 semantics)"
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--target-env",
+        "vulkan1.2",
+        "C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\particles__snapshot.spv"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--target-env",
+        "vulkan1.2",
+        "C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\particles__step.spv"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--target-env",
+        "vulkan1.2",
+        "C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\polynomial__evaluate.spv"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--target-env",
+        "vulkan1.2",
+        "C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\sensor_pipeline__calibrate.spv"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--target-env",
+        "vulkan1.2",
+        "C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\sensor_pipeline__classify.spv"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--target-env",
+        "vulkan1.2",
+        "C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\sensor_pipeline__finalize.spv"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--target-env",
+        "vulkan1.2",
+        "C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\signal_pipeline__transform.spv"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    },
+    {
+      "program": "spirv-val",
+      "arguments": [
+        "--target-env",
+        "vulkan1.2",
+        "C:\\Users\\micro\\Desktop\\gpu-dialect-v0\\generated-wgpu\\vector_add__add.spv"
+      ],
+      "exit_code": 0,
+      "stdout": ""
+    }
+  ],
+  "spirv_artifacts": [
+    {
+      "file": "particles__snapshot.spv",
+      "sha256": "20b739de6dbc2854842444b027012e7f03c1bc14d13004a68d97061d55b8963d",
+      "validation_target": "vulkan1.2",
+      "status": "passed"
+    },
+    {
+      "file": "particles__step.spv",
+      "sha256": "6b80d7c5b5f547ea9a4bb35f9008add882ca80a3f5224f7db196bd24dcfe288f",
+      "validation_target": "vulkan1.2",
+      "status": "passed"
+    },
+    {
+      "file": "polynomial__evaluate.spv",
+      "sha256": "8a1df838de75b8fc8ecebd6f1b94888d3698e3752be2aa5178a2f04451b79b9c",
+      "validation_target": "vulkan1.2",
+      "status": "passed"
+    },
+    {
+      "file": "sensor_pipeline__calibrate.spv",
+      "sha256": "00a558ee555bc27ef5fff414191783fa529907c67819cf4e36cc8a433affd77c",
+      "validation_target": "vulkan1.2",
+      "status": "passed"
+    },
+    {
+      "file": "sensor_pipeline__classify.spv",
+      "sha256": "0b6e2a59aede37891be3456b36104bb68add6b403e3afce265b256b5102258c1",
+      "validation_target": "vulkan1.2",
+      "status": "passed"
+    },
+    {
+      "file": "sensor_pipeline__finalize.spv",
+      "sha256": "6efb4fc88e294b11f770b3de9854e538286ceab8de3dd6f4252aef4a0d2e5169",
+      "validation_target": "vulkan1.2",
+      "status": "passed"
+    },
+    {
+      "file": "signal_pipeline__transform.spv",
+      "sha256": "52af2bf8026ca9598d10938034b66b4d97f1f30212eeafe6b310f09792845be5",
+      "validation_target": "vulkan1.2",
+      "status": "passed"
+    },
+    {
+      "file": "vector_add__add.spv",
+      "sha256": "4cedd6be0382b044cdaf8da5b4c7579f4d821bb4bab1d55cc4c5701ca9be4807",
+      "validation_target": "vulkan1.2",
+      "status": "passed"
+    }
+  ]
+}

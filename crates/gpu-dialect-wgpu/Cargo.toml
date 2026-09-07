@@ -1,0 +1,12 @@
+[package]
+name = "gpu-dialect-wgpu"
+description = "Cached headless wgpu backend for Rust-to-Slang kernels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gpu-dialect.workspace = true
+pollster.workspace = true
+wgpu.workspace = true

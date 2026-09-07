@@ -1,0 +1,11 @@
+[package]
+name = "typed-pipeline"
+description = "Multi-struct, multi-kernel Rust-to-Slang dispatch pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gpu-dialect.workspace = true
+gpu-dialect-wgpu.workspace = true
