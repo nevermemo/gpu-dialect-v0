@@ -127,13 +127,23 @@ from host metadata. Files for later work: core reflection/ABI, macro descriptors
 wgpu bindings. Full T06 completion still requires complete target layout checks
 and actual GPU upload/readback; slice 1 alone does not replace the bootstrap ABI.
 
-## T07 — P2: First explicit staged graph proof
+## T07 — P2: First explicit staged graph proof — COMPLETE
 
-Status: planned. Goal: CPU settings → two GPU stages → small summary, with inspectable
-dependencies and transfer sizes. Why: bridge current batches toward GUST execution.
-Files: new bounded example plus minimal runtime API if needed. Dependencies: S1 stable.
-Done: correct output, intermediate residency, invalid dependency failure, no automatic
-inference claim. Verify: runnable example and ordering/transfer tests.
+Status: complete (2026-09-07). Goal: CPU settings → two GPU stages → small summary,
+with inspectable dependencies and transfer sizes. Why: bridge current batches toward
+GUST execution.
+Done: `gpu_dialect_wgpu::StagedGraph` (`crates/gpu-dialect-wgpu/src/graph.rs`) with
+upload/dispatch/readback nodes, host-declared dependencies validated against actual
+buffer hazards (`GraphDependencyOrder`, `GraphMissingDependency`), uploads encoded as
+ordered copies, `GraphReport` with per-transfer bytes, dispatch/workgroup counts, and
+resident bytes. `examples/staged-graph`: settings upload → `transform` → `summarize`
+(8:1 reduction via a struct-returning helper) → summary readback; tests cover CPU
+parity for N in {0,1,7,8,9,63,64,65,257,1000}, exact transfer/resident byte counts,
+ordering across two settings updates, and seven rejection cases. Runtime addition:
+`BufferBinding::independent_length()` (opt-in; `IndependentLengthEmpty` error).
+`verify.ps1` now runs six examples and expects ten SPIR-V exports.
+Not done (by design, see D15): dependency inference, reordering, transfer planning,
+CPU nodes, continuations. Verify: `cargo test -p staged-graph` and the workspace.
 
 ## T08 — P2: Engine component pool / indirect workload proofs
 
