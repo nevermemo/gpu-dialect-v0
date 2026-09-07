@@ -51,6 +51,23 @@ pub fn emit_kernel(
         writeln!(output, "uint __gust_not(uint value) {{ return ~value; }}\n").unwrap();
     }
 
+    // Rust `Option<T>` lowers to Slang's `Optional<T>`. Generic helpers let the
+    // payload type be inferred at each use instead of requiring annotations.
+    let mut option = OptionUsage(false);
+    option.visit_item_mod(module);
+    if option.0 {
+        writeln!(
+            output,
+            "Optional<T> __gust_some<T>(T value) {{ return value; }}"
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "T __gust_unwrap_or<T>(Optional<T> value, T fallback) {{ if (value.hasValue) {{ return value.value; }} return fallback; }}\n"
+        )
+        .unwrap();
+    }
+
     for item in items {
         if let syn::Item::Struct(item) = item {
             emit_struct(&mut output, item)?;
@@ -221,9 +238,13 @@ fn emit_statements(
                 .unwrap();
             }
             syn::Stmt::Expr(expression, semicolon) => match expression {
-                syn::Expr::If(expression) => {
-                    emit_if(output, expression, indent, is_tail && semicolon.is_none())?
-                }
+                syn::Expr::If(expression) => emit_if(
+                    output,
+                    expression,
+                    indent,
+                    is_tail && semicolon.is_none(),
+                    index,
+                )?,
                 syn::Expr::Block(expression) => {
                     writeln!(output, "{padding}{{").unwrap();
                     emit_statements(
@@ -355,15 +376,43 @@ fn emit_if(
     expression: &syn::ExprIf,
     indent: usize,
     return_tail: bool,
+    index: usize,
 ) -> syn::Result<()> {
     let padding = "    ".repeat(indent);
-    writeln!(
-        output,
-        "{padding}if ({})",
-        emit_expression(&expression.cond)?
-    )
-    .unwrap();
-    writeln!(output, "{padding}{{").unwrap();
+    if let syn::Expr::Let(binding) = expression.cond.as_ref() {
+        // `if let Some(x) = value`: evaluate the scrutinee once into a reserved
+        // temporary, then bind the payload inside the taken branch.
+        let name = crate::validate::option_pattern(&binding.pat).ok_or_else(|| {
+            syn::Error::new_spanned(
+                &binding.pat,
+                "`if let` supports only the `Some(identifier)` pattern",
+            )
+        })?;
+        let temporary = format!("__gust_opt_{index}");
+        writeln!(
+            output,
+            "{padding}var {temporary} = {};",
+            emit_expression(&binding.expr)?
+        )
+        .unwrap();
+        writeln!(output, "{padding}if ({temporary}.hasValue)").unwrap();
+        writeln!(output, "{padding}{{").unwrap();
+        writeln!(
+            output,
+            "{}var {} = {temporary}.value;",
+            "    ".repeat(indent + 1),
+            name.ident
+        )
+        .unwrap();
+    } else {
+        writeln!(
+            output,
+            "{padding}if ({})",
+            emit_expression(&expression.cond)?
+        )
+        .unwrap();
+        writeln!(output, "{padding}{{").unwrap();
+    }
     emit_statements(
         output,
         &expression.then_branch.stmts,
@@ -372,25 +421,35 @@ fn emit_if(
     )?;
     writeln!(output, "{padding}}}").unwrap();
     if let Some((_, alternative)) = &expression.else_branch {
-        if let syn::Expr::If(nested) = alternative.as_ref() {
-            write!(output, "{padding}else ").unwrap();
-            emit_if(output, nested, indent, return_tail)?;
-        } else {
-            writeln!(output, "{padding}else").unwrap();
-            writeln!(output, "{padding}{{").unwrap();
-            match alternative.as_ref() {
-                syn::Expr::Block(block) => {
-                    emit_statements(output, &block.block.stmts, indent + 1, return_tail)?
-                }
-                other => writeln!(
-                    output,
-                    "{}{};",
-                    "    ".repeat(indent + 1),
-                    emit_expression(other)?
-                )
-                .unwrap(),
+        match alternative.as_ref() {
+            syn::Expr::If(nested) if !matches!(nested.cond.as_ref(), syn::Expr::Let(_)) => {
+                write!(output, "{padding}else ").unwrap();
+                emit_if(output, nested, indent, return_tail, index)?;
             }
-            writeln!(output, "{padding}}}").unwrap();
+            syn::Expr::If(nested) => {
+                // `else if let` needs a scope of its own for the scrutinee temporary.
+                writeln!(output, "{padding}else").unwrap();
+                writeln!(output, "{padding}{{").unwrap();
+                emit_if(output, nested, indent + 1, return_tail, index)?;
+                writeln!(output, "{padding}}}").unwrap();
+            }
+            other => {
+                writeln!(output, "{padding}else").unwrap();
+                writeln!(output, "{padding}{{").unwrap();
+                match other {
+                    syn::Expr::Block(block) => {
+                        emit_statements(output, &block.block.stmts, indent + 1, return_tail)?
+                    }
+                    other => writeln!(
+                        output,
+                        "{}{};",
+                        "    ".repeat(indent + 1),
+                        emit_expression(other)?
+                    )
+                    .unwrap(),
+                }
+                writeln!(output, "{padding}}}").unwrap();
+            }
         }
     }
     Ok(())
@@ -418,6 +477,9 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             binary.op.to_token_stream(),
             emit_expression(&binary.right)?
         ),
+        syn::Expr::Call(call) if is_some_constructor(call) => {
+            format!("__gust_some({})", emit_expression(&call.args[0])?)
+        }
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,
@@ -449,7 +511,21 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             let receiver = emit_expression(&call.receiver)?;
             format!("__gpu_len_{receiver}")
         }
+        syn::Expr::MethodCall(call) if call.method == "is_some" => {
+            format!("{}.hasValue", emit_expression(&call.receiver)?)
+        }
+        syn::Expr::MethodCall(call) if call.method == "is_none" => {
+            format!("(!{}.hasValue)", emit_expression(&call.receiver)?)
+        }
+        syn::Expr::MethodCall(call) if call.method == "unwrap_or" && call.args.len() == 1 => {
+            format!(
+                "__gust_unwrap_or({}, {})",
+                emit_expression(&call.receiver)?,
+                emit_expression(&call.args[0])?
+            )
+        }
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
+        syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
         syn::Expr::Path(path) => path.path.to_token_stream().to_string().replace(" :: ", "."),
         syn::Expr::Return(expression) => match &expression.expr {
             Some(value) => format!("return {}", emit_expression(value)?),
@@ -484,6 +560,48 @@ impl<'ast> Visit<'ast> for NotUsage {
     fn visit_expr_unary(&mut self, expression: &'ast syn::ExprUnary) {
         self.0 |= matches!(expression.op, syn::UnOp::Not(_));
         syn::visit::visit_expr_unary(self, expression);
+    }
+}
+
+fn is_some_constructor(call: &syn::ExprCall) -> bool {
+    matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("Some"))
+        && call.args.len() == 1
+}
+
+/// Any Option feature in the module; both generic helpers are then emitted.
+struct OptionUsage(bool);
+
+impl<'ast> Visit<'ast> for OptionUsage {
+    fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+        self.0 |= ty
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Option");
+        syn::visit::visit_type_path(self, ty);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        self.0 |= is_some_constructor(call);
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        self.0 |= matches!(
+            call.method.to_string().as_str(),
+            "is_some" | "is_none" | "unwrap_or"
+        );
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_let(&mut self, expression: &'ast syn::ExprLet) {
+        self.0 = true;
+        syn::visit::visit_expr_let(self, expression);
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        self.0 |= path.path.is_ident("None");
+        syn::visit::visit_expr_path(self, path);
     }
 }
 
@@ -531,6 +649,7 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         "i32" | "int" => "int".to_owned(),
         "u32" | "uint" => "uint".to_owned(),
         "bool" => "bool".to_owned(),
+        "Option" => "Optional".to_owned(),
         "UVec3" | "SV_DispatchThreadID" => "uint3".to_owned(),
         name => name.to_owned(),
     };

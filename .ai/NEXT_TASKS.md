@@ -51,6 +51,12 @@ Remaining frontier (not claimed): std-prelude type names are not banned, so
 `Option<uint> maybe()`, failing only in slangc (verified by probe 2026-09-07). A
 fix needs an allowlist of type names (prelude + module structs) per the validator
 contract, plus a test-order update for `unsupported_effects_are_rejected`.
+Update (slice 4, 2026-09-07): the owner chose lowering over banning. `Option<T>` now
+lowers to Slang `Optional<T>` (see D14 and ARCHITECTURE "Translation stability");
+the probe above is now a supported program. Still open: other std-prelude names in
+helper *signatures* (e.g. `fn f(r: Result<uint, uint>)`) pass the validator and
+fail only in slangc; they cannot be constructed (`Ok`/`Err` calls are rejected), so
+the leak is limited to signatures. A type-name allowlist remains the fix if wanted.
 Verify: `cargo test -p gpu-dialect-macros` and `cargo test --workspace`.
 
 ## T04 — P1: Resolved numeric semantics and struct construction — COMPLETE

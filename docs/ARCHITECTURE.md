@@ -245,6 +245,20 @@ the translator previously passed the Rust spelling through to a `slangc` failure
 pipeline creation. `bool` remains a supported type but not a cast target: rustc
 already rejects numeric-to-`bool` casts, and `bool`-to-integer casts stay unproven.
 
+Rust `Option<T>` is lowered deterministically to Slang's built-in `Optional<T>`,
+which both targets legalize to a `{ value, hasValue }` struct. When a module uses
+Option, the compilation unit gains two generic helpers, `__gust_some<T>` and
+`__gust_unwrap_or<T>`, so payload types are inferred at each use without annotations.
+`Some(x)`, `None`, `.is_some()`, `.is_none()`, and `.unwrap_or(default)` map
+directly; `if let Some(x) = value { .. } else { .. }` evaluates the scrutinee once into
+a reserved `__gust_opt_N` temporary and binds the payload inside the taken branch. The
+payload must be a supported scalar or a module struct. Option is a local/helper value
+only: it is rejected in struct fields and resource element types because it has no
+proven storage layout, and `.unwrap()`/`.expect()` are rejected because Rust panics
+there while GPU code cannot. `Result`, `match`, `?`, let chains, and other patterns
+remain rejected. The `option` fixture locks the Slang, both targets compile, and a
+real-GPU test matches an independent host `Option` reference at workgroup boundaries.
+
 The syn translator still lacks rustc-resolved semantics. Inferred integer types,
 overflow, casts outside their safe input domain, evaluation ordering for effectful
 expressions, resource aliases, and comprehensive identifier hygiene need further

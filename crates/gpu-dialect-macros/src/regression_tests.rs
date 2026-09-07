@@ -42,6 +42,68 @@ fn numeric_golden() {
 }
 
 #[test]
+fn option_golden() {
+    let source = translate(include_str!("../../../tests/fixtures/option.rs")).unwrap();
+    assert_eq!(
+        source.replace("\r\n", "\n"),
+        include_str!("../../../tests/fixtures/option.slang").replace("\r\n", "\n")
+    );
+}
+
+#[test]
+fn option_unsafe_forms_are_rejected() {
+    for (source, message) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); let v = o.unwrap(); } }",
+            "panics",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); let v = o.expect(\"x\"); } }",
+            "panics",
+        ),
+        (
+            "mod bad { struct Holder { slot: Option<uint> } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "struct fields",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<Option<uint>>) {} }",
+            "resource element",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<Option<uint>> = None; } }",
+            "payload",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); if let Some(_) = o { } } }",
+            "`Some(identifier)`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); if let None = o { } } }",
+            "`Some(identifier)`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); if let Some(v) = o && v > 0u32 { } } }",
+            "`if let`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<uint>) { let o: Option<uint> = Some(1u32); if let Some(out) = o { } } }",
+            "cannot shadow",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32, 2u32); } }",
+            "one argument",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); let v = o.unwrap_or(1u32, 2u32); } }",
+            "one argument",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
+}
+
+#[test]
 fn generated_symbol_prefixes_are_reserved() {
     for source in [
         "mod bad { #[kernel] fn run(__gpu_len_out: SV_DispatchThreadID) {} }",

@@ -18,6 +18,7 @@ and independent inspection. Chat research is design input, not proof of code sta
 | D11 | Engine proofs before ECS architecture commitment | Pools, dependencies, indirect work, then culling/rendering; no premature mega-buffer |
 | D12 | Manual file-based Codex/local-AI handoff | No local model endpoint or concurrent-agent protocol has been provided |
 | D13 | Preserve non-Git checkout | Baseline hashes and changed-file manifest aid review but are not rollback storage |
+| D14 | Lower `Option<T>` to Slang `Optional<T>` instead of banning std-prelude type names (owner, 2026-09-07) | First VISION "deterministic lowering" row made executable. Bounded to locals and helper signatures with scalar/struct payloads; `Some`/`None`/`is_some`/`is_none`/`unwrap_or`/`if let Some(x)` only. Struct-field and buffer-element Options, `unwrap`/`expect`, `Result`, `match`, and `?` stay rejected until separately proven. Non-32-bit primitives are still not emulated: WGSL lacks them and the storage ABI stays four-byte |
 
 Rejected for this pass: rebuilding the shader backend, crate renaming, automatic
 CPU fallback, presenting manual metadata as Slang reflection, unrestricted Rust
