@@ -39,6 +39,7 @@ uint mask(uint x)
     }
 }
 
+// @rust kernel: semantics::run
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpu_semantics_run(uint3 id : SV_DispatchThreadID)

@@ -14,6 +14,7 @@ struct Pair
 [[vk::binding(5, 0)]] RWStructuredBuffer<int> cast_out;
 [[vk::binding(6, 0)]] RWStructuredBuffer<Pair> pair_out;
 
+// @rust kernel: numeric::run
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gpu_numeric_run(uint3 id : SV_DispatchThreadID)
