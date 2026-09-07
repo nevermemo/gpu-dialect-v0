@@ -1,5 +1,100 @@
 # Current status
 
+## Active: none claimed (2026-09-08)
+
+T06 is complete and committed (below). The owner's standing authorization for the
+ordered compiler extensions — bounded loops, then atomics, then standard-prelude
+lowering — remains in force; the next Builder should claim exactly one of them here
+before editing, write the contract and failing tests first, and keep the commit small.
+
+## T06 — compiler-authoritative StorageV1 layouts (native Slang reflection) — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile)
+under the owner's pre-authorization. Baseline `main` at `59081b2`. Decision D17.
+
+What changed. Slang 2026.13.1's `slangc -reflection-json` omits aggregate size,
+alignment, and buffer stride, so the CLI path could never certify the ABI. The runtime
+now uses a native helper, `gust-slang-reflect` (`scripts/probes/slang-layout.cpp`,
+built by `scripts/build-slang-reflect.ps1` against the Slang SDK in `VULKAN_SDK` or
+`SLANG_SDK`). The helper links one entry point for one target through the Slang API,
+writes the artifact, and walks the *same linked program's* type layouts into a
+schema-1 JSON record (compiler build tag, target, entry, source and artifact FNV-1a
+fingerprints, workgroup size, per-resource slot/space/access/element stride, and the
+recursive element layout with size/alignment/stride/scalar kind/fields). Anything
+outside StorageV1 — vectors, arrays, non-32-bit scalars, counters, entry-point
+resources, uniforms, binding arrays — makes it exit 1 with a message rather than emit
+a partial record.
+
+Core (`crates/gpu-dialect/src/reflect.rs`): `compile_reflected`,
+`compile_reflected_with_helper`, `native_compiler_path` (`GUST_SLANG_REFLECT`, then
+`target/slang-reflect/`, then PATH), `CompiledReflection::from_output` (schema and
+identity checks, fingerprints re-derived in Rust, UTF-8 for WGSL, structural SPIR-V
+decode, empty artifact rejected), `Reflection::read_json(.., complete)` requiring
+every layout field in complete mode, `Reflection::cross_check_kernel` (no duplicate
+names/slots on either side, one compiler resource per storage parameter and none left
+over, equal group/binding/access, recursive field identity/offset/size/alignment/stride),
+new `Error::{HelperUnavailable, Incomplete}`. `slang::decode_spirv` is `pub(crate)`.
+
+Runtime (`crates/gpu-dialect-wgpu/src/lib.rs`): private
+`HeadlessDevice::compile_kernel` (via `cached_kernel`) runs `compile_reflected` +
+`cross_check_kernel` before any wgpu object is created, uses the helper's WGSL as the
+shader source, and returns `Error::Reflection` on any failure; cache counters change
+only on success. Bindings are still macro-assigned; the runtime verifies, it does not
+derive (AGENTS invariant reworded accordingly).
+
+Tooling/docs: `scripts/verify.ps1` builds and version-checks the helper before the
+cargo steps (missing SDK/toolchain is a failure, not a skip). README requirements and
+runtime section, `docs/ARCHITECTURE.md` "Struct ABI", `docs/DECISIONS.md` D17,
+`docs/ROADMAP.md` S2, `AGENTS.md` invariant.
+
+Tests (failing-first where the gate did not exist): core
+`crates/gpu-dialect/tests/reflection.rs` 5→9 — native compilation complete for both
+targets with exact `Outer` layout (size 12, align 4, stride 12) and full-ABI reports;
+missing helper → `HelperUnavailable` naming `GUST_SLANG_REFLECT`; padded `float3`
+fixture → `Compiler(CompilationFailed)` from the helper on both targets (pinned to the
+variant after review); outer size alone does not certify nested sizes on the CLI path.
+GPU `crates/gpu-dialect-wgpu/tests/reflection.rs` (new, 4) — workgroup mismatch fails
+before dispatch with cache (0,0,0) and buffer untouched; renamed resource, wrong
+binding, wrong access, wrong element type, and extra compiler resource each fail with
+the exact expected message; a cached pipeline does not authorize a changed descriptor
+(cache (1,1,1) afterwards); nested-struct + scalar kernel matches the host reference at
+0/1/63/64/65/257 across two dispatches each with cache (1,1,9). Probe (deleted, not
+committed): helper SPIR-V byte-identical to `compile_spirv`; WGSL identical after CRLF
+normalization.
+
+Verification (Rust 1.98.0, Slang 2026.13.1-1-g84792eb15, SPIRV-Tools v2026.3,
+NVIDIA GeForce RTX 5090 / Vulkan, pwsh 7.6.5): `cargo fmt --all -- --check` exit 0;
+`cargo clippy --workspace --all-targets -- -D warnings` exit 0; `cargo test --workspace`
+**107 passed, 0 failed, 0 ignored** (102 unit/integration + 5 doctests; baseline 99).
+`pwsh -File scripts/verify.ps1 -Full`: **GUST verification passed**, 26 checks, seven
+examples, all twelve SPIR-V exports validated, no `generated-wgpu/` drift;
+`.ai/VALIDATION.json` refreshed (2026-09-07T22:50Z). Independent read-only review
+(GUST Verifier): **PASS WITH NOTES**; it also confirmed the helper rejects entry-point
+uniforms, global scalars, binding arrays, `AppendStructuredBuffer`, `half`, array and
+`bool` fields with hard exits, and that `GUST_SLANG_REFLECT=/nonexistent` makes all
+four GPU tests fail loudly. Three low notes fixed in place (wrong symbol name in two
+docs, cache-key wording, test pinned to the compiler variant).
+
+Open follow-ups (not claimed): the exported `generated-wgpu/*.rs` host snippets still
+show `slang::compile_wgsl` without the reflection gate (template at wgpu `lib.rs`
+~502; changing it regenerates twelve derived files); the "same compilation" property
+rests on the helper linking one component — Rust fingerprints prove file↔JSON
+consistency, not provenance; `Error::Incomplete` is defensive and unreachable from the
+native path; the `KernelCacheKey` is pointer identity of `&'static` descriptor slices,
+sound today but worth a content hash if descriptors ever become dynamic.
+
+Next command: claim bounded loops here, then
+`cargo test -p gpu-dialect-macros regression_tests` as the baseline before writing the
+failing validator/emitter tests.
+
+## Historical: T06 claim text (2026-09-08, superseded by the COMPLETE entry above)
+
+Hypothesis at claim time: Slang's native type-layout API supplies the aggregate layout
+metadata missing from CLI JSON. Check the existing native probe on WGSL and SPIR-V
+first; then require complete compiler evidence for the current StorageV1 binding
+contract, including negative mismatches and real GPU upload/readback. Do not infer
+unknown layout values from Rust. Confirmed and delivered as recorded above.
+
 ## T08 — component pool and indirect workload proofs — COMPLETE (2026-09-07)
 
 Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.

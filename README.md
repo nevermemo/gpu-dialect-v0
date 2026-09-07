@@ -23,14 +23,19 @@ The current executable path is:
         │
         └─ proc macro translates the syn syntax tree directly to Slang
                                       │
-                                      ├─ slangc -target wgsl ──> headless wgpu
+                                      ├─ gust-slang-reflect (Slang API) ─> WGSL + layout ─> headless wgpu
+                                      ├─ slangc -target wgsl ──> exported .wgsl
                                       └─ slangc -target spirv -> .spv / SPIRV-Tools
 ```
 
 There is no custom shader IR and no hand-written SPIR-V emitter in this path. A
 kernel descriptor stores generated Slang source plus macro-assigned binding metadata.
-The wgpu backend invokes `slangc` on its first pipeline-cache miss and caches the
-resulting shader module, bind-group layout, pipeline layout, and compute pipeline.
+On its first pipeline-cache miss the wgpu backend runs the native reflection helper,
+which compiles the kernel and reflects the *same linked program* through Slang's
+layout API. The runtime refuses to create the pipeline unless the descriptor's
+names, bindings, access modes, workgroup size, and every nested field offset, size,
+alignment, and stride equal what the compiler reports; on success it caches the
+shader module, bind-group layout, pipeline layout, and compute pipeline.
 
 ## Try it
 
@@ -39,6 +44,12 @@ Requirements:
 - The stable Rust toolchain (this checkout was validated with Rust 1.98.0;
   the manifest's older minimum is not independently verified)
 - `slangc` on `PATH` (tested with Slang 2026.13.1)
+- The native reflection helper, built once with
+  `pwsh -File scripts/build-slang-reflect.ps1` (PowerShell 7). It needs the Slang
+  SDK headers and import library (from `VULKAN_SDK` or `SLANG_SDK`) and a C++
+  toolchain (MSVC on Windows). The runtime finds it in `target/slang-reflect/` or
+  through `GUST_SLANG_REFLECT`; without it every pipeline creation fails with an
+  explicit error rather than skipping the layout check
 - A Vulkan compute adapter for the headless execution tests
 - Optional: `spirv-val` from SPIRV-Tools for external SPIR-V validation
 
@@ -165,6 +176,17 @@ let wgsl = gpu_dialect::slang::compile_wgsl(&descriptor)?;
 Each invocation exclusively creates an isolated temporary directory, captures Slang
 diagnostics, checks SPIR-V structure, and attempts cleanup on every return path. Missing
 `slangc` and compiler failures are reported as normal Rust errors.
+
+`gpu-dialect::reflect` is the layout gate. `compile_reflected` runs the native helper
+(`scripts/probes/slang-layout.cpp`, built by `scripts/build-slang-reflect.ps1`) to
+compile one entry point and reflect the identical linked program; the result carries
+the artifact, its hashes, the compiler build tag, and complete `StorageV1` layouts.
+`Reflection::cross_check_kernel` compares that evidence against the descriptor and
+fails on any difference. The SPIR-V it produces is byte-identical to `compile_spirv`,
+and its WGSL differs from `compile_wgsl` only in line endings. The older
+`reflect`/`Reflection::from_json` path reads `slangc -reflection-json`, which omits
+aggregate size, alignment, and stride; it remains available as explicit partial
+evidence and is not used by the runtime.
 
 The headless backend currently feeds Slang-generated WGSL into wgpu. This keeps
 whole-struct copies compatible with wgpu's shader frontend; Slang-generated SPIR-V
@@ -298,9 +320,9 @@ Golden Slang and a real-GPU semantics fixture live in `tests/fixtures/`; update
 expected output only after reviewing the change and testing both target compilers.
 The [roadmap](docs/ROADMAP.md) prioritizes correctness, actionable diagnostics,
 ABI/capability evidence, and then a small explicit staged-execution proof.
-Slang reflection remains deferred until the subsystem is more stable; it must be
-addressed before broadening resource layouts. New ECS work starts with a small
-GPU-resident component pool, not a full engine rewrite.
+Slang reflection now gates every pipeline for the StorageV1 subset (D17); broader
+resource layouts need the same compiler evidence before they enter the runtime.
+New ECS work starts with a small GPU-resident component pool, not a full engine rewrite.
 
 See [the architecture note](docs/ARCHITECTURE.md) for the boundary decisions and
 their rationale.

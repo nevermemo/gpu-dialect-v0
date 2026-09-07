@@ -24,10 +24,11 @@ and reviewed generated artifacts. No engine implementation claimed.
 
 Machine-readable target probes and ABI regression matrix, then source mapping,
 small vector/math families with operator coverage, and field-aware struct creation.
-Reflection remains deferred but becomes a gate for broad uniforms/textures/samplers,
-parameter groups, and specialized layouts. Any artifact disk cache needs source,
-compiler identity, options, and dependencies in its key. Additional native targets
-need their own compilation and execution evidence.
+Reflection now gates every StorageV1 pipeline through the native helper (D17, T06);
+broad uniforms/textures/samplers, parameter groups, and specialized layouts must
+extend that reflected evidence before entering the runtime contract. Any artifact
+disk cache needs source, compiler identity, options, and dependencies in its key.
+Additional native targets need their own compilation and execution evidence.
 
 ## S3 — Explicit execution model (planned)
 
