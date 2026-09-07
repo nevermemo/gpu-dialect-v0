@@ -145,11 +145,28 @@ ordering across two settings updates, and seven rejection cases. Runtime additio
 Not done (by design, see D15): dependency inference, reordering, transfer planning,
 CPU nodes, continuations. Verify: `cargo test -p staged-graph` and the workspace.
 
-## T08 — P2: Engine component pool / indirect workload proofs
+## T08 — P2: Engine component pool / indirect workload proofs — COMPLETE
 
-Status: planned. Goal: GPU data survives host-driven capacity growth without resize
-readback, then active-count-driven indirect dispatch. Why: concrete ECS prerequisites.
-Files: typed buffer runtime and a small component-pool example. Dependencies: T07 and
-specified logical length/capacity/retirement contract. Done: zero/growth/stale binding/
-in-flight cases and output parity; capability checks for indirect work.
-Verify: full suite plus boundary tests and measured copy/transfer evidence.
+Status: complete (2026-09-07). Goal: GPU data survives host-driven capacity growth
+without resize readback, then active-count-driven indirect dispatch. Why: concrete ECS
+prerequisites. Contract specified first in `docs/ENGINE_NORTH_STAR.md` (D16).
+Done: `gpu_dialect_wgpu::GpuPool<T>` (`crates/gpu-dialect-wgpu/src/pool.rs`):
+capacity, host-tracked logical length mirrored to a one-element count buffer,
+`pool_push`/`pool_reserve` growth by GPU→GPU copy of the live prefix with
+`GrowthRecord` evidence, retirement list drained by `pool_reclaim`, `pool_truncate`,
+`pool_read` (live prefix). `create_indirect_buffer` (three-`u32` layout, `INDIRECT`
+usage, tagged) and `StagedGraph::dispatch_indirect` (args tag/layout checked, every
+binding independent-length and non-empty, args counted as a read for hazards,
+`GraphReport::indirect_dispatches`). `examples/component-pool`: `prepare_dispatch`
+derives the active count and overflow-free workgroup args on the GPU clamped to the
+allocation and a budget; `integrate` runs indirectly and guards on both. Tests: both
+targets; GPU-authored state survives 4→8→70 growth (partial second workgroup
+through the indirect path) and reclaim returns 2; budget clamp, truncate, zero
+length, push after truncate; growth while a submission is in flight preserves its
+writes; five rejection cases (plain buffer as args, two wrong layouts, strict
+binding, undeclared prepare→integrate edge). `verify.ps1` runs seven examples and
+expects twelve SPIR-V exports.
+Not done (by design): freelists, compaction, entity IDs/generations, atomics, GPU-side
+count generation beyond clamping (the dialect has no atomics or loops), culling,
+rendering. Open follow-ups: a growth benchmark separating allocate/copy/submit, and
+multi-buffer pools (SoA) once a second engine user needs them.

@@ -49,3 +49,51 @@ measurements separating compile/setup, upload, dispatch, and readback. Benchmark
 against independent CPU implementations; never conclude “GPU is better” from one
 cold end-to-end timing or a debug build. Choose the first actual engine user and
 observable unaided result before committing a broad ECS API.
+
+## Component pool contract (T08, specified 2026-09-07)
+
+`gpu_dialect_wgpu::GpuPool<T>` is the first vector-like resident collection. It is
+one typed storage allocation plus separate metadata; it is not an arena, freelist,
+or entity table.
+
+- **Capacity** is the allocation's element count, at least one. `capacity()` reports
+  it exactly; kernels observe it through the bound buffer's `.len()`.
+- **Logical length** (`len()`) is the number of live elements, host-tracked, never
+  above capacity. Elements at or beyond `len()` are unspecified bytes. The pool
+  mirrors the length into a one-element `count_buffer()` (`StructuredBuffer<uint>`)
+  so kernels can read the active count on the GPU; the host writes it on every
+  length change and never reads it back to make decisions.
+- **Growth** is host-driven and geometric: `push` and `reserve` allocate a new buffer
+  of `max(2 × capacity, required)`, encode a GPU→GPU copy of exactly `len × stride`
+  live bytes into it, submit, and swap the pool's buffer. No readback, no
+  re-upload of existing elements, no automatic shrink. Each growth increments
+  `generation()` and returns a `GrowthRecord { old_capacity, new_capacity,
+  copied_bytes }` as measurable evidence.
+- **Retirement**: the previous allocation is kept in a retirement list with the copy
+  submission's fence; `reclaim()` drops entries whose submission completed and
+  reports how many. wgpu keeps in-flight resources alive regardless, so retirement
+  is about observable, bounded lifetime, not memory safety. Growth while an earlier
+  dispatch on the old buffer is still in flight is legal: queue submissions execute
+  in order, so the copy observes that dispatch's writes.
+- **Stale bindings** are prevented statically: `BufferBinding`s borrow the pool's
+  buffer, and growth needs `&mut GpuPool`, so a binding cannot outlive the
+  allocation it names. `generation()` exists for host bookkeeping, not as a runtime
+  check for something the borrow checker already forbids.
+- **Truncate/clear** only change the length and the count buffer (no GPU work).
+  `read()` copies back the live prefix only.
+- **Indirect dispatch**: a buffer created with `create_indirect_buffer` (element type
+  must be exactly three `uint` fields matching `DispatchIndirectArgs`; `INDIRECT`
+  usage) may drive a `StagedGraph::dispatch_indirect` node. There is no host-known
+  element count, so every binding must opt in with `independent_length()` and be
+  non-empty (a placeholder allocation could be observed); layouts, access, and device
+  are validated as for direct dispatches, and the args buffer counts as a read for
+  hazard checking. The runtime cannot bound the dispatched count: wgpu zeroes an
+  indirect dispatch whose workgroup count exceeds
+  `max_compute_workgroups_per_dimension`, silently. Therefore the args must be
+  derived on the GPU from the count buffer **clamped to the data buffer's `.len()`**
+  (the allocation), and kernels must guard `i < active && i < buffer.len()`. A
+  malformed count then degrades to "process the whole allocation", never to
+  out-of-bounds access or a silent no-op. The dialect has no loops or atomics yet, so
+  the count itself is the host-mirrored pool length; what the GPU derives without
+  readback is the active count (count clamped by allocation and a settings budget)
+  and the dispatch arguments.

@@ -10,10 +10,14 @@ independent read-only review (PASS) — see STATUS for evidence:
   Reviewed golden `tests/fixtures/option.slang` and a real-GPU test.
 - T07 staged graph (D15): `gpu_dialect_wgpu::StagedGraph` with checked host-declared
   edges, ordered uploads, transfer/residency report; `examples/staged-graph`;
-  `BufferBinding::independent_length()`; `verify.ps1` now expects six examples and
-  ten SPIR-V exports. 94 workspace tests. Full `verify.ps1 -Full` passed.
-Next: T08 (component pool / indirect dispatch). Write the logical
-length/capacity/retirement contract before code, then claim in STATUS.
+  `BufferBinding::independent_length()`.
+- T08 component pool (D16): `GpuPool<T>` with GPU→GPU growth copies, retirement,
+  count buffer; `create_indirect_buffer` and `StagedGraph::dispatch_indirect`;
+  `examples/component-pool`. Contract in ENGINE_NORTH_STAR. `verify.ps1` now expects
+  seven examples and twelve SPIR-V exports. 99 workspace tests. Full
+  `verify.ps1 -Full` passed.
+Next: nothing claimed. Candidates: T06 slice 2 (layout evidence), the std-prelude
+type-name allowlist, a growth benchmark, or the culling → indirect-args proof.
 
 Earlier in the same day: the quality patch below was independently reviewed (PASS),
 `verify.ps1 -Full` passed after `3fd0aac` (four stale kernel-marker exports were

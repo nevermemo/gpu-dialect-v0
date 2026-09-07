@@ -3,6 +3,7 @@ members = [
     "crates/gpu-dialect",
     "crates/gpu-dialect-macros",
     "crates/gpu-dialect-wgpu",
+    "examples/component-pool",
     "examples/polynomial",
     "examples/particle-step",
     "examples/signal-pipeline",
