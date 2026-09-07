@@ -1,0 +1,29 @@
+[workspace]
+members = [
+    "crates/gpu-dialect",
+    "crates/gpu-dialect-macros",
+    "crates/gpu-dialect-wgpu",
+    "examples/polynomial",
+    "examples/particle-step",
+    "examples/signal-pipeline",
+    "examples/typed-pipeline",
+    "examples/vector-add",
+]
+default-members = ["examples/vector-add"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.87"
+
+[workspace.dependencies]
+gpu-dialect = { path = "crates/gpu-dialect" }
+gpu-dialect-macros = { path = "crates/gpu-dialect-macros" }
+gpu-dialect-wgpu = { path = "crates/gpu-dialect-wgpu" }
+pollster = "0.4"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits", "visit"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"] }
