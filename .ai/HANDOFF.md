@@ -27,13 +27,19 @@ reset was used. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming 
 6. Added reviewed full Slang golden, shared shader/GPU semantics fixture, four
    compile-fail documentation tests, and `scripts/verify.ps1`. The script stops on
    errors and emits `.ai/VALIDATION.json`; a deliberate missing-tool check was tested.
+7. Hardened `scripts/verify.ps1` `Invoke-Checked` to capture **stderr** as well as
+   stdout (redirected to temp files) and record both in `VALIDATION.json` (`stdout`
+   plus a new `stderr` field). Previously a failing command's diagnostic — which
+   cargo/clippy emit on stderr — was missing from the JSON record, leaving only the
+   generic `"... failed (exit N)"` message. Exit-code/throw behavior and the
+   stop-on-first-failure / always-write-record contract are unchanged.
 
 ## Important files
 
 - Frontend: `crates/gpu-dialect-macros/src/{slang,validate,expand,regression_tests}.rs`.
 - Bridge/contract: `crates/gpu-dialect/src/{slang,descriptor,abi,lib}.rs`.
 - Cache/tests: `crates/gpu-dialect-wgpu/src/lib.rs`, `tests/semantics.rs` under that crate.
-- Shared expectations: `tests/fixtures/semantics.rs` and `semantics.slang`.
+- Shared expectations: `tests/fixtures/semantics.{rs,slang}` and `numeric.{rs,slang}`.
 - Validation: `scripts/verify.ps1`, `.ai/VALIDATION.json`.
 - Documentation: README, AGENTS, `docs/`, and `.ai/`.
 - Derived output: all 8 kernels in `generated-wgpu/` regenerated via the 5 examples;
@@ -53,9 +59,18 @@ independently compiled standalone packages.
 
 Tool versions: Rust 1.98.0; Slang 2026.13.1-1-g84792eb15;
 SPIRV-Tools v2026.3.rc1-0-gb707790a. Final local evidence is timestamped in
-VALIDATION.json (19 successful commands, 8 validated artifact hashes). Debug example
-timings are smoke evidence, not a CPU/GPU performance conclusion. Browser WebGPU,
-DXIL, Metal, other vendors, and the manifest's older Rust minimum are unverified.
+VALIDATION.json (successful command records, 8 validated artifact hashes). Each check
+record now carries `stdout` and `stderr` so a failing command's diagnostic is
+preserved in the record. Debug example timings are smoke evidence, not a CPU/GPU
+performance conclusion. Browser WebGPU, DXIL, Metal, other vendors, and the
+manifest's older Rust minimum are unverified.
+
+The stderr-capture patch was then **verified end-to-end** on 2026-09-07 under
+**PowerShell 7.6.5** (`pwsh`; not Windows PowerShell 5.1): a full `-Full` run passed
+(`VALIDATION.json` `passed: true`, 19 checks exit 0). `slangc -version` now lands in
+`stderr` (record line 33); `cargo clippy`/`cargo test` runner lines are captured in
+`stderr` (lines 59, 69); the `µs` timings render correctly (UTF-8 fix confirmed — no
+more `┬╡`). **Environment note for future runs: use `pwsh` (PowerShell 7), not 5.1.**
 
 ## Deferred and known risks
 
@@ -72,11 +87,17 @@ DXIL, Metal, other vendors, and the manifest's older Rust minimum are unverified
 
 ## Recommended pickup
 
-Claim the remaining T04 scope: first reproduce signed/unsigned inference and numeric
-edge counterexamples, define which cases are supported versus diagnosed, and add
-golden + real-GPU tests. Treat field-aware struct construction as a separate bounded
-follow-up that preserves field identity and source evaluation order. Do not bundle
-reflection or an ECS framework into that task.
+T04 (numeric semantics + struct construction) is complete: the `numeric` fixture
+locks the emitted Slang, a real-GPU test proves signed/unsigned div/mod, float→int
+casts, and struct field identity + source order, integer div/rem by a literal zero is
+diagnosed at the Rust boundary, and struct literals lower to construct-then-assign.
+See the T04 evidence block in NEXT_TASKS.md and `docs/ARCHITECTURE.md`.
+
+**T05 (P1) is now claimed** — first slice is capability probe records (a `TargetProbe`
++ `probe` in `crates/gpu-dialect/src/slang.rs` with a failing-first test); diagnostic
+source mapping (Slang→Rust spans) is the next T05 slice. The remaining S1 work is the
+T05 source-mapping slice and the negative-diagnostics coverage (T03). Do not bundle
+reflection (T06, deferred by the owner) or an ECS framework (T08) into that work.
 
 Start from the workspace root:
 

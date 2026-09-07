@@ -33,9 +33,10 @@ semantic attributes that are dropped, malformed builtin receivers/arguments; inc
 compile-fail evidence (implemented). Broader name resolution and effect analysis
 remain separate work. Verify: macro unit tests and `cargo test --workspace`.
 
-## T04 — P1: Resolved numeric semantics and struct construction
+## T04 — P1: Resolved numeric semantics and struct construction — COMPLETE
 
-Status: typed locals implemented; numeric/effect semantics and struct construction are the recommended next task.
+Status: complete. Numeric semantics proven and a literal-zero div/rem diagnostic
+added; field-aware struct construction implemented in bounded contexts.
 Goal: explicit typed locals plus field-aware construction with preserved
 evaluation order, or clear diagnostics. Why: syn inference is not rustc inference;
 integer division/overflow/casts and effect order remain correctness risks.
@@ -44,14 +45,30 @@ Done: signed/unsigned edge tests, inference counterexamples, reordered struct fi
 and side-effect-order checks; no public claim beyond proven cases.
 Verify: golden, compile-fail, Slang WGSL/SPV, GPU readback tests.
 
+Evidence (2026-09-07, slangc 2026.13.1-1-g84792eb15, Vulkan adapter present):
+- `numeric` fixture golden (`tests/fixtures/numeric.slang`) locks the emitted Slang.
+- `numeric` GPU test proves signed/unsigned div/mod, float→int casts, and struct
+  field identity + source order against an independent host reference.
+- Integer div/rem by a literal zero is rejected at the Rust boundary (Slang makes it
+  a compile error; rustc treats it as a runtime panic).
+- Struct literals lower to construct-then-assign by name in source order; supported
+  as a `let` initializer and assignment RHS, rejected elsewhere.
+
 ## T05 — P1: Capability/ABI evidence and diagnostic source mapping
 
-Status: local validation JSON implemented; cross-target probes/source mapping planned.
+Status: **claimed 2026-09-07** — slice 1 (capability probe records) in progress;
+slice 2 (diagnostic source mapping, Slang→Rust spans) planned next.
 Goal: machine-readable probe records and useful Rust locations for
 Slang errors. Why: target claims and layouts must follow evidence. Files: proposed
 probe utility, core bridge, macro source metadata, docs/PORTABLE_SLANG_CORE.md.
 Dependencies: T02/T03. Done: versions/options/adapter captured, unsupported targets
 explicit, scalar/nested ABI matrix, known Slang failure mapped to originating Rust.
+Slice 1 (this pass): `TargetProbe` record + `probe` in `crates/gpu-dialect/src/slang.rs`
+compiles a known-good minimal kernel to a target and records `supported`/`detail`;
+failing-first test; PORTABLE_SLANG_CORE.md documents the probe record format.
+Slice 2 (next): emit Rust source markers during Slang emission and map `slangc`
+diagnostics back to originating Rust lines (the HANDOFF "source maps still point at
+generated Slang" gap).
 Verify: repeat probes and intentional failing input; no silent skips.
 
 ## T06 — P1, deferred by owner: Slang reflection / broader shadows
