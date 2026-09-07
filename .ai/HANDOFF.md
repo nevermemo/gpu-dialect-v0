@@ -52,8 +52,8 @@ reset was used. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming 
   shader grouping and typed-pipeline source changed. Some binary/WGSL outputs remain
   byte-identical because Slang optimizes equivalent expressions.
 - `.ai/CHANGED_FILES.md` inventories added/modified files against `BASELINE.sha256`.
-  The owner then initialized Git (2026-09-07); `main` carries 6 commits through the
-  T05 slice 2 work, and a Kilo worktree
+  The owner then initialized Git (2026-09-07); `main` carries 9 commits through the
+  skill-tracking work, and a Kilo worktree
   (`.kilo/worktrees/enchanted-farmhouse`) sits on the same commit.
 
 ## Verification evidence
@@ -83,9 +83,11 @@ more `┬╡`). **Environment note for future runs: use `pwsh` (PowerShell 7), n
 T05 (both slices) was then verified on 2026-09-07: `cargo test -p gpu-dialect --lib`
 12 passed (incl. both diagnostic-mapping tests), `cargo test -p gpu-dialect-macros`
 20 passed (marker goldens), `cargo test -p gpu-dialect-wgpu --test semantics` 2 passed
-on RTX 5090. A full `-Full` re-run after the slice 2 commit was started but aborted
-before completion; the last full pass in VALIDATION.json (2026-09-07 13:54 UTC)
-predates the slice 2 commit.
+on RTX 5090, and a full `cargo test --workspace` re-run after the slice 2 commit:
+**66 passed, 0 failed** (62 unit/integration incl. 5 example binaries on RTX 5090,
++ 4 compile-fail doc tests). A full `verify.ps1 -Full` (fmt/clippy/examples/SPIR-V)
+re-run after the slice 2 commit was not completed; the last full pass in
+VALIDATION.json (2026-09-07 13:54 UTC) predates the slice 2 commit.
 
 ## Deferred and known risks
 
