@@ -107,6 +107,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "component-pool"
+version = "0.1.0"
+dependencies = [
+ "gpu-dialect",
+ "gpu-dialect-wgpu",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

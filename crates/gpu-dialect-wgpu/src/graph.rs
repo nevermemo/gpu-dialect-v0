@@ -53,6 +53,9 @@ pub struct GraphReport {
     pub readback_bytes: u64,
     /// Dispatch nodes that produced GPU work (zero-element dispatches are skipped).
     pub dispatches: usize,
+    /// Dispatches whose workgroup count was read from a GPU buffer; the host
+    /// never learned that count, so they are excluded from `workgroups`.
+    pub indirect_dispatches: usize,
     pub workgroups: u64,
     /// Bytes of buffers touched by dispatches but by no transfer in this execution.
     pub resident_bytes: u64,
@@ -66,6 +69,11 @@ enum NodeKind<'a> {
         element_count: usize,
     },
     Dispatch(BufferDispatch<'a>),
+    /// Workgroup counts come from `args` on the GPU; no host element count exists.
+    DispatchIndirect {
+        dispatch: BufferDispatch<'a>,
+        args: BufferBinding<'a>,
+    },
     Readback {
         source: BufferBinding<'a>,
         layout: TypeLayout,
@@ -118,6 +126,28 @@ impl<'a> StagedGraph<'a> {
         self.push(NodeKind::Dispatch(dispatch), dependencies)
     }
 
+    /// Run one kernel with workgroup counts read from `args` on the GPU.
+    ///
+    /// `dispatch.element_count` is ignored; every binding must opt in with
+    /// `independent_length()` and be non-empty, and `args` must come from
+    /// `HeadlessDevice::create_indirect_buffer`. The runtime cannot bound the
+    /// count: wgpu silently zeroes a dispatch that exceeds the device's
+    /// per-dimension workgroup limit, so the kernel that writes `args` must clamp.
+    pub fn dispatch_indirect<T: GpuPod>(
+        &mut self,
+        dispatch: BufferDispatch<'a>,
+        args: &'a GpuBuffer<T>,
+        dependencies: &[NodeId],
+    ) -> NodeId {
+        self.push(
+            NodeKind::DispatchIndirect {
+                dispatch,
+                args: BufferBinding::new(args, Access::ReadOnly),
+            },
+            dependencies,
+        )
+    }
+
     /// Copy a resident read-write buffer back to host memory after execution.
     pub fn readback<T: GpuPod>(
         &mut self,
@@ -149,6 +179,12 @@ impl<'a> StagedGraph<'a> {
                 .bindings
                 .iter()
                 .map(|binding| (binding.raw, binding.access))
+                .collect(),
+            NodeKind::DispatchIndirect { dispatch, args } => dispatch
+                .bindings
+                .iter()
+                .map(|binding| (binding.raw, binding.access))
+                .chain([(args.raw, Access::ReadOnly)])
                 .collect(),
             NodeKind::Readback { source, .. } => vec![(source.raw, Access::ReadOnly)],
         }
@@ -196,6 +232,31 @@ impl<'a> StagedGraph<'a> {
                         dispatch.bindings,
                     )?;
                 }
+                NodeKind::DispatchIndirect { dispatch, args } => {
+                    if args.device_id != device_id {
+                        return Err(Error::ForeignPersistentBuffer);
+                    }
+                    if !args.indirect
+                        || !crate::is_indirect_args_layout(args.layout)
+                        || args.len == 0
+                    {
+                        return Err(Error::IndirectArgsLayout(args.layout.name));
+                    }
+                    let resources = crate::validate_persistent_dispatch(
+                        device_id,
+                        dispatch.kernel,
+                        // Placeholder count: every binding must be independent anyway.
+                        1,
+                        dispatch.bindings,
+                    )?;
+                    for (parameter, binding) in resources.iter().zip(dispatch.bindings) {
+                        if !binding.independent_length || binding.len == 0 {
+                            return Err(Error::IndirectBindingLength {
+                                parameter: parameter.name.to_owned(),
+                            });
+                        }
+                    }
+                }
                 NodeKind::Readback { source, .. } => {
                     if source.device_id != device_id {
                         return Err(Error::ForeignPersistentBuffer);
@@ -237,16 +298,19 @@ impl<'a> StagedGraph<'a> {
             .filter_map(|node| match &node.kind {
                 NodeKind::Upload { target, .. } => Some(target.raw),
                 NodeKind::Readback { source, .. } => Some(source.raw),
-                NodeKind::Dispatch(_) => None,
+                NodeKind::Dispatch(_) | NodeKind::DispatchIndirect { .. } => None,
             })
             .collect();
         let mut seen: Vec<&wgpu::Buffer> = Vec::new();
         let mut bytes = 0;
         for node in &self.nodes {
-            let NodeKind::Dispatch(dispatch) = &node.kind else {
-                continue;
+            let bindings = match &node.kind {
+                NodeKind::Dispatch(dispatch) | NodeKind::DispatchIndirect { dispatch, .. } => {
+                    dispatch.bindings
+                }
+                _ => continue,
             };
-            for binding in dispatch.bindings {
+            for binding in bindings {
                 if transferred.contains(&binding.raw) || seen.contains(&binding.raw) {
                     continue;
                 }
@@ -309,6 +373,7 @@ impl HeadlessDevice {
         let mut pending = Vec::new();
         let mut transfers = Vec::new();
         let mut dispatches = 0;
+        let mut indirect_dispatches = 0;
         let mut workgroups = 0_u64;
 
         for (index, node) in graph.nodes.iter().enumerate() {
@@ -346,6 +411,22 @@ impl HeadlessDevice {
                         pass.dispatch_workgroups(prepared.workgroup_count, 1, 1);
                         dispatches += 1;
                         workgroups += u64::from(prepared.workgroup_count);
+                    }
+                }
+                NodeKind::DispatchIndirect { dispatch, args } => {
+                    // Validation already fixed every binding length; the count is
+                    // irrelevant to pipeline and bind-group preparation.
+                    let placeholder = BufferDispatch::new(dispatch.kernel, 1, dispatch.bindings);
+                    for prepared in self.prepare_batch(std::slice::from_ref(&placeholder))? {
+                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("GPU Dialect staged graph indirect compute pass"),
+                            timestamp_writes: None,
+                        });
+                        pass.set_pipeline(&prepared.cached_kernel.pipeline);
+                        pass.set_bind_group(0, &prepared.bind_group, &[]);
+                        pass.dispatch_workgroups_indirect(args.raw, 0);
+                        dispatches += 1;
+                        indirect_dispatches += 1;
                     }
                 }
                 NodeKind::Readback { source, layout } => {
@@ -430,6 +511,7 @@ impl HeadlessDevice {
                 upload_bytes,
                 readback_bytes,
                 dispatches,
+                indirect_dispatches,
                 workgroups,
                 resident_bytes: graph.resident_bytes(),
                 host_elapsed: started.elapsed(),

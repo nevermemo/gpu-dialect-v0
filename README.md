@@ -62,8 +62,8 @@ Run every compiler, artifact, runtime, batch, persistent-buffer, and example tes
 cargo test --workspace
 ```
 
-For the full release-readiness check (including all six examples and mandatory
-external validation of all ten SPIR-V exports):
+For the full release-readiness check (including all seven examples and mandatory
+external validation of all twelve SPIR-V exports):
 
 ```powershell
 .\scripts\verify.ps1 -Full
@@ -193,9 +193,17 @@ Nothing is inferred from kernels. `BufferBinding::independent_length()` opts one
 binding out of the shared element-count rule for settings buffers and reductions;
 the kernel must then guard that buffer with its own `.len()`.
 
+`GpuPool<T>` is the first growable resident collection: explicit capacity, a
+host-tracked logical length mirrored into a one-element count buffer for kernels,
+and host-driven geometric growth that copies the live prefix GPU-to-GPU (never a
+readback) and retires the old allocation behind the copy's fence. A buffer from
+`create_indirect_buffer` can drive `StagedGraph::dispatch_indirect`, whose
+workgroup count the GPU derives; see the contract in
+[docs/ENGINE_NORTH_STAR.md](docs/ENGINE_NORTH_STAR.md).
+
 ## Examples
 
-The workspace contains six runnable programs:
+The workspace contains seven runnable programs:
 
 - `vector-add` uses the preferred Slang-shaped Rust vocabulary and demonstrates
   artifact export.
@@ -215,6 +223,10 @@ The workspace contains six runnable programs:
   readback as an explicit `StagedGraph`, keeping the samples and the intermediate
   resident and asserting transfer byte counts, ordering across settings updates, and
   rejection of undeclared dependencies.
+- `component-pool` grows a `GpuPool<Particle>` every frame while GPU-authored
+  positions survive each GPU-to-GPU copy, and integrates through an indirect
+  dispatch whose active count and workgroup arguments a one-invocation kernel
+  derives on the GPU, clamped to the allocation and a settings budget.
 
 Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function; there is currently no environment-variable size override:

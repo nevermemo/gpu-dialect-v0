@@ -1,5 +1,58 @@
 # Current status
 
+## T08 — component pool and indirect workload proofs — COMPLETE (2026-09-07)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.
+Contract written first in `docs/ENGINE_NORTH_STAR.md` "Component pool contract (T08)"
+and recorded as D16. Scope delivered: `GpuPool<T>` (capacity, host-tracked logical
+length mirrored to a one-element count buffer, host-driven geometric growth by GPU→GPU
+copy of the live prefix, retirement list drained by `pool_reclaim`, `GrowthRecord`
+evidence, `pool_truncate`, `pool_read`), `create_indirect_buffer`, and
+`StagedGraph::dispatch_indirect`. New `examples/component-pool`. Not in scope and not
+done: freelists, compaction, entity IDs, atomics, culling/rendering.
+
+Files: new `crates/gpu-dialect-wgpu/src/pool.rs`; `lib.rs` (`indirect` tag on
+`GpuBuffer`/`BufferBinding`, `is_indirect_args_layout`, errors `IndirectArgsLayout`,
+`IndirectBindingLength`, `PoolTruncateGrows`, module wiring); `graph.rs`
+(`DispatchIndirect` node, args counted as a read for hazards, every binding must be
+independent-length and non-empty, `GraphReport::indirect_dispatches`); new
+`examples/component-pool/`; workspace `Cargo.toml`/`Cargo.lock`; `scripts/verify.ps1`
+(seven examples, twelve exports); README; `docs/{ENGINE_NORTH_STAR,DECISIONS}.md`;
+`.ai/` records; eight new `generated-wgpu/pool__*` exports. No dependency, dialect,
+or signing changes.
+
+Key evidence-driven design point: wgpu 30's indirect-validation shader silently zeroes
+a dispatch whose workgroup count exceeds `max_compute_workgroups_per_dimension`
+(`wgpu-core/src/indirect_validation/dispatch.rs`). The runtime therefore cannot bound
+an indirect count; the contract requires the args kernel to clamp to the allocation
+(`particles.len()`) and a budget, and the consuming kernel to guard on both the
+GPU-derived active count and `.len()`. `prepare_dispatch` uses an overflow-free
+ceiling division (`n / 64 + min(n % 64, 1)`), adopted from the independent review.
+
+Verification (Rust 1.98.0, Slang 2026.13.1, SPIRV-Tools v2026.3, RTX 5090/Vulkan):
+`cargo fmt --check` exit 0; `cargo clippy --workspace --all-targets -D warnings` exit 0;
+`cargo test --workspace` **99 passed, 0 failed, 0 ignored** (94 unit/integration +
+5 doctests; baseline 94). `component-pool` tests: both targets compile and validate;
+GPU-authored state survives growth 4→8 (geometric) →70 (required exceeds doubling)
+with exact `GrowthRecord`s and copied bytes, then integrates 70 through the indirect
+path (partial second workgroup) and `pool_reclaim` returns 2; budget clamp (100 of
+130), truncate to 65 and to 0, `PoolTruncateGrows`, push after truncate reuses
+capacity; growth while an `integrate` submission is in flight preserves its writes;
+five rejection cases. `cargo run -p component-pool`: 4096→262144 particles over six
+frames, 5160960 bytes copied GPU→GPU, 12 B upload and 4 B readback per frame, zero
+retired allocations pending. `scripts/verify.ps1 -Full` under pwsh 7.6.5: **GUST
+verification passed**, seven examples, all twelve SPIR-V exports validated;
+`.ai/VALIDATION.json` refreshed. The post-review args edit was re-verified with
+fmt/clippy/the five tests/the example, and the re-exported
+`pool__prepare_dispatch.spv` passes `spirv-val` (the full-run record predates that
+one-line change). Independent read-only review: **PASS** (growth ordering,
+retirement, indirect safety, hazard check, tests); its overflow note is applied.
+
+Next command: none claimed. Candidates in NEXT_TASKS: T06 slice 2 (authoritative
+layout evidence via `scripts/probes/`), the std-prelude type-name allowlist (T03
+follow-up), a growth benchmark separating allocate/copy/submit, or the third engine
+proof (culling → compacted indirect args). Claim one here before editing.
+
 ## T07 — first explicit staged graph proof — COMPLETE (2026-09-07)
 
 Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.

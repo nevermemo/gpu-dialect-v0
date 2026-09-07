@@ -26,9 +26,20 @@ use gpu_dialect::{
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 pub mod graph;
+pub mod pool;
 pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
+pub use pool::{GpuPool, GrowthRecord};
 
 static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Whether `layout` is exactly `wgpu::util::DispatchIndirectArgs`: three `u32`s.
+fn is_indirect_args_layout(layout: gpu_dialect::TypeLayout) -> bool {
+    use gpu_dialect::{ScalarKind, TypeLayoutKind};
+    layout.size == 12
+        && layout.stride == 12
+        && matches!(layout.kind, TypeLayoutKind::Struct(fields) if fields.len() == 3
+            && fields.iter().all(|field| matches!(field.ty.kind, TypeLayoutKind::Scalar(ScalarKind::U32))))
+}
 
 /// Host data for one reflected `Storage<f32>` or `StorageMut<f32>` parameter.
 #[derive(Clone, Copy, Debug)]
@@ -76,6 +87,8 @@ pub struct GpuBuffer<T> {
     access: GpuBufferAccess,
     layout: gpu_dialect::TypeLayout,
     device_id: u64,
+    /// Created with `INDIRECT` usage by `create_indirect_buffer`.
+    indirect: bool,
     marker: PhantomData<T>,
 }
 
@@ -135,6 +148,7 @@ pub struct BufferBinding<'a> {
     access: Access,
     device_id: u64,
     independent_length: bool,
+    indirect: bool,
 }
 
 impl<'a> BufferBinding<'a> {
@@ -168,6 +182,7 @@ impl<'a> BufferBinding<'a> {
             access,
             device_id: buffer.device_id,
             independent_length: false,
+            indirect: buffer.indirect,
         }
     }
 
@@ -702,6 +717,7 @@ impl HeadlessDevice {
             access,
             layout: T::LAYOUT,
             device_id: self.id,
+            indirect: false,
             marker: PhantomData,
         }
     }
@@ -1674,6 +1690,14 @@ pub enum Error {
         expected: &'static str,
         actual: &'static str,
     },
+    IndirectArgsLayout(&'static str),
+    IndirectBindingLength {
+        parameter: String,
+    },
+    PoolTruncateGrows {
+        len: usize,
+        requested: usize,
+    },
     Poll(String),
     Map(String),
 }
@@ -1784,6 +1808,18 @@ impl fmt::Display for Error {
             Self::GraphReadbackType { expected, actual } => write!(
                 formatter,
                 "graph readback holds `{expected}` elements, but `{actual}` was requested",
+            ),
+            Self::IndirectArgsLayout(name) => write!(
+                formatter,
+                "indirect dispatch arguments must come from `create_indirect_buffer` with a non-empty struct of exactly three `u32` fields (x, y, z workgroups); got `{name}`",
+            ),
+            Self::IndirectBindingLength { parameter } => write!(
+                formatter,
+                "parameter `{parameter}` of an indirect dispatch must be bound with `independent_length()` and a non-empty buffer; the element count is decided on the GPU",
+            ),
+            Self::PoolTruncateGrows { len, requested } => write!(
+                formatter,
+                "pool truncate to {requested} exceeds the logical length {len}; use push or reserve to grow",
             ),
             Self::Poll(error) => write!(formatter, "GPU synchronization failed: {error}"),
             Self::Map(error) => write!(formatter, "GPU readback failed: {error}"),
