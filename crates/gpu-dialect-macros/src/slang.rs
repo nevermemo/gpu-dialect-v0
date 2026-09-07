@@ -120,6 +120,12 @@ pub fn emit_kernel(
     })?;
     let [x, y, z] = options.workgroup_size;
     let entry_point = format!("gpu_{}_{}", module.ident, kernel.sig.ident);
+    writeln!(
+        output,
+        "// @rust kernel: {}::{}",
+        module.ident, kernel.sig.ident
+    )
+    .unwrap();
     writeln!(output, "[shader(\"compute\")]").unwrap();
     writeln!(output, "[numthreads({x}, {y}, {z})]").unwrap();
     writeln!(
