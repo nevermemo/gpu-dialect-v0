@@ -188,13 +188,22 @@ fn emit_statements(
         match statement {
             syn::Stmt::Local(local) => {
                 let (pattern, annotation) = local_binding(&local.pat)?;
+                let initial = local.init.as_ref().ok_or_else(|| {
+                    syn::Error::new_spanned(local, "Slang let bindings require an initializer")
+                })?;
+                // Field-aware struct construction: lower `let p = Pair { .. }` to
+                // `Pair p; p.first = ..; p.second = ..;`, preserving field identity
+                // and source evaluation order. Slang has no field-name initializers.
+                if let syn::Expr::Struct(value) = initial.expr.as_ref() {
+                    let ty = struct_literal_type(value)?;
+                    writeln!(output, "{padding}{} {};", ty, pattern.ident).unwrap();
+                    emit_struct_assign(output, &pattern.ident.to_string(), value, indent)?;
+                    continue;
+                }
                 let declaration = annotation
                     .map(emit_type)
                     .transpose()?
                     .unwrap_or_else(|| "var".to_owned());
-                let initial = local.init.as_ref().ok_or_else(|| {
-                    syn::Error::new_spanned(local, "Slang let bindings require an initializer")
-                })?;
                 writeln!(
                     output,
                     "{padding}{declaration} {} = {};",
@@ -216,6 +225,18 @@ fn emit_statements(
                         is_tail && semicolon.is_none(),
                     )?;
                     writeln!(output, "{padding}}}").unwrap();
+                }
+                syn::Expr::Assign(assign)
+                    if matches!(assign.right.as_ref(), syn::Expr::Struct(_)) =>
+                {
+                    // `p = Pair { .. }` / `out[i] = Pair { .. }` lower to per-field
+                    // assignments on the existing lvalue, preserving field identity.
+                    let target = emit_expression(&assign.left)?;
+                    let value = match assign.right.as_ref() {
+                        syn::Expr::Struct(value) => value,
+                        _ => unreachable!("guarded by the match arm"),
+                    };
+                    emit_struct_assign(output, &target, value, indent)?;
                 }
                 _ => {
                     let prefix = if is_tail
@@ -241,6 +262,46 @@ fn emit_statements(
         }
     }
     Ok(())
+}
+
+/// Lower a struct literal to per-field assignments on `target`, in source order.
+///
+/// Slang has no field-name or designated initializers, so `Pair { first = 1 }`
+/// is not valid; the portable form is `target.first = 1;`. Emitting the fields in
+/// source order preserves both field identity (by name) and evaluation order.
+fn emit_struct_assign(
+    output: &mut String,
+    target: &str,
+    value: &syn::ExprStruct,
+    indent: usize,
+) -> syn::Result<()> {
+    let padding = "    ".repeat(indent);
+    for field in &value.fields {
+        let name = match &field.member {
+            syn::Member::Named(ident) => ident,
+            syn::Member::Unnamed(_) => {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    "GPU struct literal fields need names",
+                ));
+            }
+        };
+        writeln!(
+            output,
+            "{padding}{target}.{name} = {};",
+            emit_expression(&field.expr)?
+        )
+        .unwrap();
+    }
+    Ok(())
+}
+
+/// The declared type of a struct literal, rendered as a Slang type name.
+fn struct_literal_type(value: &syn::ExprStruct) -> syn::Result<String> {
+    emit_type(&syn::Type::Path(syn::TypePath {
+        qself: None,
+        path: value.path.clone(),
+    }))
 }
 
 pub fn local_binding(pattern: &syn::Pat) -> syn::Result<(&syn::PatIdent, Option<&syn::Type>)> {
@@ -368,7 +429,7 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Struct(value) => {
             return Err(syn::Error::new_spanned(
                 value,
-                "GPU struct literals need field-aware lowering and are not supported yet; copy a buffer element and update its fields",
+                "GPU struct literals are supported only as a `let` initializer or the right side of an assignment; bind the struct to a local first, or copy a buffer element and update its fields",
             ));
         }
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Not(_)) => {

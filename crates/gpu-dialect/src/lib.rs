@@ -25,17 +25,6 @@
 //!     }
 //! }
 //! ```
-//! Named struct construction needs a field-aware lowering before it can be enabled:
-//! ```compile_fail
-//! #[gpu_dialect::gpu]
-//! mod invalid {
-//!     struct Pair { first: uint, second: uint }
-//!     #[kernel]
-//!     fn run(id: SV_DispatchThreadID) {
-//!         let pair = Pair { second: 1u32, first: 2u32 };
-//!     }
-//! }
-//! ```
 //! rustc still checks shadow arithmetic after macro validation:
 //! ```compile_fail
 //! #[gpu_dialect::gpu]
@@ -43,6 +32,23 @@
 //!     #[kernel]
 //!     fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
 //!         out[id.x] = true + 1u32;
+//!     }
+//! }
+//! ```
+//!
+//! # Supported source
+//!
+//! Named struct construction is lowered field-aware: Slang has no field-name
+//! initializers, so the translator emits the portable construct-then-assign form,
+//! assigning fields by name in source order. This preserves field identity even
+//! when the literal lists fields in a different order than the declaration:
+//! ```
+//! #[gpu_dialect::gpu]
+//! mod valid {
+//!     struct Pair { first: uint, second: uint }
+//!     #[kernel]
+//!     fn run(id: SV_DispatchThreadID) {
+//!         let pair = Pair { second: 1u32, first: 2u32 };
 //!     }
 //! }
 //! ```

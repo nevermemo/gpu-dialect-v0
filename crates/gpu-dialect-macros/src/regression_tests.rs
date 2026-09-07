@@ -33,6 +33,15 @@ fn semantics_golden() {
 }
 
 #[test]
+fn numeric_golden() {
+    let source = translate(include_str!("../../../tests/fixtures/numeric.rs")).unwrap();
+    assert_eq!(
+        source.replace("\r\n", "\n"),
+        include_str!("../../../tests/fixtures/numeric.slang").replace("\r\n", "\n")
+    );
+}
+
+#[test]
 fn generated_symbol_prefixes_are_reserved() {
     for source in [
         "mod bad { #[kernel] fn run(__gpu_len_out: SV_DispatchThreadID) {} }",
@@ -187,11 +196,32 @@ fn binary_grouping_preserves_rust_precedence() {
 }
 
 #[test]
-fn unproven_struct_constructor_is_rejected_not_reordered() {
-    let error = translate(
+fn struct_constructor_preserves_field_identity_and_source_order() {
+    let source = translate(
         "mod constructors {
         struct Pair { first: uint, second: uint }
         #[kernel] fn run(id: SV_DispatchThreadID) { let p = Pair { second: 1u32, first: 2u32 }; }
+    }",
+    )
+    .unwrap();
+    // Field identity is preserved by name even though `second` is written first.
+    assert!(source.contains("Pair p;"), "{source}");
+    assert!(source.contains("p.second = uint(1);"), "{source}");
+    assert!(source.contains("p.first = uint(2);"), "{source}");
+    // Source evaluation order is preserved: `second` is assigned before `first`.
+    assert!(
+        source.find("p.second = uint(1);").unwrap() < source.find("p.first = uint(2);").unwrap(),
+        "{source}"
+    );
+}
+
+#[test]
+fn struct_literal_in_expression_position_is_diagnosed() {
+    let error = translate(
+        "mod constructors {
+        struct Pair { first: uint, second: uint }
+        fn take(p: Pair) -> uint { p.first }
+        #[kernel] fn run(id: SV_DispatchThreadID) { let v = take(Pair { first: 1u32, second: 2u32 }); }
     }",
     )
     .unwrap_err();
@@ -207,4 +237,26 @@ fn unsupported_numeric_width_is_diagnosed() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("32-bit"), "{error}");
+}
+
+#[test]
+fn integer_division_by_literal_zero_is_diagnosed() {
+    for source in [
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / 0u32; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>) { out[id.x] = out[id.x] % 0; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / -0u32; } }",
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(
+            error.to_string().contains("literal zero"),
+            "{error}: {source}"
+        );
+    }
+    // Float division by zero is defined (it yields inf/NaN), so it must not be
+    // rejected even though the divisor literal is zero.
+    let ok = translate(
+        "mod ok { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) { out[id.x] = out[id.x] / 0.0; } }",
+    )
+    .unwrap();
+    assert!(ok.contains("(out[id.x] / 0.0)"), "{ok}");
 }
