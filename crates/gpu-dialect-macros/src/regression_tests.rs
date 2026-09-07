@@ -240,6 +240,52 @@ fn unsupported_numeric_width_is_diagnosed() {
 }
 
 #[test]
+fn unsupported_name_paths_are_rejected() {
+    for (source, message) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = f32::INFINITY; } }",
+            "associated constants",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = u32::MAX; } }",
+            "associated constants",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = core::f32::consts::PI; } }",
+            "associated constants",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v: core::f32 = 1.0; } }",
+            "CPU-only",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
+}
+
+#[test]
+fn unsupported_effects_are_rejected() {
+    for (source, message) in [
+        (
+            "mod bad { fn maybe() -> Option<uint> { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) { let v = maybe()?; } }",
+            "`?` operator",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { unsafe { let v = 1u32; } } }",
+            "unsafe blocks",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { asm!(\"nop\"); } }",
+            "macros",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
+}
+
+#[test]
 fn integer_division_by_literal_zero_is_diagnosed() {
     for source in [
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / 0u32; } }",

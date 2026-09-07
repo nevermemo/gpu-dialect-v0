@@ -4,6 +4,7 @@ use syn::visit::{self, Visit};
 
 const BANNED_NAMES: &[&str] = &[
     "std",
+    "core",
     "alloc",
     "String",
     "Vec",
@@ -349,6 +350,34 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        // A bare path value must be a single identifier (a local variable or
+        // parameter). Multi-segment paths are associated constants or foreign
+        // items (e.g. `f32::INFINITY`, `u32::MAX`), which have no Slang lowering.
+        // Callee paths are handled by `visit_expr_call`, which only descends for
+        // single-identifier helpers, so this fires only for bare values.
+        if path.path.get_ident().is_none() {
+            self.reject(
+                path,
+                "associated constants and foreign paths are not in the Rust-to-Slang subset; reference local variables, parameters, or same-module helpers",
+            );
+        }
+    }
+
+    fn visit_expr_try(&mut self, expression: &'ast syn::ExprTry) {
+        self.reject(
+            expression,
+            "the `?` operator is not in the Rust-to-Slang subset",
+        );
+    }
+
+    fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
+        self.reject(
+            expression,
+            "unsafe blocks are not in the Rust-to-Slang subset",
+        );
     }
 
     fn visit_expr_macro(&mut self, expression: &'ast syn::ExprMacro) {
