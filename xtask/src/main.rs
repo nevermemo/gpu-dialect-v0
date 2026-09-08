@@ -519,7 +519,7 @@ fn status() -> Result<(), String> {
     let root = workspace_root()?;
     println!("Repository: {}", root.display());
     print_command(&root, "git", &["status", "--short", "--branch"])?;
-    if let Ok(text) = fs::read_to_string(root.join(".ai/STATUS.md")) {
+    if let Ok(text) = fs::read_to_string(root.join("docs/development/STATUS.md")) {
         let active = text.lines().find(|line| line.starts_with("## Active:"));
         if let Some(active) = active {
             println!("{active}");

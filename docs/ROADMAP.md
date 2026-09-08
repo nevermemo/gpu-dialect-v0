@@ -1,7 +1,7 @@
 # Roadmap
 
 This is a dependency-ordered direction, not a schedule or a claim of completed v1.
-Runnable next-task acceptance criteria live in [NEXT_TASKS](../.ai/NEXT_TASKS.md).
+Runnable next-task acceptance criteria live in [NEXT_TASKS](development/NEXT_TASKS.md).
 
 ## S0 — Preserve and re-anchor (completed 2026-09-07)
 

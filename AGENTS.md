@@ -1,9 +1,12 @@
 # Engineering agreement
 
 GUST is the project; GPU Dialect is the existing Rust → Slang subsystem. Read
-`.ai/STATUS.md`, `.ai/NEXT_TASKS.md`, and `.ai/HANDOFF.md` before editing. Consult
-`docs/DECISIONS.md` and `docs/ARCHITECTURE.md` for constraints. Design aspirations
-are not implemented features or permission to perform external actions.
+`docs/development/STATUS.md`, `docs/development/NEXT_TASKS.md`, and
+`docs/development/HANDOFF.md` before editing. Consult
+`docs/development/REPO_STRUCTURE.md`, `docs/development/VALIDATION.md`,
+`docs/development/AGENT_WORKFLOW.md`, `docs/DECISIONS.md`, and
+`docs/ARCHITECTURE.md` for constraints. Design aspirations are not implemented
+features or permission to perform external actions.
 
 # AI Swarm Instructions
 
@@ -56,7 +59,9 @@ Do not return raw logs unless a failure requires them.
 Do not paste large source files into reports.
 Prefer file paths, symbols and line references.
 
-Use repository files for durable knowledge.
+Use repository files for durable knowledge. Human-readable operational state lives
+under `docs/development/`; `.ai/` is reserved for generated or machine-readable
+state such as `VALIDATION.json` and `BASELINE.sha256`.
 
 ## Truth hierarchy
 
@@ -109,7 +114,7 @@ Do not wait for Codex during normal local swarm work.
 ## Workflow and verification
 
 1. Check the working tree (or hashes if no Git), installed tools, and baseline tests.
-2. Claim a bounded task and file scope in `.ai/STATUS.md` before work. If another
+2. Claim a bounded task and file scope in `docs/development/STATUS.md` before work. If another
    agent owns overlapping files, coordinate with the human; do not overwrite them.
 3. Add a failing regression first when fixing a bug. Test compiler output and actual
    GPU behavior, not only substring assertions. No silent GPU/compiler test skips
@@ -124,7 +129,7 @@ cargo xtask check-workspace
 Use stable Rust, `slangc` on PATH, and a Vulkan adapter. For release evidence run
 `cargo xtask check-full`: it requires SPIRV-Tools, runs every example, and validates
 all exported SPIR-V files. Missing tools are blockers, not passes. Baseline versions
-and actual results belong in `.ai/STATUS.md`; commands alone are not evidence.
+and actual results belong in `docs/development/STATUS.md`; commands alone are not evidence.
 The command overwrites `.ai/VALIDATION.json` with the latest pass/failure record;
 inspect its timestamp and scope before using it as evidence.
 

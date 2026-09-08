@@ -1,0 +1,64 @@
+# Repository structure
+
+GUST is organized so source, proofs, generated artifacts, tools, and agent operating state have distinct homes. Keep public entry points small and move implementation details behind crate modules or example modules as they grow.
+
+## Top-level layout
+
+```text
+crates/                 published or publishable Rust crates
+examples/               runnable vertical proofs, each with a thin src/main.rs
+tests/fixtures/         compiler source/golden fixtures shared by tests
+generated-wgpu/         checked-in generated Slang/WGSL/SPIR-V/host artifacts
+docs/                   human and agent documentation
+  development/          operational status, handoff, workflow and structure docs
+scripts/probes/         non-Rust native probe sources used by xtask
+xtask/                  cross-platform project automation
+.github/                VS Code/Copilot agents, prompts and hooks
+.vscode/                workspace tasks only
+.ai/                    generated or machine-readable state only
+```
+
+## Operational state
+
+Human-readable operating state lives in `docs/development/`:
+
+- `STATUS.md` — current owner, active claim, completed evidence and handoff-quality notes.
+- `NEXT_TASKS.md` — ranked, claimable work with acceptance criteria.
+- `HANDOFF.md` — compact pickup notes for future humans and agents.
+- `CHANGED_FILES.md` — historical baseline inventory.
+
+`.ai/` is reserved for machine-readable/generated state such as `VALIDATION.json` and `BASELINE.sha256`. Do not add new narrative markdown there.
+
+## Crates
+
+Keep the current crate split until a measured need appears:
+
+- `gpu-dialect`: public API, descriptors, ABI metadata, Rust shadow types, Slang/compiler bridge, reflection and SPIR-V helpers.
+- `gpu-dialect-macros`: proc-macro validation, expansion and Rust AST -> Slang lowering.
+- `gpu-dialect-wgpu`: headless wgpu runtime, buffers, dispatch, pipeline cache, graph and pool support.
+- `xtask`: dependency-light project automation and validation commands.
+
+Prefer internal modules before new crates. Split a crate only when there is a stable public boundary, independent dependency profile, or clear compile-time/ownership benefit.
+
+## Examples
+
+Every example has a tiny `src/main.rs` that delegates to `src/app.rs`. The app module may contain GPU module definitions, host/reference code, artifact export and tests. For examples above roughly 300 lines, prefer the next split:
+
+```text
+src/main.rs       binary entry point only
+src/app.rs        top-level wiring and public run/main function
+src/gpu.rs        #[gpu] module and descriptors
+src/cpu.rs        independent host reference
+src/host.rs       runtime setup, buffers, graph/pool helpers, artifact export
+src/tests.rs      ignored example validation tests
+```
+
+Small examples may stay at `main.rs + app.rs`; large examples should move toward the fuller shape as they change for feature work.
+
+## Generated artifacts
+
+`generated-wgpu/` is checked in because readable artifacts are part of the compiler proof. Regenerate with `cargo xtask export-artifacts` or the relevant example binary. Never hand-edit generated artifacts. Moving this directory under `artifacts/` is allowed later, but it should be a dedicated commit because every exporter and docs link must change together.
+
+## Tooling
+
+Use `cargo xtask ...` for cross-platform workflow commands. Keep shell/PowerShell scripts out of the primary command surface. Native probe source files belong under `scripts/probes/` until a later dedicated move to `tools/slang-reflect/`.
