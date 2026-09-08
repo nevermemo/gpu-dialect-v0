@@ -2,8 +2,8 @@
 
 ## Active: none claimed (2026-09-08)
 
-The first wgpu runtime split is complete and ready to commit (below). Next cleanup
-candidate: extract generated host rendering or cache types from `gpu-dialect-wgpu`.
+The generated-host extraction is complete and ready to commit (below). Next cleanup
+candidate: extract cache types from `gpu-dialect-wgpu`.
 
 ```text
 owner: none
@@ -11,6 +11,25 @@ claim: none
 next_focused_check: cargo xtask check-feature gpu-smoke
 full_check_needed_before_commit: no
 ```
+
+## Wgpu runtime split — generated host renderer — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `8584bc2`; `cargo xtask check-feature gpu-smoke` passed
+before edits. No behavior changes intended.
+
+What changed. Moved `render_wgpu_source` and its private string-rendering helpers from
+`crates/gpu-dialect-wgpu/src/lib.rs` into `crates/gpu-dialect-wgpu/src/generated_host.rs`.
+Re-exported `render_wgpu_source` from `lib.rs` to keep the public path stable, and made
+`validate_kernel` `pub(crate)` so the renderer continues to use the same descriptor
+validation path.
+
+Validation: `cargo xtask check-feature gpu-smoke` passed (5, including
+`renders_descriptor_specific_wgpu_source`). `cargo xtask check-feature wgpu` passed all
+wgpu unit/integration tests (19 total across lib + integration targets). No generated
+artifact drift observed.
+
+Next command: claim cache extraction here, then run `cargo xtask check-feature gpu-smoke`.
 
 ## Wgpu runtime split — Error module — COMPLETE (2026-09-08)
 
