@@ -117,9 +117,21 @@ impl<T> Deref for Uniform<T> {
     }
 }
 
-/// Shadow stub for Slang's `atomicAdd`. The shadow kernel body is type-checked
-/// by rustc but never executed; this stub exists only to satisfy name resolution
-/// and performs no CPU work.
-pub fn atomic_add(_target: &mut u32, _operand: u32) -> u32 {
-    0
+/// Shadow stubs for Slang atomic operations. The shadow kernel body is
+/// type-checked by rustc but never executed; these stubs exist only to satisfy
+/// name resolution and perform no CPU work.
+pub fn atomic_add<T>(_target: &mut T, _operand: T) -> T {
+    unreachable!()
+}
+pub fn atomic_min<T>(_target: &mut T, _operand: T) -> T {
+    unreachable!()
+}
+pub fn atomic_max<T>(_target: &mut T, _operand: T) -> T {
+    unreachable!()
+}
+pub fn atomic_exchange<T>(_target: &mut T, _operand: T) -> T {
+    unreachable!()
+}
+pub fn atomic_compare_exchange<T>(_target: &mut T, _compare: T, _value: T) -> bool {
+    false
 }

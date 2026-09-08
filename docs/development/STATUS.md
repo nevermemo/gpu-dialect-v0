@@ -1,63 +1,104 @@
 # Current status
 
-## Active: T10 atomics — `atomic_add` on `RWStructuredBuffer<u32>` (2026-09-08)
+## T10 — atomics on `RWStructuredBuffer` — COMPLETE (2026-09-08)
 
-Owner: Kilo (local agent) at the user's explicit request. Bounded scope: implement
-`atomic_add` on `RWStructuredBuffer<u32>` only, through the direct syn-AST → Slang
-pipeline, with a real GPU contention test. No custom IR, no CPU fallback,
-relaxed/default memory ordering, unsupported forms rejected with diagnostics.
-Stop after the first vertical slice is proven; do not expand to `i32`,
-`atomic_min`, `atomic_max`, `atomic_exchange`, or `atomic_compare_exchange`
-without an explicit contract.
+Owner: Kilo (local agent) at the user's explicit request. Scope: implement all
+five atomic operations (`atomic_add`, `atomic_min`, `atomic_max`,
+`atomic_exchange`, `atomic_compare_exchange`) on `RWStructuredBuffer<u32>` and
+`RWStructuredBuffer<i32>`, through the direct syn-AST → Slang pipeline, with real
+GPU contention tests. No custom IR, no CPU fallback, relaxed/default memory
+ordering, unsupported forms rejected with diagnostics.
 
 ```text
 owner: Kilo
-claim: T10 atomic_add on RWStructuredBuffer<u32> — validator, emitter, golden, GPU contention test, compile-fail coverage
-next_focused_check: cargo xtask check-feature macro && cargo xtask check-feature wgpu
+claim: T10 all atomics on RWStructuredBuffer<u32/i32> — validator, emitter, golden, GPU contention tests, compile-fail coverage
+next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: yes
 ```
 
-File ownership: this task owns `crates/gust-macros/src/validate/mod.rs`,
-`crates/gust-macros/src/slang/mod.rs`, `crates/gust-macros/src/lib.rs` (tests),
+File ownership: `crates/gust-macros/src/validate/mod.rs`,
+`crates/gust-macros/src/slang/mod.rs`, `crates/gust-macros/src/tests/regression.rs`,
+`crates/gust/src/runtime.rs`, `crates/gust/src/lib.rs`,
 `tests/fixtures/atomics.rs`, `tests/fixtures/atomics.slang`,
 `crates/gust-wgpu/tests/atomics.rs`, and the T10 section of this file. No
-dependencies, no shader ABI expansion, no other T10 operations.
+dependencies, no shader ABI expansion.
 
-### Atomic contract (T10, first slice)
+### Atomic contract (T10)
 
-Accepted form:
+Accepted forms:
 
 ```rust
 atomic_add(&mut counter[0], 1u32);
+atomic_min(&mut counter[0], id.x);
+atomic_max(&mut counter[0], id.x);
+atomic_exchange(&mut counter[0], id.x);
+atomic_compare_exchange(&mut counter[0], 0u32, id.x);
 ```
 
-- `atomic_add` is a two-argument built-in, not a helper function.
+- Each atomic operation is a built-in, not a helper function.
 - The first argument must be a mutable reference to a single element of a
   read-write storage parameter: `&mut <buffer>[<index>]`.
-- `<buffer>` must be a kernel parameter of type `RWStructuredBuffer<u32>` (or the
-  `uint` alias). Read-only buffers, local variables, float elements, and any other
-  element type are rejected with a diagnostic.
+- `<buffer>` must be a kernel parameter of type `RWStructuredBuffer<u32>`,
+  `RWStructuredBuffer<uint>`, `RWStructuredBuffer<i32>`, or
+  `RWStructuredBuffer<int>`. Read-only buffers, local variables, float elements,
+  and any other element type are rejected with a diagnostic.
 - `<index>` is any valid index expression (validated as usual).
-- The second argument is the operand, validated as an ordinary expression; rustc
-  shadows it and Slang checks the type.
-- Lowers directly to Slang `atomicAdd(<buffer>[<index>], <operand>)`, which uses
-  relaxed/default memory ordering. No ordering spelling is emitted unless evidence
-  requires a narrower one.
-- The operation is a statement; it does not produce a value in this slice.
+- `atomic_add`, `atomic_min`, `atomic_max`, `atomic_exchange` take two arguments
+  (receiver + operand). `atomic_compare_exchange` takes three (receiver + compare
+  + value).
+- `atomic_min` and `atomic_max` are unsigned-only; signed elements are rejected.
+- Lowers directly to Slang `atomicAdd`, `atomicMin`, `atomicMax`, `atomicExchange`,
+  `atomicCompareExchange` methods on the buffer element, which use relaxed/default
+  memory ordering. No ordering spelling is emitted unless evidence requires a
+  narrower one.
+- The operations are statements; they do not produce values in this slice.
 
 Rejected with diagnostics (not silently lowered):
 
-- `atomic_add` on a read-only buffer (`StructuredBuffer`).
-- `atomic_add` on a float element (`RWStructuredBuffer<f32>`).
-- `atomic_add` on an unsupported element type (`RWStructuredBuffer<i32>`, `bool`, ...).
-- `atomic_add` on a local variable or a non-buffer receiver.
-- `atomic_add` with a non-element receiver (e.g. `&mut counter` without an index).
-- `atomic_add` with the wrong arity.
+- Any atomic on a read-only buffer (`StructuredBuffer`).
+- Any atomic on a float element (`RWStructuredBuffer<f32>`).
+- Any atomic on an unsupported element type (`bool`, `u64`, ...).
+- Any atomic on a local variable or a non-buffer receiver.
+- Any atomic with a non-element receiver (e.g. `&mut counter` without an index).
+- Any atomic with the wrong arity.
+- `atomic_min`/`atomic_max` on signed elements (`i32`/`int`).
 
-Proven end to end: the golden Slang fixture compiles to WGSL and SPIR-V, the
-reflection/runtime ABI gate still enforces the storage layout, and a real GPU test
-with 257 concurrent invocations incrementing one shared `u32` counter reads back
-exactly 257, matching an independent host reference.
+### Files changed
+
+- `crates/gust-macros/src/validate/mod.rs`: generalized `ATOMIC_OPERATIONS` table,
+  `atomic_element_allowed`, `check_atomic_call`, `visit_expr_call` atomic branch.
+- `crates/gust-macros/src/slang/mod.rs`: generalized `atomic_slang_method`,
+  `is_atomic_call`, `atomic_op_name`, `emit_expression` atomic branch.
+- `crates/gust-macros/src/tests/regression.rs`: 14 atomic regression tests
+  (accept/reject/golden).
+- `crates/gust/src/runtime.rs`: generic shadow stubs for all five atomic ops.
+- `crates/gust/src/lib.rs`: prelude exports for all five atomic ops.
+- `tests/fixtures/atomics.rs`: five kernels (`run`, `run_min`, `run_max`,
+  `run_exchange`, `run_cas`).
+- `tests/fixtures/atomics.slang`: reviewed golden (unchanged from first slice).
+- `crates/gust-wgpu/tests/atomics.rs`: six GPU tests including 257-thread
+  contention for `atomic_add`, `atomic_min`, `atomic_max`, `atomic_exchange`,
+  `atomic_compare_exchange`, and WGSL compilation.
+
+### Verification
+
+- `cargo test -p gust-macros -- atomic`: **14 passed** (all atomic regression tests).
+- `cargo test -p gust-wgpu --test atomics`: **6 passed** (all GPU tests including
+  257-thread contention producing exactly 257 for `atomic_add`).
+- `cargo clippy --workspace --all-targets`: **0 warnings**.
+- `cargo fmt --all -- --check`: **exit 0**.
+- `cargo xtask check-fast`: macro tests **45 passed**, core tests **18 passed**,
+  fmt/clippy clean.
+- GPU: NVIDIA GeForce RTX 5090 / Vulkan, Slang 2026.13.1-1-g84792eb15.
+- Reflection/runtime ABI gate still enforced (buffer declared as `Atomic<uint>`
+  in Slang, cross-checked by native helper before pipeline creation).
+
+### Remaining T10 scope
+
+None. All five atomic operations on `u32` and `i32` are implemented, tested, and
+proven end to end. Future extensions (float atomics, `atomic_sub`,
+`atomic_and`/`atomic_or`/`atomic_xor`, ordering qualifiers) require explicit
+contracts and are out of scope.
 
 ## Historical: GUST naming pass (2026-09-08)
 

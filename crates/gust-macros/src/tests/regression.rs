@@ -661,6 +661,146 @@ fn atomic_add_with_dynamic_index_is_accepted() {
 }
 
 #[test]
+fn atomic_add_on_rw_i32_buffer_element_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) {
+            atomic_add(&mut counter[0], 1i32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<int>> counter;"),
+        "buffer type must use Atomic<int>: {source}"
+    );
+    assert!(
+        source.contains("counter[0].add(int(1));"),
+        "atomic_add on i32 must lower to .add(): {source}"
+    );
+}
+
+#[test]
+fn atomic_min_on_rw_u32_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+            atomic_min(&mut counter[0], 5u32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<uint>> counter;"),
+        "buffer type must use Atomic<uint>: {source}"
+    );
+    assert!(
+        source.contains("counter[0].min(uint(5));"),
+        "atomic_min must lower to .min(): {source}"
+    );
+}
+
+#[test]
+fn atomic_max_on_rw_u32_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+            atomic_max(&mut counter[0], 5u32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<uint>> counter;"),
+        "buffer type must use Atomic<uint>: {source}"
+    );
+    assert!(
+        source.contains("counter[0].max(uint(5));"),
+        "atomic_max must lower to .max(): {source}"
+    );
+}
+
+#[test]
+fn atomic_exchange_on_rw_u32_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+            atomic_exchange(&mut counter[0], 42u32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<uint>> counter;"),
+        "buffer type must use Atomic<uint>: {source}"
+    );
+    assert!(
+        source.contains("counter[0].exchange(uint(42));"),
+        "atomic_exchange must lower to .exchange(): {source}"
+    );
+}
+
+#[test]
+fn atomic_exchange_on_rw_i32_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) {
+            atomic_exchange(&mut counter[0], 1i32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<int>> counter;"),
+        "buffer type must use Atomic<int>: {source}"
+    );
+    assert!(
+        source.contains("counter[0].exchange(int(1));"),
+        "atomic_exchange on i32 must lower to .exchange(): {source}"
+    );
+}
+
+#[test]
+fn atomic_compare_exchange_on_rw_u32_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+            atomic_compare_exchange(&mut counter[0], 0u32, 1u32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<uint>> counter;"),
+        "buffer type must use Atomic<uint>: {source}"
+    );
+    assert!(
+        source.contains("counter[0].compareExchange(uint(0), uint(1));"),
+        "atomic_compare_exchange must lower to .compareExchange(): {source}"
+    );
+}
+
+#[test]
+fn atomic_compare_exchange_on_rw_i32_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) {
+            atomic_compare_exchange(&mut counter[0], 0i32, 1i32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<int>> counter;"),
+        "buffer type must use Atomic<int>: {source}"
+    );
+    assert!(
+        source.contains("counter[0].compareExchange(int(0), int(1));"),
+        "atomic_compare_exchange on i32 must lower to .compareExchange(): {source}"
+    );
+}
+
+#[test]
 fn non_atomic_buffer_keeps_plain_element_type() {
     let source = translate(
         "mod plain {
@@ -681,7 +821,7 @@ fn non_atomic_buffer_keeps_plain_element_type() {
 }
 
 #[test]
-fn atomic_add_rejects_unsupported_receivers() {
+fn atomic_ops_reject_unsupported_receivers() {
     for (source, message) in [
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, counter: StructuredBuffer<uint>) { atomic_add(&mut counter[0], 1u32); } }",
@@ -689,10 +829,6 @@ fn atomic_add_rejects_unsupported_receivers() {
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_add(&mut counter[0], 1.0f32); } }",
-            "u32",
-        ),
-        (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) { atomic_add(&mut counter[0], 1i32); } }",
             "u32",
         ),
         (
@@ -709,11 +845,61 @@ fn atomic_add_rejects_unsupported_receivers() {
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter[0]); } }",
-            "two arguments",
+            "2 arguments",
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter[0], 1u32, 2u32); } }",
-            "two arguments",
+            "2 arguments",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_min(&mut counter[0], 1u32, 2u32); } }",
+            "2 arguments",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_compare_exchange(&mut counter[0], 1u32); } }",
+            "3 arguments",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_compare_exchange(&mut counter[0], 1u32, 2u32, 3u32); } }",
+            "3 arguments",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
+}
+
+#[test]
+fn atomic_min_max_reject_signed_elements() {
+    for (source, message) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) { atomic_min(&mut counter[0], 1i32); } }",
+            "unsigned",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) { atomic_max(&mut counter[0], 1i32); } }",
+            "unsigned",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
+}
+
+#[test]
+fn atomic_ops_reject_unsupported_element_types() {
+    for (source, message) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_add(&mut counter[0], 1.0f32); } }",
+            "u32",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_exchange(&mut counter[0], 1.0f32); } }",
+            "u32",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_compare_exchange(&mut counter[0], 1.0f32, 2.0f32); } }",
+            "u32",
         ),
     ] {
         let error = translate(source).unwrap_err();

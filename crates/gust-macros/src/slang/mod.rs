@@ -534,24 +534,39 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Call(call) if is_some_constructor(call) => {
             format!("__gust_some({})", emit_expression(&call.args[0])?)
         }
-        syn::Expr::Call(call) if is_atomic_add(call) => {
-            let syn::Expr::Reference(reference) = &call.args[0] else {
+        syn::Expr::Call(call) if is_atomic_call(call) => {
+            let op_name =
+                atomic_op_name(call).expect("is_atomic_call guarantees a recognized name");
+            let method =
+                atomic_slang_method(op_name).expect("recognized atomic op has a Slang method");
+            let receiver = call
+                .args
+                .first()
+                .expect("atomic call has at least one argument");
+            let syn::Expr::Reference(reference) = receiver else {
                 return Err(syn::Error::new_spanned(
-                    &call.args[0],
-                    "atomic_add requires a mutable reference to a buffer element",
+                    receiver,
+                    format!("`{op_name}` requires a mutable reference to a buffer element"),
                 ));
             };
             let syn::Expr::Index(index) = reference.expr.as_ref() else {
                 return Err(syn::Error::new_spanned(
                     &reference.expr,
-                    "atomic_add requires a buffer element",
+                    format!("`{op_name}` requires a buffer element"),
                 ));
             };
+            let args: Vec<String> = call
+                .args
+                .iter()
+                .skip(1)
+                .map(emit_expression)
+                .collect::<syn::Result<_>>()?;
             format!(
-                "{}[{}].add({})",
+                "{}[{}].{}({})",
                 emit_expression(&index.expr)?,
                 emit_expression(&index.index)?,
-                emit_expression(&call.args[1])?
+                method,
+                args.join(", ")
             )
         }
         syn::Expr::Call(call) => format!(
@@ -642,20 +657,53 @@ fn is_some_constructor(call: &syn::ExprCall) -> bool {
         && call.args.len() == 1
 }
 
-/// `atomic_add(&mut buffer[index], operand)`, the only atomic form this slice
-/// lowers. The validator has already accepted the shape; the emitter unwraps the
-/// reference receiver and emits Slang's `Atomic<T>.add()`.
-fn is_atomic_add(call: &syn::ExprCall) -> bool {
-    matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("atomic_add"))
-        && call.args.len() == 2
+/// Whether a call is a recognized atomic operation with the expected argument count.
+fn is_atomic_call(call: &syn::ExprCall) -> bool {
+    let Some(name) = atomic_op_name(call) else {
+        return false;
+    };
+    let expected = if name == "atomic_compare_exchange" {
+        3
+    } else {
+        2
+    };
+    call.args.len() == expected
 }
 
-/// Buffers referenced by `atomic_add` calls need `Atomic<T>` element types.
+/// The atomic operation name from the call, if recognized.
+fn atomic_op_name(call: &syn::ExprCall) -> Option<&'static str> {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    let ident = path.path.get_ident()?;
+    match ident.to_string().as_str() {
+        "atomic_add" => Some("atomic_add"),
+        "atomic_min" => Some("atomic_min"),
+        "atomic_max" => Some("atomic_max"),
+        "atomic_exchange" => Some("atomic_exchange"),
+        "atomic_compare_exchange" => Some("atomic_compare_exchange"),
+        _ => None,
+    }
+}
+
+/// The Slang method name for an atomic operation.
+fn atomic_slang_method(op_name: &str) -> Option<&'static str> {
+    match op_name {
+        "atomic_add" => Some("add"),
+        "atomic_min" => Some("min"),
+        "atomic_max" => Some("max"),
+        "atomic_exchange" => Some("exchange"),
+        "atomic_compare_exchange" => Some("compareExchange"),
+        _ => None,
+    }
+}
+
+/// Buffers referenced by atomic calls need `Atomic<T>` element types.
 struct AtomicUsage(std::collections::HashSet<String>);
 
 impl<'ast> Visit<'ast> for AtomicUsage {
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if is_atomic_add(call) {
+        if is_atomic_call(call) {
             if let syn::Expr::Reference(reference) = &call.args[0] {
                 if let syn::Expr::Index(index) = reference.expr.as_ref() {
                     if let syn::Expr::Path(path) = index.expr.as_ref() {
