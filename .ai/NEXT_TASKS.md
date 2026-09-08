@@ -14,6 +14,19 @@ compile-smoke tests use WGSL only; SPIR-V validation is centralized in full
 verification. Verify routine work with the owning focused test plus normal workspace;
 use full script for major/release evidence.
 
+## DX — command surface and staged verification — COMPLETE
+
+Status: complete (2026-09-08). Goal: remove command-choice ambiguity for humans and
+agents. Delivered: `scripts/check-fast.ps1`, `check-full.ps1`, `check-feature.ps1`,
+`check-examples.ps1`, `check-artifacts.ps1`, `export-artifacts.ps1`, and
+`measure-tests.ps1`; `verify.ps1` modes `Smoke`, `Fast`, `Gpu`, `Examples`,
+`Artifacts`, `Full` (legacy `-Full` still works); timestamp-gated native helper
+rebuild in `build-slang-reflect.ps1`; README validation matrix; VS Code tasks; GUST
+Builder command guidance. Rule: do not introduce shared `HeadlessDevice` fixtures
+until `measure-tests.ps1` shows GPU adapter initialization, not shader compilation or
+GPU work, is the bottleneck. Verify routine work with `check-feature`/`check-fast`;
+use `check-full` for major/release evidence.
+
 ## T01 — P0: Translation regression foundation
 
 Status: first slice complete. Goal: preserve helper returns, literals, grouping, and

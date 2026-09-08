@@ -1,5 +1,11 @@
-[CmdletBinding()]
-param([switch]$Full)
+[CmdletBinding(DefaultParameterSetName = 'Mode')]
+param(
+    [Parameter(ParameterSetName = 'Mode')]
+    [ValidateSet('Smoke', 'Fast', 'Gpu', 'Examples', 'Artifacts', 'Full')]
+    [string]$Mode = 'Smoke',
+    [Parameter(ParameterSetName = 'Full')]
+    [switch]$Full
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -12,6 +18,7 @@ $taskArtifacts = [System.Collections.Generic.List[object]]::new()
 $taskPassed = $false
 $taskFailure = $null
 $taskStarted = [DateTime]::UtcNow.ToString('o')
+$taskMode = if ($Full) { 'Full' } else { $Mode }
 
 function Invoke-Checked {
     param([string]$Program, [string[]]$Arguments)
@@ -53,27 +60,44 @@ try {
     foreach ($program in @('cargo', 'rustc', 'slangc')) {
         Get-Command $program -ErrorAction Stop | Out-Null
     }
-    if ($Full) { Get-Command spirv-val -ErrorAction Stop | Out-Null }
+    if ($taskMode -in @('Artifacts', 'Full')) { Get-Command spirv-val -ErrorAction Stop | Out-Null }
     Invoke-Checked rustc @('--version')
     Invoke-Checked slangc @('-version')
-    # The runtime refuses pipeline creation without the native reflection helper, so
-    # build it (and prove it loads its Slang library) before any cargo test runs.
     Invoke-Checked pwsh @('-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'build-slang-reflect.ps1'))
-    Invoke-Checked cargo @('fmt', '--all', '--', '--check')
-    Invoke-Checked cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
-    $examples = if ($Full) {
-        @('vector-add', 'polynomial', 'signal-pipeline', 'particle-step', 'typed-pipeline', 'staged-graph', 'component-pool')
-    } else { @('vector-add', 'typed-pipeline') }
-    Invoke-Checked cargo @('test', '--workspace')
-    if ($Full) {
+
+    $examples = @('vector-add', 'polynomial', 'signal-pipeline', 'particle-step', 'typed-pipeline', 'staged-graph', 'component-pool')
+    $smokeExamples = @('vector-add', 'typed-pipeline')
+
+    if ($taskMode -in @('Smoke', 'Fast', 'Full')) {
+        Invoke-Checked cargo @('fmt', '--all', '--', '--check')
+    }
+    if ($taskMode -in @('Smoke', 'Full')) {
+        Invoke-Checked cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
+    }
+
+    if ($taskMode -eq 'Fast') {
+        Invoke-Checked cargo @('test', '-p', 'gpu-dialect-macros')
+        Invoke-Checked cargo @('test', '-p', 'gpu-dialect', '--lib')
+        Invoke-Checked cargo @('test', '-p', 'gpu-dialect-wgpu')
+    }
+    if ($taskMode -eq 'Gpu') {
+        Invoke-Checked cargo @('test', '-p', 'gpu-dialect-wgpu')
+    }
+    if ($taskMode -in @('Smoke', 'Full')) {
+        Invoke-Checked cargo @('test', '--workspace')
+    }
+
+    if ($taskMode -in @('Examples', 'Full')) {
         foreach ($example in $examples) {
             Invoke-Checked cargo @('test', '-p', $example, '--', '--ignored')
         }
     }
-    foreach ($example in $examples) {
+    $examplesToRun = if ($taskMode -eq 'Smoke') { $smokeExamples } elseif ($taskMode -in @('Examples', 'Artifacts', 'Full')) { $examples } else { @() }
+    foreach ($example in $examplesToRun) {
         Invoke-Checked cargo @('run', '--quiet', '-p', $example)
     }
-    if ($Full) {
+
+    if ($taskMode -in @('Artifacts', 'Full')) {
         Invoke-Checked spirv-val @('--version')
         $artifacts = @(Get-ChildItem -LiteralPath (Join-Path $taskRoot 'generated-wgpu') -Filter '*.spv' -File)
         if ($artifacts.Count -ne 12) { throw "Expected 12 exported kernels, found $($artifacts.Count); update this check deliberately for new examples." }
@@ -99,7 +123,7 @@ try {
             schema_version = 1
             started_utc = $taskStarted
             finished_utc = [DateTime]::UtcNow.ToString('o')
-            mode = $(if ($Full) { 'full' } else { 'smoke' })
+            mode = $taskMode.ToLowerInvariant()
             passed = $taskPassed
             failure = $taskFailure
             scope = 'Debug native Vulkan wgpu execution of Slang-generated WGSL; SPIR-V export validation is separate.'

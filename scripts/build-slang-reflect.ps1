@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$SdkRoot = $env:SLANG_SDK,
-    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'target/slang-reflect')
+    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'target/slang-reflect'),
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,6 +36,18 @@ if ($IsWindows) {
     $dll = Join-Path $binaryDirectory $dllName
     if (-not (Test-Path -LiteralPath $dll)) { throw "Missing matching compiler library: $dll" }
     $executable = Join-Path $OutputDirectory 'gust-slang-reflect.exe'
+    if (-not $Force -and (Test-Path -LiteralPath $executable)) {
+        $exeTime = (Get-Item -LiteralPath $executable).LastWriteTimeUtc
+        $sourceTime = (Get-Item -LiteralPath $source).LastWriteTimeUtc
+        $libraryTime = (Get-Item -LiteralPath $library).LastWriteTimeUtc
+        $dllTime = (Get-Item -LiteralPath $dll).LastWriteTimeUtc
+        if ($exeTime -ge $sourceTime -and $exeTime -ge $libraryTime -and $exeTime -ge $dllTime) {
+            & $executable --version
+            if ($LASTEXITCODE -ne 0) { throw "Native Slang reflection compiler could not load (exit $LASTEXITCODE)." }
+            Write-Host "Reflection compiler: $executable (up to date)"
+            return
+        }
+    }
     $arguments = @('/nologo', '/std:c++17', '/EHsc', '/W4', '/WX', "/I$include", $source,
         "/Fo$(Join-Path $OutputDirectory 'gust-slang-reflect.obj')", "/Fe$executable", '/link', $library)
     & cl @arguments
@@ -52,6 +65,17 @@ if ($IsWindows) {
     if (-not $library) { throw "No Slang shared library in $libraryDirectory." }
     $compiler = if ($env:CXX) { $env:CXX } else { 'c++' }
     $executable = Join-Path $OutputDirectory 'gust-slang-reflect'
+    if (-not $Force -and (Test-Path -LiteralPath $executable)) {
+        $exeTime = (Get-Item -LiteralPath $executable).LastWriteTimeUtc
+        $sourceTime = (Get-Item -LiteralPath $source).LastWriteTimeUtc
+        $libraryTime = (Get-Item -LiteralPath $library).LastWriteTimeUtc
+        if ($exeTime -ge $sourceTime -and $exeTime -ge $libraryTime) {
+            & $executable --version
+            if ($LASTEXITCODE -ne 0) { throw "Native Slang reflection compiler could not load (exit $LASTEXITCODE)." }
+            Write-Host "Reflection compiler: $executable (up to date)"
+            return
+        }
+    }
     & $compiler '-std=c++17' '-Wall' '-Wextra' '-Werror' "-I$include" $source $library "-Wl,-rpath,$libraryDirectory" '-o' $executable
     if ($LASTEXITCODE -ne 0) { throw "Native Slang reflection build failed (exit $LASTEXITCODE)." }
 }
