@@ -2,8 +2,8 @@
 
 ## Active: none claimed (2026-09-08)
 
-The `xtask` modularization slice is complete and ready to commit (below). Next cleanup
-candidate: split low-risk pieces from `crates/gpu-dialect-wgpu/src/lib.rs`.
+The first wgpu runtime split is complete and ready to commit (below). Next cleanup
+candidate: extract generated host rendering or cache types from `gpu-dialect-wgpu`.
 
 ```text
 owner: none
@@ -11,6 +11,24 @@ claim: none
 next_focused_check: cargo xtask check-feature gpu-smoke
 full_check_needed_before_commit: no
 ```
+
+## Wgpu runtime split — Error module — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `ccc3068`; `cargo xtask check-feature gpu-smoke` passed
+before edits. No runtime behavior changes intended.
+
+What changed. Moved `gpu_dialect_wgpu::Error` and its `Display`/`std::error::Error`
+impls out of `crates/gpu-dialect-wgpu/src/lib.rs` into
+`crates/gpu-dialect-wgpu/src/error.rs`, then re-exported it from `lib.rs` so the public
+`gpu_dialect_wgpu::Error` path remains stable. Removed the stale `std::error` import
+from `lib.rs`.
+
+Validation: first smoke compile caught the old import collision; after removing it,
+`cargo xtask check-feature gpu-smoke` passed (5). `cargo xtask check-feature wgpu`
+passed all wgpu unit/integration tests (19 total across lib + integration targets).
+
+Next command: claim generated-host or cache extraction here, then run `cargo xtask check-feature gpu-smoke`.
 
 ## Xtask modularization — COMPLETE (2026-09-08)
 
