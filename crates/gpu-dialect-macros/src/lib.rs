@@ -5,6 +5,7 @@ mod slang;
 mod validate;
 
 #[cfg(test)]
+#[path = "tests/regression.rs"]
 mod regression_tests;
 
 /// Marks an inline Rust module as GPU Dialect code.

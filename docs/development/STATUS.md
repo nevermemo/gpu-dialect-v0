@@ -2,16 +2,31 @@
 
 ## Active: none claimed (2026-09-08)
 
-The wgpu cache extraction is complete and ready to commit (below). Next cleanup
-candidate: continue splitting `gpu-dialect-wgpu/src/lib.rs` or begin macro crate
-module extraction.
+The macro test-layout cleanup is complete and ready to commit (below). Next cleanup
+candidate: split validator/lowering internals carefully, or pause for a full check.
 
 ```text
 owner: none
 claim: none
-next_focused_check: cargo xtask check-feature gpu-smoke
+next_focused_check: cargo xtask check-feature macro
 full_check_needed_before_commit: no
 ```
+
+## Macro crate cleanup — regression test layout — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `b473f29`; `cargo xtask check-feature macro` passed before
+edits. No validator/lowering behavior changes intended.
+
+What changed. Moved `crates/gpu-dialect-macros/src/regression_tests.rs` to
+`crates/gpu-dialect-macros/src/tests/regression.rs` and used `#[path =
+"tests/regression.rs"] mod regression_tests;` so existing `regression_tests::...` test
+names remain stable. Updated fixture `include_str!` paths for the deeper file.
+
+Validation: first macro check caught the expected moved-path failures; after path
+updates, `cargo xtask check-feature macro` passed (31 tests + 0 doctests).
+
+Next command: claim the next cleanup slice here, or run `cargo xtask check-fast` before pausing.
 
 ## Wgpu runtime split — cache module — COMPLETE (2026-09-08)
 
