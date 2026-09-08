@@ -1,0 +1,11 @@
+[package]
+name = "atomic-counter"
+description = "T10 atomic_add contention test: 257 threads increment one shared u32 counter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gust.workspace = true
+gust-wgpu.workspace = true

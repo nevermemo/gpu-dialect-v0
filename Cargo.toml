@@ -3,6 +3,7 @@ members = [
     "crates/gust",
     "crates/gust-macros",
     "crates/gust-wgpu",
+    "examples/atomic-counter",
     "examples/component-pool",
     "examples/polynomial",
     "examples/particle-step",

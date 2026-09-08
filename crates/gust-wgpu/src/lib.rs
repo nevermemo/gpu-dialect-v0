@@ -67,6 +67,28 @@ impl<'a> F32Binding<'a> {
     }
 }
 
+/// Host data for one reflected `Storage<u32>` or `StorageMut<u32>` parameter.
+#[derive(Clone, Copy, Debug)]
+pub enum U32Binding<'a> {
+    ReadOnly(&'a [u32]),
+    ReadWrite(&'a [u32]),
+}
+
+impl<'a> U32Binding<'a> {
+    fn values(self) -> &'a [u32] {
+        match self {
+            Self::ReadOnly(values) | Self::ReadWrite(values) => values,
+        }
+    }
+
+    fn access(self) -> Access {
+        match self {
+            Self::ReadOnly(_) => Access::ReadOnly,
+            Self::ReadWrite(_) => Access::ReadWrite,
+        }
+    }
+}
+
 /// Logical shader access assigned to a persistent GPU buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuBufferAccess {
@@ -249,6 +271,12 @@ impl<'a> F32BufferDispatch<'a> {
 #[derive(Debug, PartialEq)]
 pub struct DispatchOutput {
     pub writable_buffers: Vec<Vec<f32>>,
+}
+
+/// Result of a completed `u32` dispatch. Writable buffers are returned in binding order.
+#[derive(Debug, PartialEq)]
+pub struct U32DispatchOutput {
+    pub writable_buffers: Vec<Vec<u32>>,
 }
 
 /// Host-observed time for an explicit transfer boundary.
@@ -984,6 +1012,136 @@ impl HeadlessDevice {
         Ok(DispatchOutput { writable_buffers })
     }
 
+    /// Dispatch an executable kernel over `element_count` one-dimensional invocations
+    /// using `u32` storage buffers.
+    pub fn dispatch_u32(
+        &self,
+        kernel: &KernelDescriptor,
+        element_count: u32,
+        bindings: &[U32Binding<'_>],
+    ) -> Result<U32DispatchOutput, Error> {
+        let resources = validate_u32_dispatch(kernel, element_count, bindings)?;
+        if element_count == 0 {
+            return Ok(U32DispatchOutput {
+                writable_buffers: bindings
+                    .iter()
+                    .copied()
+                    .filter_map(|binding| match binding {
+                        U32Binding::ReadWrite(values) => Some(values.to_vec()),
+                        U32Binding::ReadOnly(_) => None,
+                    })
+                    .collect(),
+            });
+        }
+
+        let label = kernel.qualified_name().to_string();
+        let cached_kernel = self.cached_kernel(kernel, &resources)?;
+
+        let gpu_buffers = bindings
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, binding)| {
+                let bytes = pod_slice_as_bytes(binding.values());
+                let mut usage = wgpu::BufferUsages::STORAGE;
+                if binding.access() == Access::ReadWrite {
+                    usage |= wgpu::BufferUsages::COPY_SRC;
+                }
+                self.device.create_buffer_init(&BufferInitDescriptor {
+                    label: Some(&format!("{label} binding {index}")),
+                    contents: bytes,
+                    usage,
+                })
+            })
+            .collect::<Vec<_>>();
+        let bind_group_entries = resources
+            .iter()
+            .zip(&gpu_buffers)
+            .map(|(parameter, buffer)| wgpu::BindGroupEntry {
+                binding: parameter
+                    .binding
+                    .expect("validated resource binding")
+                    .binding,
+                resource: buffer.as_entire_binding(),
+            })
+            .collect::<Vec<_>>();
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(&format!("{label} bind group")),
+            layout: &cached_kernel.bind_group_layout,
+            entries: &bind_group_entries,
+        });
+
+        let byte_size = u64::from(element_count) * size_of::<u32>() as u64;
+        let readback_buffers = bindings
+            .iter()
+            .copied()
+            .map(|binding| match binding {
+                U32Binding::ReadOnly(_) => None,
+                U32Binding::ReadWrite(_) => {
+                    Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some(&format!("{label} readback")),
+                        size: byte_size,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    }))
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some(&format!("{label} command encoder")),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(&format!("{label} compute pass")),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&cached_kernel.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(element_count.div_ceil(kernel.workgroup_size[0]), 1, 1);
+        }
+        for (gpu_buffer, readback) in gpu_buffers.iter().zip(&readback_buffers) {
+            if let Some(readback) = readback {
+                encoder.copy_buffer_to_buffer(gpu_buffer, 0, readback, 0, byte_size);
+            }
+        }
+        self.queue.submit([encoder.finish()]);
+
+        let mut completions = Vec::new();
+        for readback in readback_buffers.iter().flatten() {
+            let (sender, receiver) = mpsc::channel();
+            readback.map_async(wgpu::MapMode::Read, .., move |result| {
+                let _ = sender.send(result.map_err(|error| error.to_string()));
+            });
+            completions.push(receiver);
+        }
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|error| Error::Poll(error.to_string()))?;
+
+        let mut writable_buffers = Vec::with_capacity(completions.len());
+        for (readback, completion) in readback_buffers.iter().flatten().zip(completions) {
+            completion
+                .recv()
+                .map_err(|error| Error::Map(error.to_string()))?
+                .map_err(Error::Map)?;
+            let view = readback
+                .get_mapped_range(..)
+                .map_err(|error| Error::Map(error.to_string()))?;
+            let values = view
+                .chunks_exact(size_of::<u32>())
+                .map(|chunk| u32::from_ne_bytes(chunk.try_into().expect("four-byte u32")))
+                .collect();
+            drop(view);
+            readback.unmap();
+            writable_buffers.push(values);
+        }
+
+        Ok(U32DispatchOutput { writable_buffers })
+    }
+
     fn prepare_batch(
         &self,
         dispatches: &[BufferDispatch<'_>],
@@ -1242,6 +1400,41 @@ fn validate_dispatch(
         validate_binding_layout(
             parameter,
             ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT),
+        )?;
+        if parameter.access != binding.access() {
+            return Err(Error::BindingAccess {
+                parameter: parameter.name.to_owned(),
+                expected: parameter.access,
+                actual: binding.access(),
+            });
+        }
+        if binding.values().len() != element_count as usize {
+            return Err(Error::BufferLength {
+                parameter: parameter.name.to_owned(),
+                expected: element_count as usize,
+                actual: binding.values().len(),
+            });
+        }
+    }
+    Ok(resources)
+}
+
+fn validate_u32_dispatch(
+    kernel: &KernelDescriptor,
+    element_count: u32,
+    bindings: &[U32Binding<'_>],
+) -> Result<Vec<&'static ParameterDescriptor>, Error> {
+    let resources = validate_kernel(kernel)?;
+    if resources.len() != bindings.len() {
+        return Err(Error::BindingCount {
+            expected: resources.len(),
+            actual: bindings.len(),
+        });
+    }
+    for (parameter, binding) in resources.iter().copied().zip(bindings.iter().copied()) {
+        validate_binding_layout(
+            parameter,
+            ResourceLayout::storage_v1(<u32 as GpuPod>::LAYOUT),
         )?;
         if parameter.access != binding.access() {
             return Err(Error::BindingAccess {

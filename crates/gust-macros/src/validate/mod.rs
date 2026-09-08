@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use syn::visit::{self, Visit};
 
@@ -56,6 +56,31 @@ fn option_payload(ty: &syn::TypePath) -> Option<Option<&syn::Type>> {
         (Some(payload), None, 1) => Some(Some(payload)),
         _ => Some(None),
     }
+}
+
+/// The element type of an `RWStructuredBuffer<T>` parameter, when the type is a
+/// single-segment path with exactly one type argument.
+fn rw_buffer_element_type(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(type_path) = ty else {
+        return None;
+    };
+    if type_path.qself.is_some() || type_path.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = &type_path.path.segments[0];
+    if segment.ident != "RWStructuredBuffer" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(element) = arguments.args.first()? else {
+        return None;
+    };
+    let syn::Type::Path(element_path) = element else {
+        return None;
+    };
+    element_path.path.get_ident().map(ToString::to_string)
 }
 
 /// `Some(identifier)` in an `if let`, the only pattern with a direct Slang lowering.
@@ -279,8 +304,16 @@ fn validate_function(function: &syn::ItemFn, function_names: &HashSet<String>) -
                     ParameterFlavor::Invocation => {
                         visitor.invocations.insert(name.ident.to_string());
                     }
-                    ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite => {
+                    ParameterFlavor::StorageRead => {
                         visitor.resources.insert(name.ident.to_string());
+                    }
+                    ParameterFlavor::StorageReadWrite => {
+                        visitor.resources.insert(name.ident.to_string());
+                        if let Some(element) = rw_buffer_element_type(&argument.ty) {
+                            visitor
+                                .read_write_buffers
+                                .insert(name.ident.to_string(), element);
+                        }
                     }
                     _ => {}
                 }
@@ -295,6 +328,8 @@ struct RestrictedVisitor {
     function_names: HashSet<String>,
     resources: HashSet<String>,
     invocations: HashSet<String>,
+    /// Read-write buffer parameters and their element type, for atomic receivers.
+    read_write_buffers: HashMap<String, String>,
     /// Set while inside a type position where `Option` has no proven layout.
     option_forbidden: Option<&'static str>,
     /// Number of enclosing `for` loops; `break`/`continue` need at least one.
@@ -308,6 +343,7 @@ impl RestrictedVisitor {
             function_names,
             resources: HashSet::new(),
             invocations: HashSet::new(),
+            read_write_buffers: HashMap::new(),
             option_forbidden: None,
             loop_depth: 0,
             error: None,
@@ -344,6 +380,70 @@ impl RestrictedVisitor {
         if self.loop_depth == 0 {
             self.reject(node, &format!("`{name}` outside a loop has no meaning"));
         }
+    }
+
+    /// Validates `atomic_add(&mut buffer[index], operand)` on a `u32` read-write
+    /// buffer element. The reference receiver is not visited as a value reference;
+    /// the index and operand are validated as ordinary expressions.
+    fn validate_atomic_add(&mut self, call: &syn::ExprCall) {
+        if call.args.len() != 2 {
+            self.reject(
+                call,
+                "`atomic_add` takes exactly two arguments: `atomic_add(&mut buffer[index], operand)`",
+            );
+            return;
+        }
+        let syn::Expr::Reference(ref reference) = call.args[0] else {
+            self.reject(
+                &call.args[0],
+                "`atomic_add` requires a mutable reference to a buffer element: `&mut buffer[index]`",
+            );
+            return;
+        };
+        if reference.mutability.is_none() {
+            self.reject(
+                &call.args[0],
+                "`atomic_add` requires a mutable reference: `&mut buffer[index]`",
+            );
+            return;
+        }
+        let syn::Expr::Index(index) = reference.expr.as_ref() else {
+            self.reject(
+                &reference.expr,
+                "`atomic_add` requires a read-write buffer element: `&mut buffer[index]`",
+            );
+            return;
+        };
+        let syn::Expr::Path(buffer_path) = index.expr.as_ref() else {
+            self.reject(
+                &index.expr,
+                "`atomic_add` requires a direct buffer receiver: `&mut buffer[index]`",
+            );
+            return;
+        };
+        let buffer_name = buffer_path.path.get_ident().map(ToString::to_string);
+        let element = match buffer_name
+            .as_ref()
+            .and_then(|name| self.read_write_buffers.get(name))
+        {
+            Some(element) => element,
+            None => {
+                self.reject(
+                    &index.expr,
+                    "`atomic_add` requires a read-write buffer parameter: `RWStructuredBuffer<u32>`",
+                );
+                return;
+            }
+        };
+        if element != "u32" && element != "uint" {
+            self.reject(
+                &index.expr,
+                "`atomic_add` requires a `u32`/`uint` element; other element types are not supported for atomics",
+            );
+            return;
+        }
+        self.visit_expr(&index.index);
+        self.visit_expr(&call.args[1]);
     }
 }
 
@@ -498,6 +598,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 }
                 // The callee is the prelude constructor, not a bare path value.
                 self.visit_expr(&call.args[0]);
+                return;
+            }
+            if path.path.is_ident("atomic_add") {
+                self.validate_atomic_add(call);
                 return;
             }
         }
