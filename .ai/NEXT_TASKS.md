@@ -3,6 +3,17 @@
 Claim one bounded task in STATUS before editing. Verify repository state; this list
 is not authority to contact external agents or change account settings.
 
+## DX — test-speed split — COMPLETE
+
+Status: complete (2026-09-08). Goal: make the inner loop purposeful and faster
+without deleting coverage. Regular `cargo test --workspace` skips example crate tests
+(they are marked ignored with the shared reason "example validation runs only in full
+verification"). `scripts/verify.ps1 -Full` runs ignored example tests explicitly,
+then runs each example binary and validates exported SPIR-V. Regular per-feature
+compile-smoke tests use WGSL only; SPIR-V validation is centralized in full
+verification. Verify routine work with the owning focused test plus normal workspace;
+use full script for major/release evidence.
+
 ## T01 — P0: Translation regression foundation
 
 Status: first slice complete. Goal: preserve helper returns, literals, grouping, and

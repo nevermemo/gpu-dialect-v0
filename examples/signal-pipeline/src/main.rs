@@ -367,6 +367,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "example validation runs only in full verification"]
     fn cpu_reference_runs_the_full_pipeline() {
         let inputs = Inputs::new(8);
         let mut output = [0.0; 8];
@@ -381,6 +382,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "example validation runs only in full verification"]
     fn headless_gpu_matches_cpu_reference() {
         let device = match HeadlessDevice::new() {
             Ok(device) => device,
@@ -399,6 +401,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "example validation runs only in full verification"]
     fn descriptor_and_generated_host_code_are_executable() {
         let descriptor = signal_pipeline::transform::DESCRIPTOR;
         assert!(
@@ -411,45 +414,5 @@ mod tests {
         assert!(source.contains("pub fn encode("));
         assert!(source.contains("binding: 5,"));
         assert!(source.contains("scale.as_entire_binding()"));
-    }
-
-    #[test]
-    fn spirv_tools_accepts_artifact_when_installed() {
-        assert_spirv_tools_accepts(signal_pipeline::transform::DESCRIPTOR);
-    }
-
-    fn assert_spirv_tools_accepts(descriptor: gpu_dialect::KernelDescriptor) {
-        let Ok(version) = std::process::Command::new("spirv-val")
-            .arg("--version")
-            .output()
-        else {
-            return;
-        };
-        if !version.status.success() {
-            return;
-        }
-        let path = std::env::temp_dir().join(format!(
-            "gpu-dialect-signal-pipeline-{}.spv",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
-            gpu_dialect::spirv::words_as_le_bytes(
-                &gpu_dialect::slang::compile_spirv(&descriptor)
-                    .expect("compile signal pipeline through Slang"),
-            ),
-        )
-        .expect("write temporary SPIR-V module");
-        let output = std::process::Command::new("spirv-val")
-            .args(["--target-env", "vulkan1.2"])
-            .arg(&path)
-            .output()
-            .expect("run spirv-val");
-        let _ = std::fs::remove_file(path);
-        assert!(
-            output.status.success(),
-            "spirv-val rejected generated module: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
 }

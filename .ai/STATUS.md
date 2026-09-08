@@ -2,10 +2,51 @@
 
 ## Active: none claimed (2026-09-08)
 
-T09 is complete and committed (below). The next ordered compiler extension is T10:
-atomics on `RWStructuredBuffer<u32|i32>`. Claim it here before editing. Keep the
-contract and tests narrow; the owner explicitly wants faster, purpose-driven checks
-and a test-pruning pass after this milestone.
+The DX test-speed split is complete and committed (below). The next ordered compiler
+extension remains T10 atomics, but keep using the new validation policy: focused test
+first, normal `cargo test --workspace` for routine confidence, and
+`scripts/verify.ps1 -Full` for major/release evidence.
+
+## DX — test-speed split — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `0d98e73` (T09 pushed). No compiler/runtime semantics,
+dependency, generated artifact, or example binary behavior changes.
+
+What changed. Example crate tests are no longer part of the normal development test
+loop: every `#[test]` in the seven example crates is marked
+`#[ignore = "example validation runs only in full verification"]`. The tests are not
+deleted; `scripts/verify.ps1 -Full` now runs `cargo test -p <example> -- --ignored`
+for every example before running each example binary and validating exported SPIR-V.
+Regular per-feature target compile smoke tests now compile WGSL only:
+`semantics_compile_to_wgsl`, `numeric_compiles_to_wgsl`, `option_compiles_to_wgsl`,
+`struct_assignment_compiles_to_wgsl`, and `loops_compile_to_wgsl`. Redundant
+example-side SPIR-V structure / `spirv-val` tests were removed; centralized full
+verification still validates all twelve exported `.spv` artifacts.
+
+Files: `crates/gpu-dialect-wgpu/tests/{semantics,numeric,option,struct_assignment,loops}.rs`,
+all seven `examples/*/src/main.rs`, `scripts/verify.ps1`, README, `.ai/` records.
+
+Verification (Rust 1.98.0, Slang 2026.13.1-1-g84792eb15, SPIRV-Tools v2026.3,
+NVIDIA GeForce RTX 5090 / Vulkan, pwsh 7.6.5): focused touched wgpu tests
+`cargo test -p gpu-dialect-wgpu --test semantics --test numeric --test option --test
+struct_assignment --test loops` **10 passed**. `cargo test --workspace` now reports
+**82 passed, 27 ignored** (ignored = example tests) plus 5 doctests, instead of
+running the example validation tests every time. `cargo test -p vector-add --
+--ignored` **3 passed**, proving ignored example tests remain executable. `cargo fmt
+--all -- --check` exit 0; `cargo clippy --workspace --all-targets -- -D warnings`
+exit 0. `pwsh -File scripts/verify.ps1 -Full` **GUST verification passed**;
+`.ai/VALIDATION.json` refreshed at 2026-09-08T08:56Z with 33 checks, 12 exported
+SPIR-V artifacts, and the captured full log shows **109 passed, 27 ignored** (the 109
+includes the 27 ignored example tests run explicitly by package). No `generated-wgpu/`
+drift.
+
+Purpose. The routine loop is now faster and more purposeful: feature changes should
+start with the exact owning test, then the normal workspace suite; example proofs,
+example binaries, and exported SPIR-V validation are reserved for major changes and
+release readiness.
+
+Next command: claim T10 here, then write the atomics contract before code.
 
 ## T09 — bounded `for` loops in the dialect — COMPLETE (2026-09-08)
 

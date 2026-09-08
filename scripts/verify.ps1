@@ -61,10 +61,15 @@ try {
     Invoke-Checked pwsh @('-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'build-slang-reflect.ps1'))
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
     Invoke-Checked cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
-    Invoke-Checked cargo @('test', '--workspace')
     $examples = if ($Full) {
         @('vector-add', 'polynomial', 'signal-pipeline', 'particle-step', 'typed-pipeline', 'staged-graph', 'component-pool')
     } else { @('vector-add', 'typed-pipeline') }
+    Invoke-Checked cargo @('test', '--workspace')
+    if ($Full) {
+        foreach ($example in $examples) {
+            Invoke-Checked cargo @('test', '-p', $example, '--', '--ignored')
+        }
+    }
     foreach ($example in $examples) {
         Invoke-Checked cargo @('run', '--quiet', '-p', $example)
     }

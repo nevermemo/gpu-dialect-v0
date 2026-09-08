@@ -104,13 +104,11 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
 }
 
 #[test]
-fn numeric_compiles_to_both_targets() {
+fn numeric_compiles_to_wgsl() {
     let descriptor = &numeric::run::DESCRIPTOR;
     assert!(
         gpu_dialect::slang::compile_wgsl(descriptor)
             .unwrap()
             .contains("@compute")
     );
-    let words = gpu_dialect::slang::compile_spirv(descriptor).unwrap();
-    gpu_dialect::spirv::validate_structure(&words).unwrap();
 }
