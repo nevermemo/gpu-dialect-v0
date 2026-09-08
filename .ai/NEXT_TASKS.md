@@ -179,30 +179,27 @@ count generation beyond clamping (the dialect has no atomics or loops), culling,
 rendering. Open follow-ups: a growth benchmark separating allocate/copy/submit, and
 multi-buffer pools (SoA) once a second engine user needs them.
 
-## T09 — P1, authorized: bounded loops in the dialect
+## T09 — P1: bounded loops in the dialect — COMPLETE
 
-Status: not claimed. Owner pre-authorized (2026-09-08) as the first of the ordered
-compiler extensions: loops, then atomics (T10), then standard-prelude lowering (T11).
-Goal: `for i in a..b` (and `..=`) over 32-bit integer ranges, plus `while` with a
-provable local bound, lowered to Slang `for`/`while` with a per-loop iteration budget
-so a kernel can never spin unboundedly (AGENTS: no inter-workgroup spin waits; a GPU
-thread must always terminate). Why: every engine proof after T08 (culling, compaction,
-prefix sums, neighbour loops) needs iteration; today the validator rejects all loops.
-Contract to write first (in `docs/ARCHITECTURE.md` "Translation stability" and a
-D18): supported forms, `break`/`continue` policy, loop-variable typing (explicit
-`u32`/`i32` only, no inference), nested-loop limit, and the diagnostic for
-`loop {}`, iterator adaptors, `for x in buffer`, and non-literal-bounded `while`.
-Done means: validator rules with single-cause rejection tests; emitter change;
-reviewed golden `tests/fixtures/loops.{rs,slang}`; both targets compile;
-`spirv-val`; a real-GPU differential test (e.g. per-element prefix sum over a
-bounded window and a nested 2-level loop) at 1/63/64/65/257 elements; no
-regression in existing goldens. Files: macro `validate.rs`, `slang.rs`,
-`regression_tests.rs`; new fixture; new wgpu test.
-Verify: `cargo test -p gpu-dialect-macros` then `cargo test --workspace`.
+Status: complete (2026-09-08, D18). Owner pre-authorized (2026-09-08) as the first
+of the ordered compiler extensions. Delivered: `for i in start..end` with the end
+bound evaluated once into a reserved temporary, immutable fresh loop variables, `_`
+counter naming, unlabeled valueless `break`/`continue`, and `return` from inside loop
+bodies. Rejected: `while`, `loop`, `..=`, open ranges, non-range iterables,
+tuple/`mut`/`ref` patterns, labels, value-position jumps, unsuffixed literal bounds,
+and resource/dispatch-ID shadowing. Evidence: reviewed D18 contract,
+`tests/fixtures/loops.{rs,slang}`, macro regression tests, external loop-specific
+`spirv-val`, and a real-GPU differential test at 1/63/64/65/257. Full `verify.ps1
+-Full` passed with no generated-wgpu drift.
+Not done (by design): `while` with budgets, inclusive ranges, iterator adaptors,
+runtime trip-count analysis, and validator-side proof of non-literal range operand
+types (rustc shadows and Slang own those today).
+Verify: `cargo test -p gpu-dialect-macros loops` and `cargo test -p gpu-dialect-wgpu
+--test loops`.
 
 ## T10 — P2, authorized: atomics on `RWStructuredBuffer<u32|i32>`
 
-Status: not claimed; depends on T09. Goal: a small proven set — `atomic_add`,
+Status: not claimed; depends on T09 (satisfied). Goal: a small proven set — `atomic_add`,
 `atomic_min`/`max`, `atomic_exchange`, `atomic_compare_exchange` — as explicit
 methods on buffer elements, lowered to Slang `InterlockedAdd`/... and verified on
 WGSL (`atomicAdd` on `atomic<u32>` storage) and SPIR-V. Why: GPU-side active-count

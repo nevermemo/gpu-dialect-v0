@@ -89,6 +89,59 @@ fn is_literal_zero(expression: &syn::Expr) -> bool {
     }
 }
 
+/// A loop bound that is a bare integer literal (through parentheses and unary
+/// minus) without a type suffix. Slang would type it `int` while rustc may infer
+/// `u32` from the other bound, so the counter types would silently diverge.
+fn is_unsuffixed_integer_literal(expression: &syn::Expr) -> bool {
+    match expression {
+        syn::Expr::Lit(literal) => {
+            matches!(&literal.lit, syn::Lit::Int(value) if value.suffix().is_empty())
+        }
+        syn::Expr::Paren(paren) => is_unsuffixed_integer_literal(&paren.expr),
+        syn::Expr::Group(group) => is_unsuffixed_integer_literal(&group.expr),
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            is_unsuffixed_integer_literal(&unary.expr)
+        }
+        _ => false,
+    }
+}
+
+/// The loop-variable binding of a `for` loop: `_` or a plain immutable identifier.
+pub fn loop_variable(pattern: &syn::Pat) -> Result<Option<&syn::PatIdent>, &'static str> {
+    match pattern {
+        syn::Pat::Wild(_) => Ok(None),
+        syn::Pat::Ident(ident) if ident.mutability.is_some() => Err(
+            "the loop variable is immutable in the Rust-to-Slang subset: Slang's counter would diverge from Rust's fresh per-iteration binding; copy it into a `let mut` local",
+        ),
+        syn::Pat::Ident(ident) if ident.by_ref.is_some() || ident.subpat.is_some() => {
+            Err("reference and @ binding modes are not supported in GPU code")
+        }
+        syn::Pat::Ident(ident) => Ok(Some(ident)),
+        _ => Err("the `for` loop variable must be a single identifier or `_`"),
+    }
+}
+
+/// The `start..end` bounds of a `for` loop, or the diagnostic explaining why the
+/// iterable has no bounded Slang lowering.
+pub fn range_bounds(iterable: &syn::Expr) -> Result<(&syn::Expr, &syn::Expr), &'static str> {
+    let syn::Expr::Range(range) = iterable else {
+        return Err(
+            "`for` iterates only over an exclusive integer range `start..end`; buffers, iterators, and adaptors are not iterable in the Rust-to-Slang subset",
+        );
+    };
+    if matches!(range.limits, syn::RangeLimits::Closed(_)) {
+        return Err(
+            "inclusive ranges (`..=`) are not supported: when `end` is the type maximum the Slang counter never exceeds it and the loop would not terminate; use `start..end + 1`",
+        );
+    }
+    match (range.start.as_deref(), range.end.as_deref()) {
+        (Some(start), Some(end)) => Ok((start, end)),
+        _ => Err(
+            "`for` ranges need both bounds (`start..end`) so the trip count is fixed at loop entry",
+        ),
+    }
+}
+
 pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
     let Some((_, items)) = &module.content else {
         return Err(syn::Error::new_spanned(
@@ -244,6 +297,8 @@ struct RestrictedVisitor {
     invocations: HashSet<String>,
     /// Set while inside a type position where `Option` has no proven layout.
     option_forbidden: Option<&'static str>,
+    /// Number of enclosing `for` loops; `break`/`continue` need at least one.
+    loop_depth: usize,
     error: Option<syn::Error>,
 }
 
@@ -254,6 +309,7 @@ impl RestrictedVisitor {
             resources: HashSet::new(),
             invocations: HashSet::new(),
             option_forbidden: None,
+            loop_depth: 0,
             error: None,
         }
     }
@@ -269,6 +325,25 @@ impl RestrictedVisitor {
 
     fn finish(self) -> syn::Result<()> {
         self.error.map_or(Ok(()), Err)
+    }
+
+    /// Shared checks for `break` and `continue` in statement position.
+    fn check_jump(
+        &mut self,
+        node: impl quote::ToTokens,
+        label: Option<&syn::Lifetime>,
+        name: &str,
+    ) {
+        if let Some(label) = label {
+            self.reject(
+                label,
+                "loop labels are not supported in the Rust-to-Slang subset; restructure with a flag or a helper return",
+            );
+            return;
+        }
+        if self.loop_depth == 0 {
+            self.reject(node, &format!("`{name}` outside a loop has no meaning"));
+        }
     }
 }
 
@@ -620,21 +695,103 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_loop(&mut self, expression: &'ast syn::ExprLoop) {
         self.reject(
             expression,
-            "loops are not supported in the Rust-to-Slang subset",
+            "`loop` is not supported: its trip count is not fixed at entry, so a GPU thread could never be proven to terminate; use `for i in start..end`",
         );
     }
 
     fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
-        self.reject(
-            expression,
-            "for loops are not supported in the Rust-to-Slang subset",
-        );
+        if let Some(label) = &expression.label {
+            self.reject(
+                label,
+                "loop labels are not supported in the Rust-to-Slang subset; restructure with a flag or a helper return",
+            );
+            return;
+        }
+        let variable = match loop_variable(&expression.pat) {
+            Ok(variable) => variable,
+            Err(message) => {
+                self.reject(&expression.pat, message);
+                return;
+            }
+        };
+        if let Some(variable) = variable {
+            let name = variable.ident.to_string();
+            if self.resources.contains(&name) || self.invocations.contains(&name) {
+                self.reject(
+                    variable,
+                    "GPU locals cannot shadow resource or dispatch-thread parameters",
+                );
+                return;
+            }
+            self.visit_pat_ident(variable);
+        }
+        let (start, end) = match range_bounds(&expression.expr) {
+            Ok(bounds) => bounds,
+            Err(message) => {
+                self.reject(&expression.expr, message);
+                return;
+            }
+        };
+        for bound in [start, end] {
+            if is_unsuffixed_integer_literal(bound) {
+                self.reject(
+                    bound,
+                    "integer-literal loop bounds need an explicit `u32`/`i32` suffix so the Slang counter type matches rustc's inference",
+                );
+                return;
+            }
+        }
+        self.visit_expr(start);
+        self.visit_expr(end);
+        self.loop_depth += 1;
+        self.visit_block(&expression.body);
+        self.loop_depth -= 1;
     }
 
     fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
         self.reject(
             expression,
-            "while loops are not supported in the Rust-to-Slang subset",
+            "`while` loops are not supported: the trip count is not fixed at entry, so a GPU thread could never be proven to terminate; use `for i in start..end` with a `break`",
+        );
+    }
+
+    fn visit_expr_range(&mut self, expression: &'ast syn::ExprRange) {
+        // `visit_expr_for_loop` reads its bounds directly, so this is reached only
+        // for a range used as a value.
+        self.reject(
+            expression,
+            "ranges are supported only as the iterable of a `for` loop",
+        );
+    }
+
+    fn visit_stmt(&mut self, statement: &'ast syn::Stmt) {
+        match statement {
+            syn::Stmt::Expr(syn::Expr::Break(jump), _) => {
+                if let Some(value) = &jump.expr {
+                    self.reject(value, "`break` with a value is not supported");
+                    return;
+                }
+                self.check_jump(jump, jump.label.as_ref(), "break");
+            }
+            syn::Stmt::Expr(syn::Expr::Continue(jump), _) => {
+                self.check_jump(jump, jump.label.as_ref(), "continue");
+            }
+            _ => visit::visit_stmt(self, statement),
+        }
+    }
+
+    fn visit_expr_break(&mut self, expression: &'ast syn::ExprBreak) {
+        // Statement-position jumps are handled in `visit_stmt`.
+        self.reject(
+            expression,
+            "`break` and `continue` are supported only as statements, not as values",
+        );
+    }
+
+    fn visit_expr_continue(&mut self, expression: &'ast syn::ExprContinue) {
+        self.reject(
+            expression,
+            "`break` and `continue` are supported only as statements, not as values",
         );
     }
 

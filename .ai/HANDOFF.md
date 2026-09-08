@@ -3,8 +3,14 @@
 Ownership released. The repository is ready for a local AI to resume manually.
 
 Latest pass (GitHub Copilot, VS Code agent, "GUST Builder" profile), committed to
-`main` with fmt, strict Clippy, full workspace tests (107), full `verify.ps1 -Full`,
-and an independent read-only review (PASS WITH NOTES, notes applied) — see STATUS:
+`main` with fmt, strict Clippy, full workspace tests, full `verify.ps1 -Full`, and
+an independent read-only review (PASS WITH NOTES, notes applied) — see STATUS:
+- T09 complete (D18): bounded `for i in start..end` loops now lower directly to
+  Slang with the end bound evaluated once, immutable loop variables, `_` counters,
+  and unlabeled valueless `break`/`continue`. Unsupported loop shapes (`while`,
+  `loop`, `..=`, labels, non-range iterables, value-position jumps, unsuffixed
+  literal bounds) are rejected. New `loops` golden and real-GPU differential test at
+  1/63/64/65/257; loop-specific SPIR-V also passed external `spirv-val`.
 - T06 complete (D17): the wgpu runtime refuses a pipeline unless the native Slang
   reflection helper `gust-slang-reflect` proves the descriptor's StorageV1 contract
   (names, slots, access, workgroup size, every nested offset/size/alignment/stride)
@@ -15,9 +21,9 @@ and an independent read-only review (PASS WITH NOTES, notes applied) — see STA
 - Agent customizations under `.github/` (GUST Builder and GUST Verifier agents, a
   `gust-status` prompt) and a PostToolUse `cargo fmt` hook (`.github/hooks`,
   `scripts/hooks`). They are operating profiles on top of AGENTS.md, not new rules.
-Next: nothing claimed. The owner pre-authorized the ordered compiler extensions
-T09 bounded loops → T10 atomics → T11 std-prelude lowering (NEXT_TASKS). Claim T09
-in STATUS, write the contract (ARCHITECTURE + D18) and the failing tests first.
+Next: nothing claimed. The owner pre-authorized the ordered compiler extensions;
+T10 atomics is next, but the owner also asked for a test-pruning/developer-experience
+inventory after T09 because validation is becoming too slow.
 
 ## Previous handoff — 2026-09-07
 

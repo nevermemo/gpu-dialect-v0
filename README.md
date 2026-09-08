@@ -275,13 +275,15 @@ The direct syntax translator currently supports:
   field access, `if`/`else`, returns, casts, and calls to helpers in the same module;
 - implicit helper returns (including tail `if`/`else` and blocks), 32-bit numeric
   suffixes/radix literals, Rust expression grouping, and boolean/integer `!`;
+- bounded `for i in start..end` loops whose bounds type-check as 32-bit integers,
+  with `break`/`continue` (the end bound is evaluated once; see D18);
 - one-dimensional runtime dispatch with explicit three-dimensional Slang
   workgroup sizes in descriptors.
 
 The validator intentionally rejects allocation, standard-library access, macros,
-closures, async/await, references, loops, `match`, unsafe code, arbitrary method
-calls, and external function calls inside GPU modules. These restrictions describe
-the implemented translator, not limits of Slang itself.
+closures, async/await, references, `while`/`loop`/inclusive ranges, `match`, unsafe
+code, arbitrary method calls, and external function calls inside GPU modules. These
+restrictions describe the implemented translator, not limits of Slang itself.
 
 Shader struct literals are explicitly rejected pending field-aware lowering;
 whole-struct buffer copies and field updates work. Booleans are expression values,

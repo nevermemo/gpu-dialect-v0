@@ -245,6 +245,13 @@ fn emit_statements(
                     is_tail && semicolon.is_none(),
                     index,
                 )?,
+                syn::Expr::ForLoop(expression) => emit_for(output, expression, indent, index)?,
+                syn::Expr::Break(jump) if jump.label.is_none() && jump.expr.is_none() => {
+                    writeln!(output, "{padding}break;").unwrap();
+                }
+                syn::Expr::Continue(jump) if jump.label.is_none() => {
+                    writeln!(output, "{padding}continue;").unwrap();
+                }
                 syn::Expr::Block(expression) => {
                     writeln!(output, "{padding}{{").unwrap();
                     emit_statements(
@@ -452,6 +459,44 @@ fn emit_if(
             }
         }
     }
+    Ok(())
+}
+
+/// Lower `for v in start..end { .. }` (D18). The end bound is evaluated once into
+/// a reserved temporary so the trip count is fixed at entry, as with Rust's
+/// `Range`; the counter takes its Slang type from the start expression. The
+/// statement index keeps the temporary unique within its block, and a `_`
+/// pattern gets a reserved counter name.
+fn emit_for(
+    output: &mut String,
+    expression: &syn::ExprForLoop,
+    indent: usize,
+    index: usize,
+) -> syn::Result<()> {
+    let padding = "    ".repeat(indent);
+    let variable = match crate::validate::loop_variable(&expression.pat) {
+        Ok(Some(variable)) => variable.ident.to_string(),
+        Ok(None) => format!("__gust_iter_{index}"),
+        Err(message) => return Err(syn::Error::new_spanned(&expression.pat, message)),
+    };
+    let (start, end) = crate::validate::range_bounds(&expression.expr)
+        .map_err(|message| syn::Error::new_spanned(&expression.expr, message))?;
+    let end_temporary = format!("__gust_end_{index}");
+    writeln!(
+        output,
+        "{padding}var {end_temporary} = {};",
+        emit_expression(end)?
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "{padding}for (var {variable} = {}; {variable} < {end_temporary}; {variable}++)",
+        emit_expression(start)?
+    )
+    .unwrap();
+    writeln!(output, "{padding}{{").unwrap();
+    emit_statements(output, &expression.body.stmts, indent + 1, false)?;
+    writeln!(output, "{padding}}}").unwrap();
     Ok(())
 }
 
