@@ -64,8 +64,8 @@ Run the smallest end-to-end example:
 cargo run -p vector-add
 ```
 
-It executes real code on the selected GPU and writes four inspectable artifacts to
-[`generated-wgpu/`](generated-wgpu/):
+It executes real code on the selected GPU and writes four local, ignored artifacts to
+`generated-wgpu/`:
 
 - `vector_add__add.slang` — direct Rust-to-Slang output
 - `vector_add__add.wgsl` — Slang-generated WGSL used by wgpu
@@ -351,7 +351,7 @@ examples/
   signal-pipeline/
   particle-step/
   typed-pipeline/
-generated-wgpu/         readable artifacts emitted by examples
+generated-wgpu/         ignored local artifacts emitted by examples
 docs/
   ARCHITECTURE.md
 ```

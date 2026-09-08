@@ -135,9 +135,11 @@ inspect its timestamp and scope before using it as evidence.
 
 ## Artifact and collaboration rules
 
-- `generated-wgpu/` contains derived `.slang`, `.wgsl`, `.spv`, and readable `.rs`
-  host examples. Regenerate by running the five examples; never hand-edit exports.
-  The generated host snippets are inspectable examples, not standalone packages.
+- `generated-wgpu/` contains local derived `.slang`, `.wgsl`, `.spv`, and readable
+  `.rs` host examples. It is ignored and must not be committed. Regenerate with
+  `cargo xtask export-artifacts`, `cargo xtask check-artifacts`, `cargo xtask
+  check-full`, or the relevant example binary; never hand-edit exports. The generated
+  host snippets are inspectable examples, not standalone packages.
 - `tests/fixtures/semantics.slang` is a reviewed expectation, not an auto-updated
   export. A translation change requires an explained golden diff and GPU tests.
 - Keep commits small if Git is available. This takeover began without Git;
