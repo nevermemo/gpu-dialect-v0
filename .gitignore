@@ -1,1 +1,6 @@
 /target/
+/generated-wgpu/
+/artifacts/generated-wgpu/
+/vendor/
+/.cargo/registry/
+/.cargo/git/

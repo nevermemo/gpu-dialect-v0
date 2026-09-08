@@ -10,8 +10,8 @@ Status: complete (2026-09-08). Human-readable operational markdown now lives und
 development docs for repository structure, validation strategy, and agent workflow.
 All examples now use a thin `src/main.rs` plus `src/app.rs` implementation module.
 Follow-up (not claimed): split large example `app.rs` files further into `gpu.rs`,
-`cpu.rs`, `host.rs`, and `tests.rs`; move `generated-wgpu/` to `artifacts/` in its own
-dedicated commit if public-root polish becomes the priority.
+`cpu.rs`, `host.rs`, and `tests.rs`. Generated shader/host outputs now stay in the
+ignored local `generated-wgpu/` directory.
 
 ## DX — test-speed split — COMPLETE
 

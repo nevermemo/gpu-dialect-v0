@@ -33,3 +33,5 @@ Routine checks do not rewrite `.ai/VALIDATION.json`. Use `cargo xtask verify --m
 - Do not auto-bless goldens without reviewing the semantic diff.
 - Do not treat `spirv::validate_structure` as semantic SPIR-V validation; external `spirv-val` owns that layer.
 - Do not introduce shared `HeadlessDevice` fixtures until `cargo xtask measure-tests` isolates adapter/device setup as the bottleneck.
+- Do not commit regenerated `generated-wgpu/` outputs; full/artifact checks regenerate
+	them locally and validate the SPIR-V files before leaving them ignored.

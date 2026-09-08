@@ -2,17 +2,43 @@
 
 ## Active: none claimed (2026-09-08)
 
-The core module-directory cleanup is complete and ready to commit (below). Next
-candidate: deeper internal splits inside `gpu-dialect-wgpu/src/lib.rs` or macro
-`validate/`/`slang/`, but those are no longer pure file moves and should be scoped
-carefully.
+The lean upstream generated-output cleanup is complete and ready for independent review
+and commit. Next candidate: deeper internal splits inside `gpu-dialect-wgpu/src/lib.rs`
+or macro `validate/`/`slang/`, but those are no longer pure file moves and should be
+scoped carefully.
 
 ```text
 owner: none
 claim: none
-next_focused_check: cargo xtask check-feature core
+next_focused_check: cargo xtask check-artifacts
 full_check_needed_before_commit: no
 ```
+
+## Lean upstream generated-output cleanup — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `2b9f042`; 48 tracked files under `generated-wgpu/`.
+No compiler/runtime semantics changes intended.
+
+What changed. Removed the tracked derived `.slang`, `.wgsl`, `.spv`, and readable host
+`.rs` files under `generated-wgpu/`. Added ignore rules for `generated-wgpu/`, future
+`artifacts/generated-wgpu/`, local `vendor/`, and local `.cargo/registry/` / `.cargo/git/`
+download caches. Updated README, AGENTS, Builder profile, validation docs, repo
+structure docs, and next-task notes to treat generated outputs as local reproducible
+artifacts while keeping `.ai/VALIDATION.json` as verification evidence.
+
+Validation: `cargo xtask check-artifacts` passed at 2026-09-08T10:53:39Z after the
+tracked files were removed; example binaries regenerated ignored local artifacts in
+`generated-wgpu/`, exported SPIR-V validation completed, and `GUST verification passed`
+with exit 0. `cargo xtask check-changed` also passed with exit 0 after the doc and
+ignore-rule updates.
+
+Independent review: GUST Verifier PASS. The review confirmed 48 generated-wgpu
+deletions, 0 tracked generated-wgpu files, correct ignore rules for generated outputs
+and local crate caches, `.ai/VALIDATION.json` and `.ai/BASELINE.sha256` still tracked
+and unmodified, and no stale checked-in-artifact wording in live docs.
+
+Next command: commit and push this cleanup.
 
 ## Core crate cleanup — module directories — COMPLETE (2026-09-08)
 
