@@ -88,6 +88,31 @@ It writes `.ai/VALIDATION.json` with command exit codes, stdout, artifact hashes
 and explicit untested targets. This is local debug validation, not release benchmark
 evidence or cross-platform certification.
 
+Purpose-built check scripts keep the inner loop honest:
+
+| Command | Purpose | Runs |
+| --- | --- | --- |
+| `pwsh -File scripts/check-feature.ps1 -Area macro` | Macro/validator/emitter work | `cargo test -p gpu-dialect-macros` |
+| `pwsh -File scripts/check-feature.ps1 -Area reflection` | Reflection/layout work | helper version check, core reflection tests, wgpu reflection tests |
+| `pwsh -File scripts/check-feature.ps1 -Area loops` | Bounded-loop work | loop golden/rejection test plus GPU loop test |
+| `pwsh -File scripts/check-fast.ps1` | Fast routine confidence | helper version check, fmt check, macro tests, core lib tests, wgpu tests |
+| `cargo test --workspace` | Default workspace confidence | all non-ignored workspace tests; example validation stays ignored |
+| `pwsh -File scripts/check-examples.ps1` | Major example behavior confidence | ignored example tests plus example binaries |
+| `pwsh -File scripts/check-artifacts.ps1` | Artifact/export confidence | example binaries plus external SPIR-V validation |
+| `pwsh -File scripts/check-full.ps1` | Release confidence | full `verify.ps1 -Full` |
+| `pwsh -File scripts/measure-tests.ps1` | Profiling before pruning | timed test commands, configurable with `-Command` |
+
+`scripts/verify.ps1` also accepts `-Mode Fast`, `-Mode Gpu`, `-Mode Examples`,
+`-Mode Artifacts`, and `-Mode Full`; the existing `-Full` switch is kept. The native
+reflection helper build is timestamp-gated and still runs `--version`, so repeated
+checks do not relink unchanged C++ code.
+
+The same checks are exposed as VS Code tasks: `GUST: check fast`, `GUST: check
+feature`, `GUST: check examples`, `GUST: check artifacts`, and `GUST: check full`.
+Do not introduce shared `HeadlessDevice` fixtures until `measure-tests.ps1` shows
+adapter/device setup is the bottleneck; cache-stat tests intentionally use isolated
+devices.
+
 ## Authoring model
 
 The preferred source vocabulary deliberately resembles Slang:

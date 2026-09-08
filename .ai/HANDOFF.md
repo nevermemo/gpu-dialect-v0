@@ -26,6 +26,12 @@ T10 atomics is next. Developer-experience update: normal `cargo test --workspace
 now skips example tests (27 ignored) and full verification runs them with `--ignored`
 before example binaries and exported SPIR-V validation.
 
+Developer-experience command surface is complete. New scripts: `check-feature`,
+`check-fast`, `check-examples`, `check-artifacts`, `check-full`, `export-artifacts`,
+and `measure-tests`; VS Code tasks expose the same checks. `verify.ps1` has staged
+modes and still accepts `-Full`. The native reflection helper build is timestamp-gated
+and reports "up to date" when reused.
+
 ## Previous handoff — 2026-09-07
 
 Earlier passes (GitHub Copilot, VS Code agent), each committed and pushed to

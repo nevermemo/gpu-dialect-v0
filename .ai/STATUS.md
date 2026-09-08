@@ -2,10 +2,55 @@
 
 ## Active: none claimed (2026-09-08)
 
-The DX test-speed split is complete and committed (below). The next ordered compiler
-extension remains T10 atomics, but keep using the new validation policy: focused test
-first, normal `cargo test --workspace` for routine confidence, and
-`scripts/verify.ps1 -Full` for major/release evidence.
+The DX command surface and staged verification slice is complete and ready to commit
+(below). The next ordered compiler extension remains T10 atomics. Keep using the new
+command policy: focused feature check first; `check-fast` or normal workspace for
+routine confidence; `check-full` only for major/release evidence.
+
+```text
+owner: none
+claim: none
+next_focused_check: pwsh -NoProfile -File scripts/check-feature.ps1 -Area macro
+full_check_needed_before_commit: no
+```
+
+## DX — command surface and staged verification — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `c1fae21` (DX test split pushed). No compiler/runtime
+semantics, dependency, or generated artifact changes.
+
+What changed. Added named scripts: `scripts/check-fast.ps1`, `check-full.ps1`,
+`check-feature.ps1`, `check-examples.ps1`, `check-artifacts.ps1`,
+`export-artifacts.ps1`, and `measure-tests.ps1`. `scripts/verify.ps1` now supports
+staged modes `Smoke`, `Fast`, `Gpu`, `Examples`, `Artifacts`, and `Full`; the legacy
+`-Full` switch remains valid. `scripts/build-slang-reflect.ps1` skips relinking the
+native helper when the executable is newer than its source/library/DLL inputs, while
+still running `--version`. Added VS Code tasks in `.vscode/tasks.json` for fast,
+feature, examples, artifacts, and full checks. README now has a validation matrix,
+and the GUST Builder agent points future agents at the staged commands. Kept the
+shared-device idea evidence-gated: use `measure-tests.ps1` before introducing shared
+`HeadlessDevice` fixtures because cache-stat tests need isolated devices.
+
+Verification. `pwsh -File scripts/check-feature.ps1 -Area loops`: 1 macro loop test
+and 2 GPU loop tests passed. `pwsh -File scripts/check-fast.ps1`: helper reported
+"up to date", fmt passed, macro/core/wgpu tests passed, validation record mode
+`fast`. `pwsh -File scripts/test-verify-process.ps1`: PASS after updating the harness
+for the refactored `verify.ps1` function contract. `pwsh -File scripts/verify.ps1
+-Mode Gpu`: passed wgpu tests. `pwsh -File scripts/verify.ps1 -Mode Examples`: all
+27 ignored example tests plus seven example binaries passed. All PowerShell scripts
+parse cleanly. `pwsh -File scripts/check-full.ps1`: **GUST verification passed**;
+`.ai/VALIDATION.json` refreshed at 2026-09-08T09:13Z with mode `full`, 33 checks, 12
+validated SPIR-V artifacts. No `generated-wgpu/` drift. `measure-tests.ps1` default
+timings on this machine: macro tests ~0.4s, core lib ~0.9s, wgpu ~9.6s, workspace
+~12.9s.
+
+Known note. A deliberately malformed Bash-quoted PowerShell parser command failed
+while testing; the corrected single-quoted parser command passed all scripts. A
+Bash invocation of `measure-tests.ps1 -Command 'a','b'` passed a comma-joined string;
+the default and ordinary PowerShell usage work.
+
+Next command: claim T10 here, then write the atomics contract before code.
 
 ## DX — test-speed split — COMPLETE (2026-09-08)
 

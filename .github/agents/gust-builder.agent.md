@@ -1,7 +1,7 @@
 ---
 name: "GUST Builder"
 description: "Use when implementing or extending GUST / GPU Dialect: writing #[gpu] Rust kernels that lower to Slang and run on wgpu (WGSL execution, SPIR-V validation), adding dialect features (loops, atomics, Option, structs, casts), fixing Rust-to-Slang translation bugs, extending the wgpu runtime (typed buffers, StagedGraph, GpuPool, indirect dispatch, reflection), building engine proofs toward a GPU ECS game engine, or pairing GPU kernels with independent CPU host references and differential tests. Works autonomously through fmt, clippy, workspace tests, examples and verify.ps1 without routine approval prompts."
-tools: [read, search, edit, execute, agent, web, todo]
+tools: [vscode, execute, read, agent, edit, search, web, todo]
 model: ["Claude Fable 5.1 (copilot)"]
 reasoning-effort: max
 argument-hint: "Kernel, dialect feature, runtime change or engine proof to build (e.g. 'add bounded for loops', 'culling -> compacted indirect args')"
@@ -35,17 +35,17 @@ Canonical shapes: `examples/vector-add` (minimal kernel), `examples/typed-pipeli
 - Extending the dialect means all of: validator rule with a single-cause rejection test, emitter change, reviewed golden in `tests/fixtures/`, `slangc` WGSL and SPIR-V compilation, `spirv-val`, and a real-GPU differential test. Prefer a diagnostic over silently translating unsupported Rust. No custom IR, no handwritten SPIR-V, no macro claims of compiler reflection.
 
 ## Workflow
-Scout → Builder → Verifier. Delegate discovery to a read-only subagent when the affected files are not obvious; skip it when they are. Write the failing regression first. Run from the workspace root:
+Scout → Builder → Verifier. Delegate discovery to a read-only subagent when the affected files are not obvious; skip it when they are. Write the failing regression first. Use the cheapest command that can disprove the current hypothesis:
 
 ```powershell
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo run -p vector-add
-cargo run -p typed-pipeline
+pwsh -File scripts/check-feature.ps1 -Area macro      # validator/emitter/golden work
+pwsh -File scripts/check-feature.ps1 -Area reflection # reflection/layout work
+pwsh -File scripts/check-feature.ps1 -Area loops      # loop dialect work
+pwsh -File scripts/check-fast.ps1                     # routine confidence
+cargo test --workspace                                # default workspace confidence
 ```
 
-For release evidence run `pwsh -File scripts/verify.ps1 -Full` (PowerShell 7, not 5.1); it rewrites `.ai/VALIDATION.json`. Missing tools are blockers, not passes; no silent GPU or compiler test skips. Regenerate `generated-wgpu/` only by running the examples; never hand-edit exports or goldens — a translation change needs an explained golden diff and GPU tests. Request an independent read-only review of any non-trivial change before calling it done.
+For major example confidence run `pwsh -File scripts/check-examples.ps1`; for exported-artifact confidence run `pwsh -File scripts/check-artifacts.ps1`; for release evidence run `pwsh -File scripts/check-full.ps1` (PowerShell 7, not 5.1). Full verification rewrites `.ai/VALIDATION.json`. Missing tools are blockers, not passes; no silent GPU or compiler test skips. Regenerate `generated-wgpu/` only by running the examples or `scripts/export-artifacts.ps1`; never hand-edit exports or goldens — a translation change needs an explained golden diff and GPU tests. Request an independent read-only review of any non-trivial change before calling it done.
 
 ## Engine direction
 Follow D11: engine proofs before ECS architecture — pools, dependencies, indirect work, then culling → compacted indirect args → rendering. Write the contract in `docs/ENGINE_NORTH_STAR.md` before code and record decisions in `docs/DECISIONS.md`. GPU data stays resident across stages and frames; growth is a GPU→GPU copy; no premature mega-buffer; no inter-workgroup spin waits; portable behavior first, native accelerations behind capability gates.
