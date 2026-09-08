@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
-use gpu_dialect::{JobStatus, gpu};
-use gpu_dialect_wgpu::{
+use gust::{JobStatus, gpu};
+use gust_wgpu::{
     F32Binding, F32BufferBinding, F32BufferDispatch, GpuBufferAccess, HeadlessDevice,
     TransferTiming, render_wgpu_source,
 };
@@ -71,7 +71,7 @@ pub fn main() {
     .into_iter()
     .try_fold(TransferTiming::default(), |total, (buffer, values)| {
         let timing = device.write_f32_buffer_timed(buffer, values)?;
-        Ok::<_, gpu_dialect_wgpu::Error>(TransferTiming {
+        Ok::<_, gust_wgpu::Error>(TransferTiming {
             bytes: total.bytes + timing.bytes,
             elapsed: total.elapsed + timing.elapsed,
         })
@@ -231,7 +231,7 @@ fn dispatch_gpu(
     device: &HeadlessDevice,
     inputs: &Inputs,
     initial_output: &[f32],
-) -> Result<gpu_dialect_wgpu::DispatchOutput, gpu_dialect_wgpu::Error> {
+) -> Result<gust_wgpu::DispatchOutput, gust_wgpu::Error> {
     device.dispatch_f32(
         &signal_pipeline::transform::DESCRIPTOR,
         inputs.signal.len() as u32,
@@ -349,13 +349,13 @@ fn export_generated_source() -> PathBuf {
     .expect("write signal pipeline Slang source");
     std::fs::write(
         directory.join("signal_pipeline__transform.wgsl"),
-        gpu_dialect::slang::compile_wgsl(descriptor).expect("compile signal pipeline WGSL"),
+        gust::slang::compile_wgsl(descriptor).expect("compile signal pipeline WGSL"),
     )
     .expect("write signal pipeline WGSL");
     std::fs::write(
         directory.join("signal_pipeline__transform.spv"),
-        gpu_dialect::spirv::words_as_le_bytes(
-            &gpu_dialect::slang::compile_spirv(descriptor).expect("compile signal pipeline SPIR-V"),
+        gust::spirv::words_as_le_bytes(
+            &gust::slang::compile_spirv(descriptor).expect("compile signal pipeline SPIR-V"),
         ),
     )
     .expect("write signal pipeline SPIR-V");
@@ -386,7 +386,7 @@ mod tests {
     fn headless_gpu_matches_cpu_reference() {
         let device = match HeadlessDevice::new() {
             Ok(device) => device,
-            Err(gpu_dialect_wgpu::Error::NoAdapter(_)) => return,
+            Err(gust_wgpu::Error::NoAdapter(_)) => return,
             Err(error) => panic!("could not initialize headless wgpu: {error}"),
         };
         let inputs = Inputs::new(257);

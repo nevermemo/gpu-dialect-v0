@@ -20,10 +20,10 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
     let root = workspace_root()?;
     let area = area.ok_or("check-feature needs an area")?;
     match area {
-        "macro" => run_direct(&root, "cargo", &["test", "-p", "gpu-dialect-macros"]),
-        "core" => run_direct(&root, "cargo", &["test", "-p", "gpu-dialect", "--lib"]),
+        "macro" => run_direct(&root, "cargo", &["test", "-p", "gust-macros"]),
+        "core" => run_direct(&root, "cargo", &["test", "-p", "gust", "--lib"]),
         "wgpu" => verify(VerifyMode::Gpu, false),
-        "gpu-smoke" => run_direct(&root, "cargo", &["test", "-p", "gpu-dialect-wgpu", "--lib"]),
+        "gpu-smoke" => run_direct(&root, "cargo", &["test", "-p", "gust-wgpu", "--lib"]),
         "gpu-semantics" => {
             for test in [
                 "semantics",
@@ -32,42 +32,34 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 "loops",
                 "struct_assignment",
             ] {
-                run_direct(
-                    &root,
-                    "cargo",
-                    &["test", "-p", "gpu-dialect-wgpu", "--test", test],
-                )?;
+                run_direct(&root, "cargo", &["test", "-p", "gust-wgpu", "--test", test])?;
             }
             Ok(())
         }
         "gpu-runtime" => run_direct(
             &root,
             "cargo",
-            &["test", "-p", "gpu-dialect-wgpu", "--test", "reflection"],
+            &["test", "-p", "gust-wgpu", "--test", "reflection"],
         ),
         "reflection" => {
             build_slang_reflect(BuildOptions::default())?;
             run_direct(
                 &root,
                 "cargo",
-                &["test", "-p", "gpu-dialect", "--test", "reflection"],
+                &["test", "-p", "gust", "--test", "reflection"],
             )?;
             run_direct(
                 &root,
                 "cargo",
-                &["test", "-p", "gpu-dialect-wgpu", "--test", "reflection"],
+                &["test", "-p", "gust-wgpu", "--test", "reflection"],
             )
         }
         "loops" => {
+            run_direct(&root, "cargo", &["test", "-p", "gust-macros", "loops"])?;
             run_direct(
                 &root,
                 "cargo",
-                &["test", "-p", "gpu-dialect-macros", "loops"],
-            )?;
-            run_direct(
-                &root,
-                "cargo",
-                &["test", "-p", "gpu-dialect-wgpu", "--test", "loops"],
+                &["test", "-p", "gust-wgpu", "--test", "loops"],
             )
         }
         "examples" => verify(VerifyMode::Examples, false),
@@ -115,6 +107,36 @@ pub(crate) fn check_changed() -> Result<(), String> {
     for path in &paths {
         println!("  {path}");
     }
+    for check in select_changed_checks(&paths) {
+        match check {
+            ChangedCheck::Fast => {
+                println!("Selected check: cargo xtask check-fast");
+                verify(VerifyMode::Fast, false)?;
+            }
+            ChangedCheck::Feature(area) => {
+                println!("Selected check: cargo xtask check-feature {area}");
+                check_feature(Some(area))?;
+            }
+            ChangedCheck::Workspace => {
+                println!("Selected check: cargo xtask check-workspace");
+                check_workspace()?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ChangedCheck {
+    Fast,
+    Feature(&'static str),
+    Workspace,
+}
+
+fn select_changed_checks(paths: &[String]) -> Vec<ChangedCheck> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
     let has = |prefix: &str| paths.iter().any(|path| path.starts_with(prefix));
     let any = |needles: &[&str]| {
         paths
@@ -131,39 +153,48 @@ pub(crate) fn check_changed() -> Result<(), String> {
         ".vscode/",
         "AGENTS.md",
     ]) {
-        println!("Selected check: cargo xtask check-fast");
-        return verify(VerifyMode::Fast, false);
+        return vec![ChangedCheck::Fast];
+    }
+
+    let mut checks = Vec::new();
+    if any(&["tests/fixtures/loops", "crates/gust-wgpu/tests/loops.rs"]) {
+        checks.push(ChangedCheck::Feature("loops"));
+    }
+    if (has("crates/gust-macros/") || has("tests/fixtures/"))
+        && !checks.contains(&ChangedCheck::Feature("loops"))
+    {
+        checks.push(ChangedCheck::Feature("macro"));
     }
     if any(&[
-        "tests/fixtures/loops",
-        "crates/gpu-dialect-wgpu/tests/loops.rs",
+        "crates/gust/src/reflect/",
+        "reflect.rs",
+        "reflection.rs",
+        "scripts/probes/",
     ]) {
-        println!("Selected check: cargo xtask check-feature loops");
-        return check_feature(Some("loops"));
+        checks.push(ChangedCheck::Feature("reflection"));
     }
-    if has("crates/gpu-dialect-macros/") || has("tests/fixtures/") {
-        println!("Selected check: cargo xtask check-feature macro");
-        return check_feature(Some("macro"));
+    if has("crates/gust-wgpu/") {
+        checks.push(ChangedCheck::Feature("wgpu"));
     }
-    if any(&["reflect.rs", "reflection.rs", "scripts/probes/"]) {
-        println!("Selected check: cargo xtask check-feature reflection");
-        return check_feature(Some("reflection"));
-    }
-    if has("crates/gpu-dialect-wgpu/") {
-        println!("Selected check: cargo xtask check-feature wgpu");
-        return check_feature(Some("wgpu"));
-    }
-    if has("crates/gpu-dialect/") {
-        println!("Selected check: cargo xtask check-feature core");
-        return check_feature(Some("core"));
+    if has("crates/gust/")
+        && !has("crates/gust/src/reflect/")
+        && !any(&["reflect.rs", "reflection.rs"])
+    {
+        checks.push(ChangedCheck::Feature("core"));
     }
     if has("examples/") || has("generated-wgpu/") {
-        println!("Selected check: cargo xtask check-examples");
-        return verify(VerifyMode::Examples, false);
+        checks.push(ChangedCheck::Feature("examples"));
     }
-    println!("Selected check: cargo xtask check-workspace");
-    check_workspace()
+    if checks.is_empty() {
+        vec![ChangedCheck::Workspace]
+    } else {
+        checks
+    }
 }
+
+#[cfg(test)]
+#[path = "tests/check_routing.rs"]
+mod check_routing_tests;
 
 pub(crate) fn status() -> Result<(), String> {
     let root = workspace_root()?;
@@ -320,20 +351,20 @@ pub(crate) fn measure_tests(args: &[String]) -> Result<(), String> {
                 "cargo".into(),
                 "test".into(),
                 "-p".into(),
-                "gpu-dialect-macros".into(),
+                "gust-macros".into(),
             ],
             vec![
                 "cargo".into(),
                 "test".into(),
                 "-p".into(),
-                "gpu-dialect".into(),
+                "gust".into(),
                 "--lib".into(),
             ],
             vec![
                 "cargo".into(),
                 "test".into(),
                 "-p".into(),
-                "gpu-dialect-wgpu".into(),
+                "gust-wgpu".into(),
             ],
             workspace,
         ]

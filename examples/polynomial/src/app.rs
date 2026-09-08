@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
-use gpu_dialect::{JobStatus, gpu};
-use gpu_dialect_wgpu::{
+use gust::{JobStatus, gpu};
+use gust_wgpu::{
     F32Binding, F32BufferBinding, F32BufferDispatch, GpuBufferAccess, HeadlessDevice,
     TransferTiming, render_wgpu_source,
 };
@@ -292,13 +292,13 @@ fn export_generated_source() -> PathBuf {
     .expect("write polynomial Slang source");
     std::fs::write(
         directory.join("polynomial__evaluate.wgsl"),
-        gpu_dialect::slang::compile_wgsl(descriptor).expect("compile polynomial WGSL"),
+        gust::slang::compile_wgsl(descriptor).expect("compile polynomial WGSL"),
     )
     .expect("write polynomial WGSL");
     std::fs::write(
         directory.join("polynomial__evaluate.spv"),
-        gpu_dialect::spirv::words_as_le_bytes(
-            &gpu_dialect::slang::compile_spirv(descriptor).expect("compile polynomial SPIR-V"),
+        gust::spirv::words_as_le_bytes(
+            &gust::slang::compile_spirv(descriptor).expect("compile polynomial SPIR-V"),
         ),
     )
     .expect("write polynomial SPIR-V");
@@ -327,7 +327,7 @@ mod tests {
     fn headless_gpu_matches_cpu_reference() {
         let device = match HeadlessDevice::new() {
             Ok(device) => device,
-            Err(gpu_dialect_wgpu::Error::NoAdapter(_)) => return,
+            Err(gust_wgpu::Error::NoAdapter(_)) => return,
             Err(error) => panic!("could not initialize headless wgpu: {error}"),
         };
         let input = [-1.0, -0.25, 0.0, 0.5, 1.0, 1.5];

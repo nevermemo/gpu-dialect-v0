@@ -1,4 +1,4 @@
-#[gpu_dialect::gpu]
+#[gust::gpu]
 mod semantics {
     fn score(x: float) -> float {
         if x > 0.0f32 {

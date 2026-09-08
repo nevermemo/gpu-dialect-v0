@@ -20,30 +20,35 @@ and reviewed generated artifacts. No engine implementation claimed.
   inference/effect semantics remain open. Preserve short-circuit and evaluation-order contracts.
 - Add negative compile tests and mapped diagnostic evidence; do not auto-bless goldens.
 
-## S2 — Portable contract and language breadth (planned)
+## S2 — Portable contract and language breadth (partially implemented)
 
-Machine-readable target probes and ABI regression matrix, then source mapping,
-small vector/math families with operator coverage, and field-aware struct creation.
-Reflection now gates every StorageV1 pipeline through the native helper (D17, T06);
+Target probes, kernel-level diagnostic attribution, bounded field-aware struct
+creation, local/helper `Option<T>` lowering, and exclusive-range loops are implemented
+(T04–T06, T09). Reflection gates every StorageV1 pipeline through the native helper
+(D17, T06). Still pending: atomics (T10, awaiting plan approval), remaining standard
+types (T11), fine-grained source maps and small vector/math families. The
 broad uniforms/textures/samplers, parameter groups, and specialized layouts must
 extend that reflected evidence before entering the runtime contract. Any artifact
 disk cache needs source, compiler identity, options, and dependencies in its key.
 Additional native targets need their own compilation and execution evidence.
 
-## S3 — Explicit execution model (planned)
+## S3 — Explicit execution model (first proof implemented)
 
-Extract one staged CPU/GPU resource-flow proof from typed-pipeline. Declare accesses
-and dependencies explicitly; measure transfers and residency. Add validated indirect
-dispatch and bounded continuation work only with clear ordering/termination rules.
-Then consider rustc semantic integration, richer Rust lowering, and automatic
-dependency/effect inference. Slang still owns shader codegen.
+T07 supplies `StagedGraph` and `examples/staged-graph`: host settings upload, two
+ordered GPU stages, summary readback, checked explicit dependencies and transfer/
+residency reports. T08 adds validated indirect-dispatch resources. These are explicit
+host APIs, not compiler-inferred graphs or CPU execution nodes. Still pending:
+continuations, transfer planning, automatic dependency/effect inference and rustc
+semantic integration. Slang still owns shader codegen.
 
-## S4 — Engine-shaped proofs (planned)
+## S4 — Engine-shaped proofs (pool and indirect compute implemented)
 
-Typed component-pool growth by GPU copy; two read/write-declared systems; active-count
-indirect execution; culling/compaction into indirect rendering. Test logical length
-versus allocation capacity, binding refresh, IDs/generations, safe retirement, and
-native capability alternatives. Choose ECS storage based on measured workloads.
+T08 supplies a typed vector-like component pool with GPU-copy growth, logical length
+versus capacity, retirement, and GPU-derived indirect compute arguments. The count
+starts from a host-mirrored length; this is not yet GPU compaction or an ECS.
+Still pending: atomic GPU count generation, culling/compaction, indirect rendering,
+entity IDs/generations and native capability alternatives. Choose ECS storage based
+on measured workloads rather than treating this pool as the final engine layout.
 
 ## Long term — ECS game engine (aspiration)
 

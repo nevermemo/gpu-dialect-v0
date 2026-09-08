@@ -1,11 +1,11 @@
 [package]
 name = "signal-pipeline"
-description = "Multi-buffer signal processing GPU Dialect benchmark"
+description = "Multi-buffer signal processing GUST benchmark"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-gpu-dialect.workspace = true
-gpu-dialect-wgpu.workspace = true
+gust.workspace = true
+gust-wgpu.workspace = true
