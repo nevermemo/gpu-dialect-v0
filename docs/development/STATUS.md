@@ -2,16 +2,34 @@
 
 ## Active: none claimed (2026-09-08)
 
-The macro module-directory cleanup is complete and ready to commit (below). Next
-cleanup candidate: split internals inside `validate/` or `slang/` carefully, or move
-to `gpu-dialect-wgpu` device/dispatch modules.
+The core module-directory cleanup is complete and ready to commit (below). Next
+candidate: deeper internal splits inside `gpu-dialect-wgpu/src/lib.rs` or macro
+`validate/`/`slang/`, but those are no longer pure file moves and should be scoped
+carefully.
 
 ```text
 owner: none
 claim: none
-next_focused_check: cargo xtask check-feature macro
+next_focused_check: cargo xtask check-feature core
 full_check_needed_before_commit: no
 ```
+
+## Core crate cleanup — module directories — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `333d170`; `cargo xtask check-feature core` passed before
+edits. No behavior changes intended.
+
+What changed. Moved core compiler-facing modules into same-name directories:
+`reflect/mod.rs`, `slang/mod.rs`, and `spirv/mod.rs`. Public paths remain
+`gpu_dialect::reflect`, `gpu_dialect::slang`, and `gpu_dialect::spirv` because the
+module declarations in `lib.rs` are unchanged.
+
+Validation: `cargo xtask check-feature core` passed (18). `cargo xtask check-feature
+reflection` passed (9 core reflection tests + 4 wgpu reflection tests). No generated
+artifact drift observed.
+
+Next command: run `cargo xtask check-fast` or claim the next cleanup slice.
 
 ## Macro crate cleanup — module directories — COMPLETE (2026-09-08)
 
