@@ -7,7 +7,6 @@
 //! readback so allocations can remain resident across repeated work.
 
 use std::{
-    collections::HashMap,
     marker::PhantomData,
     sync::{
         Arc, Mutex, MutexGuard,
@@ -23,10 +22,13 @@ use gpu_dialect::{
 };
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
+mod cache;
 mod error;
 mod generated_host;
 pub mod graph;
 pub mod pool;
+pub use cache::PipelineCacheStats;
+use cache::{CachedKernel, KernelCacheKey, PipelineCache};
 pub use error::Error;
 pub use generated_host::render_wgpu_source;
 pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
@@ -249,14 +251,6 @@ pub struct DispatchOutput {
     pub writable_buffers: Vec<Vec<f32>>,
 }
 
-/// Observable state of one device's compiled-kernel cache.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PipelineCacheStats {
-    pub entries: usize,
-    pub hits: u64,
-    pub misses: u64,
-}
-
 /// Host-observed time for an explicit transfer boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TransferTiming {
@@ -349,47 +343,10 @@ impl gpu_dialect::Device for HeadlessDevice {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct KernelCacheKey {
-    entry_point: &'static str,
-    slang_address: usize,
-    slang_bytes: usize,
-    parameters_address: usize,
-    parameters: usize,
-    workgroup_size: [u32; 3],
-}
-
-impl KernelCacheKey {
-    fn new(kernel: &KernelDescriptor) -> Self {
-        Self {
-            entry_point: kernel.entry_point,
-            slang_address: kernel.slang_source.as_ptr() as usize,
-            slang_bytes: kernel.slang_source.len(),
-            parameters_address: kernel.parameters.as_ptr() as usize,
-            parameters: kernel.parameters.len(),
-            workgroup_size: kernel.workgroup_size,
-        }
-    }
-}
-
-struct CachedKernel {
-    _shader: wgpu::ShaderModule,
-    bind_group_layout: wgpu::BindGroupLayout,
-    _pipeline_layout: wgpu::PipelineLayout,
-    pipeline: wgpu::ComputePipeline,
-}
-
 struct PreparedDispatch {
     cached_kernel: Arc<CachedKernel>,
     bind_group: wgpu::BindGroup,
     workgroup_count: u32,
-}
-
-#[derive(Default)]
-struct PipelineCache {
-    kernels: HashMap<KernelCacheKey, Arc<CachedKernel>>,
-    hits: u64,
-    misses: u64,
 }
 
 const TIMESTAMP_RESULT_BYTES: u64 = 2 * size_of::<u64>() as u64;
