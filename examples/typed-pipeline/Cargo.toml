@@ -7,5 +7,5 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-gpu-dialect.workspace = true
-gpu-dialect-wgpu.workspace = true
+gust.workspace = true
+gust-wgpu.workspace = true

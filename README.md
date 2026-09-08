@@ -2,7 +2,7 @@
 
 GUST is growing toward a heterogeneous Rust execution compiler and, eventually,
 a GPU-centric ECS game engine. **Today it is a working experimental Rust → Slang
-compute subsystem**, still named GPU Dialect in the crate APIs. There is no ECS,
+compute subsystem**. There is no ECS,
 renderer, rustc semantic integration, or execution-graph compiler yet.
 
 Rust supplies the higher-level language and checking environment; Slang owns GPU
@@ -97,7 +97,7 @@ Purpose-built check scripts keep the inner loop honest:
 
 | Command | Purpose | Runs |
 | --- | --- | --- |
-| `cargo xtask check-feature macro` | Macro/validator/emitter work | `cargo test -p gpu-dialect-macros` |
+| `cargo xtask check-feature macro` | Macro/validator/emitter work | `cargo test -p gust-macros` |
 | `cargo xtask check-feature reflection` | Reflection/layout work | helper version check, core reflection tests, wgpu reflection tests |
 | `cargo xtask check-feature loops` | Bounded-loop work | loop golden/rejection test plus GPU loop test |
 | `cargo xtask check-feature gpu-smoke` | Cheapest wgpu runtime sanity | wgpu crate unit tests only |
@@ -135,7 +135,7 @@ devices.
 The preferred source vocabulary deliberately resembles Slang:
 
 ```rust
-use gpu_dialect::gpu;
+use gust::gpu;
 
 #[gpu]
 mod vector_add {
@@ -212,18 +212,18 @@ buffer rather than a separately supplied element count.
 
 ## Runtime and artifacts
 
-`gpu-dialect::slang` is the compiler bridge:
+`gust::slang` is the compiler bridge:
 
 ```rust
-let spirv_words = gpu_dialect::slang::compile_spirv(&descriptor)?;
-let wgsl = gpu_dialect::slang::compile_wgsl(&descriptor)?;
+let spirv_words = gust::slang::compile_spirv(&descriptor)?;
+let wgsl = gust::slang::compile_wgsl(&descriptor)?;
 ```
 
 Each invocation exclusively creates an isolated temporary directory, captures Slang
 diagnostics, checks SPIR-V structure, and attempts cleanup on every return path. Missing
 `slangc` and compiler failures are reported as normal Rust errors.
 
-`gpu-dialect::reflect` is the layout gate. `compile_reflected` runs the native helper
+`gust::reflect` is the layout gate. `compile_reflected` runs the native helper
 (`scripts/probes/slang-layout.cpp`, built by `cargo xtask build-slang-reflect`) to
 compile one entry point and reflect the identical linked program; the result carries
 the artifact, its hashes, the compiler build tag, and complete `StorageV1` layouts.
@@ -251,7 +251,7 @@ dispatches reuse:
 
 Persistent typed buffers, heterogeneous struct/scalar bindings, batched command
 encoding, asynchronous jobs, and GPU timestamp queries remain available from
-`gpu-dialect-wgpu`.
+`gust-wgpu`.
 
 `StagedGraph` is the first explicit execution-graph slice: upload, dispatch, and
 readback nodes with host-declared dependencies, run as one ordered submission.
@@ -342,9 +342,9 @@ gaps; successful Rust checking does not prove equivalence to Slang inference.
 
 ```text
 crates/
-  gpu-dialect/          shadow types, descriptors, ABI metadata, slangc bridge
-  gpu-dialect-macros/   validation and direct syn AST -> Slang translation
-  gpu-dialect-wgpu/     cached headless wgpu execution and persistent buffers
+  gust/                 shadow types, descriptors, ABI metadata, slangc bridge
+  gust-macros/          validation and direct syn AST -> Slang translation
+  gust-wgpu/            cached headless wgpu execution and persistent buffers
 examples/
   vector-add/
   polynomial/

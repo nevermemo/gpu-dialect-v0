@@ -9,8 +9,8 @@
 
 use std::{path::PathBuf, time::Instant};
 
-use gpu_dialect::{KernelDescriptor, gpu};
-use gpu_dialect_wgpu::{
+use gust::{KernelDescriptor, gpu};
+use gust_wgpu::{
     BufferBinding, BufferDispatch, GpuBufferAccess, GpuPool, GraphReport, HeadlessDevice,
     StagedGraph, render_wgpu_source,
 };
@@ -129,13 +129,13 @@ pub fn step_cpu(particles: &mut [Particle], settings: &Settings) -> usize {
 }
 
 pub struct Frame {
-    pub settings: gpu_dialect_wgpu::GpuBuffer<Settings>,
-    pub active: gpu_dialect_wgpu::GpuBuffer<Active>,
-    pub args: gpu_dialect_wgpu::GpuBuffer<DispatchArgs>,
+    pub settings: gust_wgpu::GpuBuffer<Settings>,
+    pub active: gust_wgpu::GpuBuffer<Active>,
+    pub args: gust_wgpu::GpuBuffer<DispatchArgs>,
 }
 
 impl Frame {
-    pub fn new(device: &HeadlessDevice) -> Result<Self, gpu_dialect_wgpu::Error> {
+    pub fn new(device: &HeadlessDevice) -> Result<Self, gust_wgpu::Error> {
         Ok(Self {
             settings: device.create_typed_buffer(
                 "pool settings",
@@ -166,7 +166,7 @@ pub fn run_frame(
     frame: &Frame,
     particles: &GpuPool<Particle>,
     settings: &[Settings; 1],
-) -> Result<(u32, GraphReport), gpu_dialect_wgpu::Error> {
+) -> Result<(u32, GraphReport), gust_wgpu::Error> {
     let prepare_bindings = [
         BufferBinding::read_only(particles.count_buffer()).independent_length(),
         BufferBinding::read_only(&frame.settings).independent_length(),
@@ -230,11 +230,11 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
         )?;
         std::fs::write(
             directory.join(format!("{stem}.wgsl")),
-            gpu_dialect::slang::compile_wgsl(descriptor)?,
+            gust::slang::compile_wgsl(descriptor)?,
         )?;
         std::fs::write(
             directory.join(format!("{stem}.spv")),
-            gpu_dialect::spirv::words_as_le_bytes(&gpu_dialect::slang::compile_spirv(descriptor)?),
+            gust::spirv::words_as_le_bytes(&gust::slang::compile_spirv(descriptor)?),
         )?;
         std::fs::write(
             directory.join(format!("{stem}.rs")),
@@ -311,7 +311,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpu_dialect_wgpu::Error;
+    use gust_wgpu::Error;
 
     fn settings(budget: u32) -> Settings {
         Settings {
@@ -325,7 +325,7 @@ mod tests {
     #[ignore = "example validation runs only in full verification"]
     fn every_stage_compiles_to_wgsl() {
         for descriptor in descriptors() {
-            let wgsl = gpu_dialect::slang::compile_wgsl(descriptor).unwrap();
+            let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
             assert!(wgsl.contains("@compute"));
         }
     }
@@ -350,7 +350,7 @@ mod tests {
         reference.extend(spawned);
         assert_eq!(
             growth,
-            gpu_dialect_wgpu::GrowthRecord {
+            gust_wgpu::GrowthRecord {
                 old_capacity: 4,
                 new_capacity: 8,
                 copied_bytes: 3 * size_of::<Particle>() as u64

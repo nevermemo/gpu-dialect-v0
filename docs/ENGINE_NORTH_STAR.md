@@ -3,8 +3,10 @@
 ## Implemented now
 
 Headless compute, persistent typed buffers, ordered batches, async jobs, timestamp
-measurements, and particle/sensor examples. No ECS scheduler, rendering, entity
-lifecycle, dynamic pool growth, indirect dispatch, or GPU allocation framework yet.
+measurements, and particle/sensor examples. T07 adds an explicit, dependency-checked
+staged graph. T08 adds host-driven component-pool growth by GPU copy, safe retirement,
+and GPU-derived indirect compute arguments; see the contract below. No ECS scheduler,
+rendering, entity lifecycle, compaction or GPU allocation framework is implemented.
 
 ## Researched direction
 
@@ -52,7 +54,7 @@ observable unaided result before committing a broad ECS API.
 
 ## Component pool contract (T08, specified 2026-09-07)
 
-`gpu_dialect_wgpu::GpuPool<T>` is the first vector-like resident collection. It is
+`gust_wgpu::GpuPool<T>` is the first vector-like resident collection. It is
 one typed storage allocation plus separate metadata; it is not an arena, freelist,
 or entity table.
 
@@ -80,7 +82,7 @@ or entity table.
   allocation it names. `generation()` exists for host bookkeeping, not as a runtime
   check for something the borrow checker already forbids.
 - **Truncate/clear** only change the length and the count buffer (no GPU work).
-  `read()` copies back the live prefix only.
+  `pool_read()` copies back the live prefix only.
 - **Indirect dispatch**: a buffer created with `create_indirect_buffer` (element type
   must be exactly three `uint` fields matching `DispatchIndirectArgs`; `INDIRECT`
   usage) may drive a `StagedGraph::dispatch_indirect` node. There is no host-known
@@ -93,7 +95,8 @@ or entity table.
   derived on the GPU from the count buffer **clamped to the data buffer's `.len()`**
   (the allocation), and kernels must guard `i < active && i < buffer.len()`. A
   malformed count then degrades to "process the whole allocation", never to
-  out-of-bounds access or a silent no-op. The dialect has no loops or atomics yet, so
+  out-of-bounds access or a silent no-op. T09 supplies bounded loops, but atomics are
+  not implemented, so
   the count itself is the host-mirrored pool length; what the GPU derives without
   readback is the active count (count clamped by allocation and a settings budget)
   and the dispatch arguments.

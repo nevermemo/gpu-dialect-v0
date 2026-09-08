@@ -8,8 +8,8 @@
 
 use std::{path::PathBuf, time::Instant};
 
-use gpu_dialect::{KernelDescriptor, gpu};
-use gpu_dialect_wgpu::{
+use gust::{KernelDescriptor, gpu};
+use gust_wgpu::{
     BufferBinding, BufferDispatch, GpuBufferAccess, GraphReport, HeadlessDevice, StagedGraph,
     render_wgpu_source,
 };
@@ -162,10 +162,10 @@ pub fn run_cpu(samples: &[f32], settings: &Settings) -> Vec<Summary> {
 
 /// Resident GPU state that survives across settings updates.
 pub struct ResidentState {
-    pub samples: gpu_dialect_wgpu::GpuBuffer<f32>,
-    pub settings: gpu_dialect_wgpu::GpuBuffer<Settings>,
-    pub intermediate: gpu_dialect_wgpu::GpuBuffer<f32>,
-    pub summaries: gpu_dialect_wgpu::GpuBuffer<Summary>,
+    pub samples: gust_wgpu::GpuBuffer<f32>,
+    pub settings: gust_wgpu::GpuBuffer<Settings>,
+    pub intermediate: gust_wgpu::GpuBuffer<f32>,
+    pub summaries: gust_wgpu::GpuBuffer<Summary>,
 }
 
 impl ResidentState {
@@ -214,7 +214,7 @@ pub fn run_graph(
     device: &HeadlessDevice,
     state: &ResidentState,
     settings: &[Settings; 1],
-) -> Result<(Vec<Summary>, GraphReport), gpu_dialect_wgpu::Error> {
+) -> Result<(Vec<Summary>, GraphReport), gust_wgpu::Error> {
     let sample_count = state.samples.len() as u32;
     let summary_count = state.summaries.len() as u32;
     let transform_bindings = [
@@ -290,11 +290,11 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
         )?;
         std::fs::write(
             directory.join(format!("{stem}.wgsl")),
-            gpu_dialect::slang::compile_wgsl(descriptor)?,
+            gust::slang::compile_wgsl(descriptor)?,
         )?;
         std::fs::write(
             directory.join(format!("{stem}.spv")),
-            gpu_dialect::spirv::words_as_le_bytes(&gpu_dialect::slang::compile_spirv(descriptor)?),
+            gust::spirv::words_as_le_bytes(&gust::slang::compile_spirv(descriptor)?),
         )?;
         std::fs::write(
             directory.join(format!("{stem}.rs")),
@@ -358,13 +358,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpu_dialect_wgpu::{Error, TransferDirection};
+    use gust_wgpu::{Error, TransferDirection};
 
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn every_stage_compiles_to_wgsl() {
         for descriptor in descriptors() {
-            let wgsl = gpu_dialect::slang::compile_wgsl(descriptor).unwrap();
+            let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
             assert!(wgsl.contains("@compute"));
         }
     }

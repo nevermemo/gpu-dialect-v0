@@ -19,8 +19,8 @@ Verify output, ordering, intermediate GPU residency, and transfer byte counts.
 Initially require explicit host-provided dependencies and reject invalid resources;
 do not pretend the syn frontend can infer all effects or aliases.
 
-Implemented (T07, 2026-09-07) as `gpu_dialect_wgpu::StagedGraph` in
-`crates/gpu-dialect-wgpu/src/graph.rs` and `examples/staged-graph`. A graph holds
+Implemented (T07, 2026-09-07) as `gust_wgpu::StagedGraph` in
+`crates/gust-wgpu/src/graph.rs` and `examples/staged-graph`. A graph holds
 upload, dispatch, and readback nodes in insertion order with host-declared
 dependencies. `HeadlessDevice::execute_graph` validates before creating any GPU
 object: dependencies must point at earlier nodes, every node's buffers must pass the

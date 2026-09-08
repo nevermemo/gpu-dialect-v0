@@ -1,6 +1,6 @@
 ---
 name: "GUST Builder"
-description: "Use when implementing or extending GUST / GPU Dialect: writing #[gpu] Rust kernels that lower to Slang and run on wgpu (WGSL execution, SPIR-V validation), adding dialect features (loops, atomics, Option, structs, casts), fixing Rust-to-Slang translation bugs, extending the wgpu runtime (typed buffers, StagedGraph, GpuPool, indirect dispatch, reflection), building engine proofs toward a GPU ECS game engine, or pairing GPU kernels with independent CPU host references and differential tests. Works autonomously through cargo xtask checks, workspace tests, examples and full verification without routine approval prompts."
+description: "Use when implementing or extending GUST: writing #[gpu] Rust kernels that lower to Slang and run on wgpu (WGSL execution, SPIR-V validation), adding dialect features (loops, atomics, Option, structs, casts), fixing Rust-to-Slang translation bugs, extending the wgpu runtime (typed buffers, StagedGraph, GpuPool, indirect dispatch, reflection), building engine proofs toward a GPU ECS game engine, or pairing GPU kernels with independent CPU host references and differential tests. Works autonomously through cargo xtask checks, workspace tests, examples and full verification without routine approval prompts."
 tools: [vscode, execute, read, agent, edit, search, web, todo]
 model: ["Claude Fable 5.1 (copilot)"]
 reasoning-effort: max
