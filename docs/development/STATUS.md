@@ -2,8 +2,9 @@
 
 ## Active: none claimed (2026-09-08)
 
-The generated-host extraction is complete and ready to commit (below). Next cleanup
-candidate: extract cache types from `gpu-dialect-wgpu`.
+The wgpu cache extraction is complete and ready to commit (below). Next cleanup
+candidate: continue splitting `gpu-dialect-wgpu/src/lib.rs` or begin macro crate
+module extraction.
 
 ```text
 owner: none
@@ -11,6 +12,22 @@ claim: none
 next_focused_check: cargo xtask check-feature gpu-smoke
 full_check_needed_before_commit: no
 ```
+
+## Wgpu runtime split — cache module — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `c65e60c`; `cargo xtask check-feature gpu-smoke` passed
+before edits. No behavior changes intended.
+
+What changed. Moved `PipelineCacheStats`, `KernelCacheKey`, `CachedKernel`, and
+`PipelineCache` from `crates/gpu-dialect-wgpu/src/lib.rs` into
+`crates/gpu-dialect-wgpu/src/cache.rs`. Re-exported public `PipelineCacheStats` and
+kept cache internals `pub(crate)` for the runtime module.
+
+Validation: `cargo xtask check-feature gpu-smoke` passed (5, including cache-key tests).
+`cargo xtask check-feature wgpu` passed all wgpu unit/integration tests (19 total).
+
+Next command: claim the next runtime or macro module split here.
 
 ## Wgpu runtime split — generated host renderer — COMPLETE (2026-09-08)
 
