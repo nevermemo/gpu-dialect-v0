@@ -68,6 +68,11 @@ pub fn emit_kernel(
         .unwrap();
     }
 
+    // Buffers used with atomic operations need `Atomic<T>` element types in Slang
+    // so WGSL emits `array<atomic<T>>` storage.
+    let mut atomic = AtomicUsage(std::collections::HashSet::new());
+    atomic.visit_item_mod(module);
+
     for item in items {
         if let syn::Item::Struct(item) = item {
             emit_struct(&mut output, item)?;
@@ -88,10 +93,14 @@ pub fn emit_kernel(
                 } else {
                     "RWStructuredBuffer"
                 };
+                let element_type = if atomic.0.contains(&name.to_string()) {
+                    format!("Atomic<{}>", emit_type(element)?)
+                } else {
+                    emit_type(element)?
+                };
                 writeln!(
                     output,
-                    "[[vk::binding({binding}, 0)]] {wrapper}<{}> {name};",
-                    emit_type(element)?
+                    "[[vk::binding({binding}, 0)]] {wrapper}<{element_type}> {name};",
                 )
                 .unwrap();
                 resources.push(name.to_string());
@@ -525,6 +534,26 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Call(call) if is_some_constructor(call) => {
             format!("__gust_some({})", emit_expression(&call.args[0])?)
         }
+        syn::Expr::Call(call) if is_atomic_add(call) => {
+            let syn::Expr::Reference(reference) = &call.args[0] else {
+                return Err(syn::Error::new_spanned(
+                    &call.args[0],
+                    "atomic_add requires a mutable reference to a buffer element",
+                ));
+            };
+            let syn::Expr::Index(index) = reference.expr.as_ref() else {
+                return Err(syn::Error::new_spanned(
+                    &reference.expr,
+                    "atomic_add requires a buffer element",
+                ));
+            };
+            format!(
+                "{}[{}].add({})",
+                emit_expression(&index.expr)?,
+                emit_expression(&index.index)?,
+                emit_expression(&call.args[1])?
+            )
+        }
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,
@@ -611,6 +640,34 @@ impl<'ast> Visit<'ast> for NotUsage {
 fn is_some_constructor(call: &syn::ExprCall) -> bool {
     matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("Some"))
         && call.args.len() == 1
+}
+
+/// `atomic_add(&mut buffer[index], operand)`, the only atomic form this slice
+/// lowers. The validator has already accepted the shape; the emitter unwraps the
+/// reference receiver and emits Slang's `Atomic<T>.add()`.
+fn is_atomic_add(call: &syn::ExprCall) -> bool {
+    matches!(call.func.as_ref(), syn::Expr::Path(path) if path.path.is_ident("atomic_add"))
+        && call.args.len() == 2
+}
+
+/// Buffers referenced by `atomic_add` calls need `Atomic<T>` element types.
+struct AtomicUsage(std::collections::HashSet<String>);
+
+impl<'ast> Visit<'ast> for AtomicUsage {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if is_atomic_add(call) {
+            if let syn::Expr::Reference(reference) = &call.args[0] {
+                if let syn::Expr::Index(index) = reference.expr.as_ref() {
+                    if let syn::Expr::Path(path) = index.expr.as_ref() {
+                        if let Some(segment) = path.path.segments.first() {
+                            self.0.insert(segment.ident.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
 }
 
 /// Any Option feature in the module; both generic helpers are then emitted.

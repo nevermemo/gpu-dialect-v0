@@ -1,29 +1,63 @@
 # Current status
 
-## Active: review follow-up fixes (2026-09-08)
+## Active: T10 atomics — `atomic_add` on `RWStructuredBuffer<u32>` (2026-09-08)
 
-Owner: Codex at the user's request. Preserve the existing uncommitted GUST naming
-pass on `c47532d`; no commit or push is requested. T10 is planning-only and awaits
-the user's approval before implementation or probes.
+Owner: Kilo (local agent) at the user's explicit request. Bounded scope: implement
+`atomic_add` on `RWStructuredBuffer<u32>` only, through the direct syn-AST → Slang
+pipeline, with a real GPU contention test. No custom IR, no CPU fallback,
+relaxed/default memory ordering, unsupported forms rejected with diagnostics.
+Stop after the first vertical slice is proven; do not expand to `i32`,
+`atomic_min`, `atomic_max`, `atomic_exchange`, or `atomic_compare_exchange`
+without an explicit contract.
 
 ```text
-owner: Codex
-claim: check routing, live-prefix pool readback, generated-host reflection parity, setup diagnostic and current-doc reconciliation
-next_focused_check: cargo xtask check-workspace
+owner: Kilo
+claim: T10 atomic_add on RWStructuredBuffer<u32> — validator, emitter, golden, GPU contention test, compile-fail coverage
+next_focused_check: cargo xtask check-feature macro && cargo xtask check-feature wgpu
 full_check_needed_before_commit: yes
 ```
 
-File ownership: routing Builder owns `xtask/src/checks.rs` and routing tests;
-readback Builder owns `gust-wgpu/src/{lib,pool}.rs` and its new pool tests;
-host-template Builder owns `gust-wgpu/src/generated_host.rs`, its new tests,
-`gust/src/reflect/mod.rs` and the helper-error regression. Codex owns the roadmap,
-architecture/development documentation and final validation record. Builders must
-not edit another scope or regenerate exports; full verification owns regeneration.
-No dependencies, macro language changes, shader ABI expansion or T10 code.
+File ownership: this task owns `crates/gust-macros/src/validate/mod.rs`,
+`crates/gust-macros/src/slang/mod.rs`, `crates/gust-macros/src/lib.rs` (tests),
+`tests/fixtures/atomics.rs`, `tests/fixtures/atomics.slang`,
+`crates/gust-wgpu/tests/atomics.rs`, and the T10 section of this file. No
+dependencies, no shader ABI expansion, no other T10 operations.
 
-Baseline: `cargo xtask check-fast` passed on Rust 1.98.0 / Slang 2026.13.1
-(31 macro, 18 core, 19 runtime tests; real GPU integration tests did not skip).
-Workspace baseline and independent reviews are pending.
+### Atomic contract (T10, first slice)
+
+Accepted form:
+
+```rust
+atomic_add(&mut counter[0], 1u32);
+```
+
+- `atomic_add` is a two-argument built-in, not a helper function.
+- The first argument must be a mutable reference to a single element of a
+  read-write storage parameter: `&mut <buffer>[<index>]`.
+- `<buffer>` must be a kernel parameter of type `RWStructuredBuffer<u32>` (or the
+  `uint` alias). Read-only buffers, local variables, float elements, and any other
+  element type are rejected with a diagnostic.
+- `<index>` is any valid index expression (validated as usual).
+- The second argument is the operand, validated as an ordinary expression; rustc
+  shadows it and Slang checks the type.
+- Lowers directly to Slang `atomicAdd(<buffer>[<index>], <operand>)`, which uses
+  relaxed/default memory ordering. No ordering spelling is emitted unless evidence
+  requires a narrower one.
+- The operation is a statement; it does not produce a value in this slice.
+
+Rejected with diagnostics (not silently lowered):
+
+- `atomic_add` on a read-only buffer (`StructuredBuffer`).
+- `atomic_add` on a float element (`RWStructuredBuffer<f32>`).
+- `atomic_add` on an unsupported element type (`RWStructuredBuffer<i32>`, `bool`, ...).
+- `atomic_add` on a local variable or a non-buffer receiver.
+- `atomic_add` with a non-element receiver (e.g. `&mut counter` without an index).
+- `atomic_add` with the wrong arity.
+
+Proven end to end: the golden Slang fixture compiles to WGSL and SPIR-V, the
+reflection/runtime ABI gate still enforces the storage layout, and a real GPU test
+with 257 concurrent invocations incrementing one shared `u32` counter reads back
+exactly 257, matching an independent host reference.
 
 ## Historical: GUST naming pass (2026-09-08)
 

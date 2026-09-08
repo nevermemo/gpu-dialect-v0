@@ -1,4 +1,4 @@
-use crate::{expand::KernelOptions, slang::emit_kernel, validate::validate_module};
+use crate::{expand::kernel_options, slang::emit_kernel, validate::validate_module};
 
 fn translate(source: &str) -> syn::Result<String> {
     let module: syn::ItemMod = syn::parse_str(source)?;
@@ -14,13 +14,8 @@ fn translate(source: &str) -> syn::Result<String> {
             _ => None,
         })
         .unwrap();
-    emit_kernel(
-        &module,
-        kernel,
-        KernelOptions {
-            workgroup_size: [64, 1, 1],
-        },
-    )
+    let options = kernel_options(kernel)?.expect("kernel has #[kernel] attribute");
+    emit_kernel(&module, kernel, options)
 }
 
 #[test]
@@ -56,6 +51,15 @@ fn loops_golden() {
     assert_eq!(
         source.replace("\r\n", "\n"),
         include_str!("../../../../tests/fixtures/loops.slang").replace("\r\n", "\n")
+    );
+}
+
+#[test]
+fn atomics_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/atomics.rs")).unwrap();
+    assert_eq!(
+        source.replace("\r\n", "\n"),
+        include_str!("../../../../tests/fixtures/atomics.slang").replace("\r\n", "\n")
     );
 }
 
@@ -612,4 +616,107 @@ fn integer_division_by_literal_zero_is_diagnosed() {
     )
     .unwrap();
     assert!(ok.contains("(out[id.x] / 0.0)"), "{ok}");
+}
+
+// --- T10 atomics ---
+
+#[test]
+fn atomic_add_on_rw_u32_buffer_element_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+            atomic_add(&mut counter[0], 1u32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<uint>> counter;"),
+        "buffer type must use Atomic<uint>: {source}"
+    );
+    assert!(
+        source.contains("counter[0].add(uint(1));"),
+        "atomic_add must lower to .add(): {source}"
+    );
+}
+
+#[test]
+fn atomic_add_with_dynamic_index_is_accepted() {
+    let source = translate(
+        "mod atomics {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+            atomic_add(&mut counter[id.x], 1u32);
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<Atomic<uint>> counter;"),
+        "buffer type must use Atomic<uint>: {source}"
+    );
+    assert!(
+        source.contains("counter[id.x].add(uint(1));"),
+        "atomic_add must lower to .add(): {source}"
+    );
+}
+
+#[test]
+fn non_atomic_buffer_keeps_plain_element_type() {
+    let source = translate(
+        "mod plain {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut data: RWStructuredBuffer<uint>) {
+            data[id.x] = data[id.x] + 1u32;
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("RWStructuredBuffer<uint> data;"),
+        "non-atomic buffer must keep plain element type: {source}"
+    );
+    assert!(
+        !source.contains("Atomic<"),
+        "non-atomic buffer must not use Atomic: {source}"
+    );
+}
+
+#[test]
+fn atomic_add_rejects_unsupported_receivers() {
+    for (source, message) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, counter: StructuredBuffer<uint>) { atomic_add(&mut counter[0], 1u32); } }",
+            "read-write buffer",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_add(&mut counter[0], 1.0f32); } }",
+            "u32",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) { atomic_add(&mut counter[0], 1i32); } }",
+            "u32",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let mut local = 0u32; atomic_add(&mut local, 1u32); } }",
+            "read-write buffer",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter, 1u32); } }",
+            "buffer element",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&counter[0], 1u32); } }",
+            "mutable reference",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter[0]); } }",
+            "two arguments",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter[0], 1u32, 2u32); } }",
+            "two arguments",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
 }

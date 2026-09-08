@@ -116,3 +116,10 @@ impl<T> Deref for Uniform<T> {
         &self.0
     }
 }
+
+/// Shadow stub for Slang's `atomicAdd`. The shadow kernel body is type-checked
+/// by rustc but never executed; this stub exists only to satisfy name resolution
+/// and performs no CPU work.
+pub fn atomic_add(_target: &mut u32, _operand: u32) -> u32 {
+    0
+}
