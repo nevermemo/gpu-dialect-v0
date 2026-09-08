@@ -36,6 +36,12 @@ before example binaries and exported SPIR-V validation.
 
 The next task is T10 atomics unless the owner redirects.
 
+Latest DX batch adds command intelligence on top of xtask: `check-changed`, `status`,
+`doctor`, `check-workspace`, `check-format`, `check-lints`, `list-tests`,
+`explain-check`, `measure-tests --json`, `verify --record/--no-record`, and split GPU
+groups (`gpu-smoke`, `gpu-semantics`, `gpu-runtime`). Skipped by request: automatic
+STATUS mutation and example-size overrides.
+
 ## Previous handoff — 2026-09-07
 
 Earlier passes (GitHub Copilot, VS Code agent), each committed and pushed to

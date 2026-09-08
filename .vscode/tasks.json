@@ -16,6 +16,13 @@
       "problemMatcher": "$rustc"
     },
     {
+      "label": "GUST: check changed",
+      "type": "shell",
+      "command": "cargo xtask check-changed",
+      "group": "test",
+      "problemMatcher": "$rustc"
+    },
+    {
       "label": "GUST: check examples",
       "type": "shell",
       "command": "cargo xtask check-examples",
@@ -42,7 +49,7 @@
       "id": "gustFeatureArea",
       "type": "pickString",
       "description": "Focused GUST check area",
-      "options": ["macro", "core", "wgpu", "reflection", "loops", "examples", "artifacts", "full"],
+      "options": ["macro", "core", "wgpu", "gpu-smoke", "gpu-semantics", "gpu-runtime", "reflection", "loops", "examples", "artifacts", "full"],
       "default": "macro"
     }
   ]

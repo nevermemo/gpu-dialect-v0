@@ -16,6 +16,28 @@ const EXAMPLES: &[&str] = &[
     "component-pool",
 ];
 const SMOKE_EXAMPLES: &[&str] = &["vector-add", "typed-pipeline"];
+const WORKSPACE_EXCLUDES: &[&str] = &[
+    "vector-add",
+    "polynomial",
+    "signal-pipeline",
+    "particle-step",
+    "typed-pipeline",
+    "staged-graph",
+    "component-pool",
+];
+const FEATURE_AREAS: &[&str] = &[
+    "macro",
+    "core",
+    "wgpu",
+    "gpu-smoke",
+    "gpu-semantics",
+    "gpu-runtime",
+    "reflection",
+    "loops",
+    "examples",
+    "artifacts",
+    "full",
+];
 
 fn main() -> ExitCode {
     match run() {
@@ -36,12 +58,28 @@ fn run() -> Result<(), String> {
     let args: Vec<_> = args.collect();
     match command.as_str() {
         "build-slang-reflect" => build_slang_reflect(BuildOptions::parse(&args)?)?,
-        "verify" => verify(VerifyMode::parse(&args)?)?,
-        "check-fast" => verify(VerifyMode::Fast)?,
-        "check-full" => verify(VerifyMode::Full)?,
-        "check-examples" => verify(VerifyMode::Examples)?,
-        "check-artifacts" => verify(VerifyMode::Artifacts)?,
+        "verify" => {
+            let command = VerifyCommand::parse(&args)?;
+            verify(command.mode, command.record)?;
+        }
+        "check-fast" => verify(VerifyMode::Fast, false)?,
+        "check-full" => verify(VerifyMode::Full, true)?,
+        "check-examples" => verify(VerifyMode::Examples, false)?,
+        "check-artifacts" => verify(VerifyMode::Artifacts, false)?,
+        "check-workspace" => check_workspace()?,
+        "check-format" => check_format()?,
+        "check-lints" => check_lints()?,
         "check-feature" => check_feature(args.first().map(String::as_str))?,
+        "check-changed" => check_changed()?,
+        "status" => {
+            if !args.is_empty() {
+                return Err("status takes no arguments; `status --update` was intentionally not implemented".into());
+            }
+            status()?;
+        }
+        "doctor" => doctor()?,
+        "list-tests" => list_tests()?,
+        "explain-check" => explain_check(args.first().map(String::as_str))?,
         "export-artifacts" => export_artifacts()?,
         "measure-tests" => measure_tests(&args)?,
         "hook-format-rust-after-edit" => hook_format_rust_after_edit()?,
@@ -54,7 +92,8 @@ fn run() -> Result<(), String> {
 
 fn usage() {
     eprintln!(
-        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--full]\n  check-feature <macro|core|wgpu|reflection|loops|examples|artifacts|full>\n  check-fast | check-examples | check-artifacts | check-full\n  export-artifacts\n  measure-tests [command ...]\n  hook-format-rust-after-edit\n  self-test"
+        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  status | doctor | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
+        FEATURE_AREAS.join("|")
     );
 }
 
@@ -69,26 +108,6 @@ enum VerifyMode {
 }
 
 impl VerifyMode {
-    fn parse(args: &[String]) -> Result<Self, String> {
-        let mut mode = Self::Smoke;
-        let mut index = 0;
-        while index < args.len() {
-            match args[index].as_str() {
-                "--full" | "-Full" | "--Full" => mode = Self::Full,
-                "--mode" | "-Mode" => {
-                    index += 1;
-                    let Some(value) = args.get(index) else {
-                        return Err("--mode needs a value".into());
-                    };
-                    mode = Self::from_name(value)?;
-                }
-                other => mode = Self::from_name(other)?,
-            }
-            index += 1;
-        }
-        Ok(mode)
-    }
-
     fn from_name(value: &str) -> Result<Self, String> {
         match value.to_ascii_lowercase().as_str() {
             "smoke" => Ok(Self::Smoke),
@@ -110,6 +129,39 @@ impl VerifyMode {
             Self::Artifacts => "artifacts",
             Self::Full => "full",
         }
+    }
+}
+
+struct VerifyCommand {
+    mode: VerifyMode,
+    record: bool,
+}
+
+impl VerifyCommand {
+    fn parse(args: &[String]) -> Result<Self, String> {
+        let mut mode = VerifyMode::Smoke;
+        let mut record = None;
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--full" | "-Full" | "--Full" => mode = VerifyMode::Full,
+                "--mode" | "-Mode" => {
+                    index += 1;
+                    let Some(value) = args.get(index) else {
+                        return Err("--mode needs a value".into());
+                    };
+                    mode = VerifyMode::from_name(value)?;
+                }
+                "--record" => record = Some(true),
+                "--no-record" => record = Some(false),
+                other => mode = VerifyMode::from_name(other)?,
+            }
+            index += 1;
+        }
+        Ok(Self {
+            mode,
+            record: record.unwrap_or(mode == VerifyMode::Full),
+        })
     }
 }
 
@@ -172,20 +224,31 @@ fn workspace_root() -> Result<PathBuf, String> {
     }
 }
 
-fn verify(mode: VerifyMode) -> Result<(), String> {
+fn workspace_test_args() -> Vec<String> {
+    let mut args = vec!["test".to_owned(), "--workspace".to_owned()];
+    for package in WORKSPACE_EXCLUDES {
+        args.push("--exclude".to_owned());
+        args.push((*package).to_owned());
+    }
+    args
+}
+
+fn verify(mode: VerifyMode, record: bool) -> Result<(), String> {
     let root = workspace_root()?;
     let started = now_utc();
     let mut checks = Vec::new();
     let mut artifacts = Vec::new();
     let result = verify_inner(&root, mode, &mut checks, &mut artifacts);
-    write_validation(
-        &root,
-        mode,
-        &started,
-        result.as_ref().err(),
-        &checks,
-        &artifacts,
-    )?;
+    if record {
+        write_validation(
+            &root,
+            mode,
+            &started,
+            result.as_ref().err(),
+            &checks,
+            &artifacts,
+        )?;
+    }
     result?;
     println!("GUST verification passed.");
     Ok(())
@@ -241,7 +304,7 @@ fn verify_inner(
         }
         VerifyMode::Gpu => run_checked(root, checks, "cargo", &["test", "-p", "gpu-dialect-wgpu"])?,
         VerifyMode::Smoke | VerifyMode::Full => {
-            run_checked(root, checks, "cargo", &["test", "--workspace"])?
+            run_checked_owned(root, checks, "cargo", &workspace_test_args())?
         }
         VerifyMode::Examples | VerifyMode::Artifacts => {}
     }
@@ -308,7 +371,29 @@ fn check_feature(area: Option<&str>) -> Result<(), String> {
     match area {
         "macro" => run_direct(&root, "cargo", &["test", "-p", "gpu-dialect-macros"]),
         "core" => run_direct(&root, "cargo", &["test", "-p", "gpu-dialect", "--lib"]),
-        "wgpu" => verify(VerifyMode::Gpu),
+        "wgpu" => verify(VerifyMode::Gpu, false),
+        "gpu-smoke" => run_direct(&root, "cargo", &["test", "-p", "gpu-dialect-wgpu", "--lib"]),
+        "gpu-semantics" => {
+            for test in [
+                "semantics",
+                "numeric",
+                "option",
+                "loops",
+                "struct_assignment",
+            ] {
+                run_direct(
+                    &root,
+                    "cargo",
+                    &["test", "-p", "gpu-dialect-wgpu", "--test", test],
+                )?;
+            }
+            Ok(())
+        }
+        "gpu-runtime" => run_direct(
+            &root,
+            "cargo",
+            &["test", "-p", "gpu-dialect-wgpu", "--test", "reflection"],
+        ),
         "reflection" => {
             build_slang_reflect(BuildOptions::default())?;
             run_direct(
@@ -334,11 +419,223 @@ fn check_feature(area: Option<&str>) -> Result<(), String> {
                 &["test", "-p", "gpu-dialect-wgpu", "--test", "loops"],
             )
         }
-        "examples" => verify(VerifyMode::Examples),
-        "artifacts" => verify(VerifyMode::Artifacts),
-        "full" => verify(VerifyMode::Full),
+        "examples" => verify(VerifyMode::Examples, false),
+        "artifacts" => verify(VerifyMode::Artifacts, false),
+        "full" => verify(VerifyMode::Full, true),
         _ => Err(format!("unknown feature area `{area}`")),
     }
+}
+
+fn check_workspace() -> Result<(), String> {
+    let root = workspace_root()?;
+    run_direct_args(&root, "cargo", &workspace_test_args())
+}
+
+fn check_format() -> Result<(), String> {
+    run_direct(
+        &workspace_root()?,
+        "cargo",
+        &["fmt", "--all", "--", "--check"],
+    )
+}
+
+fn check_lints() -> Result<(), String> {
+    run_direct(
+        &workspace_root()?,
+        "cargo",
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )
+}
+
+fn check_changed() -> Result<(), String> {
+    let root = workspace_root()?;
+    let paths = changed_paths(&root)?;
+    if paths.is_empty() {
+        println!("No changed files; suggested check: cargo xtask check-fast");
+        return Ok(());
+    }
+    println!("Changed files:");
+    for path in &paths {
+        println!("  {path}");
+    }
+    let has = |prefix: &str| paths.iter().any(|path| path.starts_with(prefix));
+    let any = |needles: &[&str]| {
+        paths
+            .iter()
+            .any(|path| needles.iter().any(|needle| path.contains(needle)))
+    };
+
+    if any(&[
+        "Cargo.toml",
+        "Cargo.lock",
+        "xtask/",
+        ".cargo/",
+        ".github/",
+        ".vscode/",
+        "AGENTS.md",
+    ]) {
+        println!("Selected check: cargo xtask check-fast");
+        return verify(VerifyMode::Fast, false);
+    }
+    if any(&[
+        "tests/fixtures/loops",
+        "crates/gpu-dialect-wgpu/tests/loops.rs",
+    ]) {
+        println!("Selected check: cargo xtask check-feature loops");
+        return check_feature(Some("loops"));
+    }
+    if has("crates/gpu-dialect-macros/") || has("tests/fixtures/") {
+        println!("Selected check: cargo xtask check-feature macro");
+        return check_feature(Some("macro"));
+    }
+    if any(&["reflect.rs", "reflection.rs", "scripts/probes/"]) {
+        println!("Selected check: cargo xtask check-feature reflection");
+        return check_feature(Some("reflection"));
+    }
+    if has("crates/gpu-dialect-wgpu/") {
+        println!("Selected check: cargo xtask check-feature wgpu");
+        return check_feature(Some("wgpu"));
+    }
+    if has("crates/gpu-dialect/") {
+        println!("Selected check: cargo xtask check-feature core");
+        return check_feature(Some("core"));
+    }
+    if has("examples/") || has("generated-wgpu/") {
+        println!("Selected check: cargo xtask check-examples");
+        return verify(VerifyMode::Examples, false);
+    }
+    println!("Selected check: cargo xtask check-workspace");
+    check_workspace()
+}
+
+fn status() -> Result<(), String> {
+    let root = workspace_root()?;
+    println!("Repository: {}", root.display());
+    print_command(&root, "git", &["status", "--short", "--branch"])?;
+    if let Ok(text) = fs::read_to_string(root.join(".ai/STATUS.md")) {
+        let active = text.lines().find(|line| line.starts_with("## Active:"));
+        if let Some(active) = active {
+            println!("{active}");
+        }
+        for line in text.lines().skip_while(|line| !line.starts_with("```text")) {
+            println!("{line}");
+            if line == "```" {
+                break;
+            }
+        }
+    }
+    if let Ok(text) = fs::read_to_string(root.join(".ai/VALIDATION.json")) {
+        println!("Validation: {}", compact_validation_summary(&text));
+    }
+    println!("Suggested clean-tree check: cargo xtask check-fast");
+    Ok(())
+}
+
+fn doctor() -> Result<(), String> {
+    println!("Toolchain doctor:");
+    for command in ["cargo", "rustc", "slangc"] {
+        if command_exists(command) {
+            println!("  {command}: found");
+        } else {
+            println!("  {command}: missing");
+        }
+    }
+    println!(
+        "  spirv-val: {}",
+        if command_exists("spirv-val") {
+            "found"
+        } else {
+            "missing (needed for artifacts/full)"
+        }
+    );
+    match build_slang_reflect(BuildOptions::default()) {
+        Ok(()) => println!("  gust-slang-reflect: ready"),
+        Err(error) => println!("  gust-slang-reflect: not ready ({error})"),
+    }
+    println!(
+        "  Vulkan/wgpu adapter: run `cargo xtask check-feature gpu-smoke` for a cheap runtime check"
+    );
+    Ok(())
+}
+
+fn list_tests() -> Result<(), String> {
+    let root = workspace_root()?;
+    let output = Command::new("cargo")
+        .args(["test", "--workspace", "--", "--list"])
+        .current_dir(&root)
+        .output()
+        .map_err(|error| format!("could not launch cargo test -- --list: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut total_tests = 0usize;
+    let mut doctests = 0usize;
+    let mut ignored_examples = 0usize;
+    for line in stdout.lines() {
+        if line.ends_with(": test") {
+            total_tests += 1;
+            if line.contains("tests::") && line.contains("example validation") {
+                ignored_examples += 1;
+            }
+        }
+        if line.contains(" - (line ") {
+            doctests += 1;
+        }
+    }
+    println!("cargo test --workspace -- --list");
+    println!("  listed Rust tests: {total_tests}");
+    println!("  listed doctests: {doctests}");
+    println!("  example tests are ignored by attribute and run by `cargo xtask check-examples`");
+    println!(
+        "  categories: macro golden/rejection, core bridge/reflection, wgpu GPU/runtime, ignored examples, doctests"
+    );
+    if ignored_examples > 0 {
+        println!("  ignored example test-name matches in list: {ignored_examples}");
+    }
+    Ok(())
+}
+
+fn explain_check(area: Option<&str>) -> Result<(), String> {
+    let area = area.unwrap_or("all");
+    let message = match area {
+        "macro" => "macro: validator/emitter/golden changes; fastest compiler-front-end proof",
+        "core" => {
+            "core: ABI, Slang bridge, reflection parser, diagnostic mapping, SPIR-V structure helpers"
+        }
+        "wgpu" => "wgpu: all runtime/GPU integration tests; about 10s on this machine",
+        "gpu-smoke" => "gpu-smoke: wgpu crate unit tests only; cheap runtime/cache sanity",
+        "gpu-semantics" => {
+            "gpu-semantics: semantics/numeric/option/loops/struct assignment GPU differential tests"
+        }
+        "gpu-runtime" => "gpu-runtime: reflection gate and cache/runtime mismatch tests",
+        "reflection" => "reflection: native Slang helper + core/wgpu reflection contract",
+        "loops" => "loops: bounded-loop golden/rejection test plus real-GPU loop differential test",
+        "examples" => {
+            "examples: ignored example tests and example binaries; use for major behavior confidence"
+        }
+        "artifacts" => "artifacts: example binaries plus exported SPIR-V validation",
+        "full" => "full: release evidence; writes .ai/VALIDATION.json",
+        "changed" => "changed: route dirty files to the cheapest likely sufficient check",
+        "workspace" => {
+            "workspace: non-example workspace tests via --exclude; example tests stay in check-examples"
+        }
+        "format" => "format: rustfmt only",
+        "lints" => "lints: strict Clippy over workspace/all targets",
+        "all" => {
+            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints"
+        }
+        _ => return Err(format!("unknown check area `{area}`")),
+    };
+    println!("{message}");
+    Ok(())
 }
 
 fn export_artifacts() -> Result<(), String> {
@@ -352,32 +649,80 @@ fn export_artifacts() -> Result<(), String> {
 
 fn measure_tests(args: &[String]) -> Result<(), String> {
     let root = workspace_root()?;
-    let commands = if args.is_empty() {
+    let mut json_path = None;
+    let mut command_args = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                index += 1;
+                json_path = Some(PathBuf::from(args.get(index).ok_or("--json needs a path")?));
+            }
+            other => command_args.push(other.to_owned()),
+        }
+        index += 1;
+    }
+    let commands = if command_args.is_empty() {
+        let mut workspace = vec!["cargo".to_owned()];
+        workspace.extend(workspace_test_args());
         vec![
-            vec!["cargo", "test", "-p", "gpu-dialect-macros"],
-            vec!["cargo", "test", "-p", "gpu-dialect", "--lib"],
-            vec!["cargo", "test", "-p", "gpu-dialect-wgpu"],
-            vec!["cargo", "test", "--workspace"],
+            vec![
+                "cargo".into(),
+                "test".into(),
+                "-p".into(),
+                "gpu-dialect-macros".into(),
+            ],
+            vec![
+                "cargo".into(),
+                "test".into(),
+                "-p".into(),
+                "gpu-dialect".into(),
+                "--lib".into(),
+            ],
+            vec![
+                "cargo".into(),
+                "test".into(),
+                "-p".into(),
+                "gpu-dialect-wgpu".into(),
+            ],
+            workspace,
         ]
     } else {
-        vec![args.iter().map(String::as_str).collect::<Vec<_>>()]
+        vec![command_args]
     };
+    let mut records = Vec::new();
     for command in commands {
+        if command.is_empty() {
+            return Err("measure-tests command cannot be empty".into());
+        }
         println!("== {}", command.join(" "));
         let start = Instant::now();
-        let status = Command::new(command[0])
+        let status = Command::new(&command[0])
             .args(&command[1..])
             .current_dir(&root)
             .status()
             .map_err(|error| format!("could not launch {}: {error}", command[0]))?;
-        println!(
-            "elapsed_ms={} exit={}",
-            start.elapsed().as_millis(),
-            status.code().unwrap_or(-1)
-        );
+        let elapsed = start.elapsed().as_millis();
+        let exit = status.code().unwrap_or(-1);
+        println!("elapsed_ms={elapsed} exit={exit}");
+        records.push((command.join(" "), elapsed, exit));
         if !status.success() {
             return Err(format!("{} failed", command.join(" ")));
         }
+    }
+    if let Some(path) = json_path {
+        let mut json = String::from("{\n  \"schema_version\": 1,\n  \"measurements\": [\n");
+        for (index, (command, elapsed, exit)) in records.iter().enumerate() {
+            if index != 0 {
+                json.push_str(",\n");
+            }
+            json.push_str(&format!(
+                "    {{ \"command\": {}, \"elapsed_ms\": {elapsed}, \"exit_code\": {exit} }}",
+                json_string(command)
+            ));
+        }
+        json.push_str("\n  ]\n}\n");
+        fs::write(path, json).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -606,6 +951,16 @@ fn run_checked(
     }
 }
 
+fn run_checked_owned(
+    root: &Path,
+    checks: &mut Vec<CheckRecord>,
+    program: &str,
+    args: &[String],
+) -> Result<(), String> {
+    let borrowed = args.iter().map(String::as_str).collect::<Vec<_>>();
+    run_checked(root, checks, program, &borrowed)
+}
+
 fn run_direct(root: &Path, program: &str, args: &[&str]) -> Result<(), String> {
     run_direct_args(
         root,
@@ -633,6 +988,72 @@ fn run_direct_args(root: &Path, program: &str, args: &[String]) -> Result<(), St
             status.code().unwrap_or(-1)
         ))
     }
+}
+
+fn print_command(root: &Path, program: &str, args: &[&str]) -> Result<(), String> {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("could not launch {program}: {error}"))?;
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} {} failed (exit {})",
+            program,
+            args.join(" "),
+            output.status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+fn changed_paths(root: &Path) -> Result<Vec<String>, String> {
+    let mut paths = Vec::new();
+    for args in [
+        ["diff", "--name-only", "HEAD"].as_slice(),
+        ["ls-files", "--others", "--exclude-standard"].as_slice(),
+    ] {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .map_err(|error| format!("could not launch git: {error}"))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let path = line.trim().replace('\\', "/");
+            if !path.is_empty() && !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn compact_validation_summary(text: &str) -> String {
+    let field = |name: &str| -> Option<String> {
+        let pattern = format!("\"{name}\":");
+        let line = text
+            .lines()
+            .find(|line| line.trim_start().starts_with(&pattern))?;
+        Some(
+            line.split_once(':')?
+                .1
+                .trim()
+                .trim_end_matches(',')
+                .trim_matches('"')
+                .to_owned(),
+        )
+    };
+    let finished = field("finished_utc").unwrap_or_else(|| "unknown".to_owned());
+    let mode = field("mode").unwrap_or_else(|| "unknown".to_owned());
+    let passed = field("passed").unwrap_or_else(|| "unknown".to_owned());
+    format!("finished={finished} mode={mode} passed={passed}")
 }
 
 fn require_command(program: &str) -> Result<(), String> {

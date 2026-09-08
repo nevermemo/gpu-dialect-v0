@@ -118,7 +118,7 @@ Run from the workspace root:
 
 ```sh
 cargo xtask check-fast
-cargo test --workspace
+cargo xtask check-workspace
 ```
 
 Use stable Rust, `slangc` on PATH, and a Vulkan adapter. For release evidence run
