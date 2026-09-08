@@ -4,35 +4,35 @@
     {
       "label": "GUST: check fast",
       "type": "shell",
-      "command": "pwsh -NoProfile -File scripts/check-fast.ps1",
+      "command": "cargo xtask check-fast",
       "group": "test",
       "problemMatcher": "$rustc"
     },
     {
       "label": "GUST: check feature",
       "type": "shell",
-      "command": "pwsh -NoProfile -File scripts/check-feature.ps1 -Area ${input:gustFeatureArea}",
+      "command": "cargo xtask check-feature ${input:gustFeatureArea}",
       "group": "test",
       "problemMatcher": "$rustc"
     },
     {
       "label": "GUST: check examples",
       "type": "shell",
-      "command": "pwsh -NoProfile -File scripts/check-examples.ps1",
+      "command": "cargo xtask check-examples",
       "group": "test",
       "problemMatcher": "$rustc"
     },
     {
       "label": "GUST: check artifacts",
       "type": "shell",
-      "command": "pwsh -NoProfile -File scripts/check-artifacts.ps1",
+      "command": "cargo xtask check-artifacts",
       "group": "test",
       "problemMatcher": "$rustc"
     },
     {
       "label": "GUST: check full",
       "type": "shell",
-      "command": "pwsh -NoProfile -File scripts/check-full.ps1",
+      "command": "cargo xtask check-full",
       "group": "test",
       "problemMatcher": "$rustc"
     }

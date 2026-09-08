@@ -45,7 +45,7 @@ Requirements:
   the manifest's older minimum is not independently verified)
 - `slangc` on `PATH` (tested with Slang 2026.13.1)
 - The native reflection helper, built once with
-  `pwsh -File scripts/build-slang-reflect.ps1` (PowerShell 7). It needs the Slang
+  `cargo xtask build-slang-reflect`. It needs the Slang
   SDK headers and import library (from `VULKAN_SDK` or `SLANG_SDK`) and a C++
   toolchain (MSVC on Windows). The runtime finds it in `target/slang-reflect/` or
   through `GUST_SLANG_REFLECT`; without it every pipeline creation fails with an
@@ -55,7 +55,7 @@ Requirements:
 
 Run the smallest end-to-end example:
 
-```powershell
+```sh
 cargo run -p vector-add
 ```
 
@@ -69,7 +69,7 @@ It executes real code on the selected GPU and writes four inspectable artifacts 
 
 Run the normal development suite:
 
-```powershell
+```sh
 cargo test --workspace
 ```
 
@@ -80,8 +80,8 @@ compiler/runtime feedback over full example proofs.
 For the full release-readiness check (including ignored example tests, all seven
 examples, and mandatory external validation of all twelve SPIR-V exports):
 
-```powershell
-.\scripts\verify.ps1 -Full
+```sh
+cargo xtask check-full
 ```
 
 It writes `.ai/VALIDATION.json` with command exit codes, stdout, artifact hashes,
@@ -92,24 +92,23 @@ Purpose-built check scripts keep the inner loop honest:
 
 | Command | Purpose | Runs |
 | --- | --- | --- |
-| `pwsh -File scripts/check-feature.ps1 -Area macro` | Macro/validator/emitter work | `cargo test -p gpu-dialect-macros` |
-| `pwsh -File scripts/check-feature.ps1 -Area reflection` | Reflection/layout work | helper version check, core reflection tests, wgpu reflection tests |
-| `pwsh -File scripts/check-feature.ps1 -Area loops` | Bounded-loop work | loop golden/rejection test plus GPU loop test |
-| `pwsh -File scripts/check-fast.ps1` | Fast routine confidence | helper version check, fmt check, macro tests, core lib tests, wgpu tests |
+| `cargo xtask check-feature macro` | Macro/validator/emitter work | `cargo test -p gpu-dialect-macros` |
+| `cargo xtask check-feature reflection` | Reflection/layout work | helper version check, core reflection tests, wgpu reflection tests |
+| `cargo xtask check-feature loops` | Bounded-loop work | loop golden/rejection test plus GPU loop test |
+| `cargo xtask check-fast` | Fast routine confidence | helper version check, fmt check, macro tests, core lib tests, wgpu tests |
 | `cargo test --workspace` | Default workspace confidence | all non-ignored workspace tests; example validation stays ignored |
-| `pwsh -File scripts/check-examples.ps1` | Major example behavior confidence | ignored example tests plus example binaries |
-| `pwsh -File scripts/check-artifacts.ps1` | Artifact/export confidence | example binaries plus external SPIR-V validation |
-| `pwsh -File scripts/check-full.ps1` | Release confidence | full `verify.ps1 -Full` |
-| `pwsh -File scripts/measure-tests.ps1` | Profiling before pruning | timed test commands, configurable with `-Command` |
+| `cargo xtask check-examples` | Major example behavior confidence | ignored example tests plus example binaries |
+| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation |
+| `cargo xtask check-full` | Release confidence | full staged verification |
+| `cargo xtask measure-tests` | Profiling before pruning | timed default test commands, or one custom command |
 
-`scripts/verify.ps1` also accepts `-Mode Fast`, `-Mode Gpu`, `-Mode Examples`,
-`-Mode Artifacts`, and `-Mode Full`; the existing `-Full` switch is kept. The native
-reflection helper build is timestamp-gated and still runs `--version`, so repeated
-checks do not relink unchanged C++ code.
+`cargo xtask verify --mode fast|gpu|examples|artifacts|full` exposes the same staged
+checks. The native reflection helper build is timestamp-gated and still runs
+`--version`, so repeated checks do not relink unchanged C++ code.
 
 The same checks are exposed as VS Code tasks: `GUST: check fast`, `GUST: check
 feature`, `GUST: check examples`, `GUST: check artifacts`, and `GUST: check full`.
-Do not introduce shared `HeadlessDevice` fixtures until `measure-tests.ps1` shows
+Do not introduce shared `HeadlessDevice` fixtures until `cargo xtask measure-tests` shows
 adapter/device setup is the bottleneck; cache-stat tests intentionally use isolated
 devices.
 
@@ -207,7 +206,7 @@ diagnostics, checks SPIR-V structure, and attempts cleanup on every return path.
 `slangc` and compiler failures are reported as normal Rust errors.
 
 `gpu-dialect::reflect` is the layout gate. `compile_reflected` runs the native helper
-(`scripts/probes/slang-layout.cpp`, built by `scripts/build-slang-reflect.ps1`) to
+(`scripts/probes/slang-layout.cpp`, built by `cargo xtask build-slang-reflect`) to
 compile one entry point and reflect the identical linked program; the result carries
 the artifact, its hashes, the compiler build tag, and complete `StorageV1` layouts.
 `Reflection::cross_check_kernel` compares that evidence against the descriptor and
@@ -282,7 +281,7 @@ The workspace contains seven runnable programs:
 Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function; there is currently no environment-variable size override:
 
-```powershell
+```sh
 cargo run --release -p polynomial
 cargo run --release -p signal-pipeline
 cargo run --release -p typed-pipeline
@@ -341,14 +340,13 @@ docs/
 
 ## Development and next milestones
 
-```powershell
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+```sh
+cargo xtask check-fast
 cargo test --workspace
 ```
 
 Use focused checks first. `cargo test --workspace` skips ignored example tests;
-`scripts/verify.ps1 -Full` runs them with `--ignored`, runs each example binary, and
+`cargo xtask check-full` runs them with `--ignored`, runs each example binary, and
 validates exported SPIR-V artifacts. Per-feature compile-smoke tests use WGSL only;
 SPIR-V structure/semantic validation is centralized in full verification.
 

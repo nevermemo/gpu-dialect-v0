@@ -12,20 +12,29 @@ verification"). `scripts/verify.ps1 -Full` runs ignored example tests explicitly
 then runs each example binary and validates exported SPIR-V. Regular per-feature
 compile-smoke tests use WGSL only; SPIR-V validation is centralized in full
 verification. Verify routine work with the owning focused test plus normal workspace;
-use full script for major/release evidence.
+use `cargo xtask check-full` for major/release evidence. The original PowerShell
+script mentioned here was superseded by the xtask slice below.
 
 ## DX — command surface and staged verification — COMPLETE
 
 Status: complete (2026-09-08). Goal: remove command-choice ambiguity for humans and
-agents. Delivered: `scripts/check-fast.ps1`, `check-full.ps1`, `check-feature.ps1`,
-`check-examples.ps1`, `check-artifacts.ps1`, `export-artifacts.ps1`, and
-`measure-tests.ps1`; `verify.ps1` modes `Smoke`, `Fast`, `Gpu`, `Examples`,
-`Artifacts`, `Full` (legacy `-Full` still works); timestamp-gated native helper
-rebuild in `build-slang-reflect.ps1`; README validation matrix; VS Code tasks; GUST
-Builder command guidance. Rule: do not introduce shared `HeadlessDevice` fixtures
-until `measure-tests.ps1` shows GPU adapter initialization, not shader compilation or
-GPU work, is the bottleneck. Verify routine work with `check-feature`/`check-fast`;
-use `check-full` for major/release evidence.
+agents. This was an intermediate PowerShell implementation and is now superseded by
+the cross-platform `cargo xtask` slice below. The durable policy remains: do not
+introduce shared `HeadlessDevice` fixtures until `cargo xtask measure-tests` shows GPU
+adapter initialization, not shader compilation or GPU work, is the bottleneck. Verify
+routine work with `cargo xtask check-feature <area>` or `cargo xtask check-fast`; use
+`cargo xtask check-full` for major/release evidence.
+
+## DX — cross-platform xtask command surface — COMPLETE
+
+Status: complete (2026-09-08). Goal: remove PowerShell as a project requirement and
+make validation work across Windows, Linux, and macOS through the Rust toolchain
+already required by the project. Delivered `cargo xtask` commands for feature checks,
+fast/full verification modes, examples/artifacts/export, native reflection helper
+build, measurement, and hook formatting. Deleted `.ps1` command scripts; kept
+`scripts/probes/*.cpp|*.slang` as source fixtures. Verify routine work with `cargo
+xtask check-feature <area>` and `cargo xtask check-fast`; use `cargo xtask check-full`
+for major/release evidence.
 
 ## T01 — P0: Translation regression foundation
 

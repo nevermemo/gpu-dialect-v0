@@ -114,21 +114,18 @@ Do not wait for Codex during normal local swarm work.
 3. Add a failing regression first when fixing a bug. Test compiler output and actual
    GPU behavior, not only substring assertions. No silent GPU/compiler test skips
    in new validation; clearly distinguish optional external validation.
-4. Run from the workspace root:
+Run from the workspace root:
 
-```powershell
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+```sh
+cargo xtask check-fast
 cargo test --workspace
-cargo run -p vector-add
-cargo run -p typed-pipeline
 ```
 
 Use stable Rust, `slangc` on PATH, and a Vulkan adapter. For release evidence run
-`scripts/verify.ps1 -Full`: it requires SPIRV-Tools, runs every example, and validates
+`cargo xtask check-full`: it requires SPIRV-Tools, runs every example, and validates
 all exported SPIR-V files. Missing tools are blockers, not passes. Baseline versions
 and actual results belong in `.ai/STATUS.md`; commands alone are not evidence.
-The script overwrites `.ai/VALIDATION.json` with the latest pass/failure record;
+The command overwrites `.ai/VALIDATION.json` with the latest pass/failure record;
 inspect its timestamp and scope before using it as evidence.
 
 ## Artifact and collaboration rules

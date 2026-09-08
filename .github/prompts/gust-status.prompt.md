@@ -21,7 +21,7 @@ Then answer with exactly these sections:
 <Active owner and claimed scope, or "none claimed">. Uncommitted files: <count, list up to 8>.
 
 ## Last verified state
-<HEAD short hash>, <test count from the newest STATUS evidence>, verify.ps1 <mode/passed/timestamp or "no record">.
+<HEAD short hash>, <test count from the newest STATUS evidence>, VALIDATION.json <mode/passed/timestamp or "no record">.
 
 ## Open tasks (from NEXT_TASKS)
 - <Txx — title — status one-liner>
