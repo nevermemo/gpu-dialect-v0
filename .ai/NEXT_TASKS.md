@@ -36,6 +36,16 @@ build, measurement, and hook formatting. Deleted `.ps1` command scripts; kept
 xtask check-feature <area>` and `cargo xtask check-fast`; use `cargo xtask check-full`
 for major/release evidence.
 
+## DX — xtask automation batch — COMPLETE
+
+Status: complete (2026-09-08). Delivered after the xtask conversion: `--record` /
+`--no-record` verification policy, `check-workspace` with examples excluded,
+`check-changed`, `status`, `doctor`, `check-format`, `check-lints`, `list-tests`,
+`explain-check`, split GPU groups (`gpu-smoke`, `gpu-semantics`, `gpu-runtime`), and
+`measure-tests --json`. Skipped by owner request: item 9 (`status --update`) and item
+13 (`GUST_EXAMPLE_SIZE`). Shared `HeadlessDevice` fixtures remain evidence-gated;
+measure first and keep cache-stat tests isolated.
+
 ## T01 — P0: Translation regression foundation
 
 Status: first slice complete. Goal: preserve helper returns, literals, grouping, and

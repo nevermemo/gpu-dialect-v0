@@ -41,11 +41,12 @@ Scout → Builder → Verifier. Delegate discovery to a read-only subagent when 
 cargo xtask check-feature macro      # validator/emitter/golden work
 cargo xtask check-feature reflection # reflection/layout work
 cargo xtask check-feature loops      # loop dialect work
+cargo xtask check-changed            # route current dirty files
 cargo xtask check-fast               # routine confidence
-cargo test --workspace                                # default workspace confidence
+cargo xtask check-workspace          # workspace confidence without example packages
 ```
 
-For major example confidence run `cargo xtask check-examples`; for exported-artifact confidence run `cargo xtask check-artifacts`; for release evidence run `cargo xtask check-full`. Full verification rewrites `.ai/VALIDATION.json`. Missing tools are blockers, not passes; no silent GPU or compiler test skips. Regenerate `generated-wgpu/` only by running the examples or `cargo xtask export-artifacts`; never hand-edit exports or goldens — a translation change needs an explained golden diff and GPU tests. Request an independent read-only review of any non-trivial change before calling it done.
+Use `cargo xtask status` to resume, `cargo xtask doctor` to check tools, `cargo xtask list-tests` to inventory coverage, and `cargo xtask explain-check <area>` when command choice is unclear. For major example confidence run `cargo xtask check-examples`; for exported-artifact confidence run `cargo xtask check-artifacts`; for release evidence run `cargo xtask check-full`. Routine verify modes do not rewrite `.ai/VALIDATION.json`; full verification does. Missing tools are blockers, not passes; no silent GPU or compiler test skips. Regenerate `generated-wgpu/` only by running the examples or `cargo xtask export-artifacts`; never hand-edit exports or goldens — a translation change needs an explained golden diff and GPU tests. Request an independent read-only review of any non-trivial change before calling it done.
 
 ## Engine direction
 Follow D11: engine proofs before ECS architecture — pools, dependencies, indirect work, then culling → compacted indirect args → rendering. Write the contract in `docs/ENGINE_NORTH_STAR.md` before code and record decisions in `docs/DECISIONS.md`. GPU data stays resident across stages and frames; growth is a GPU→GPU copy; no premature mega-buffer; no inter-workgroup spin waits; portable behavior first, native accelerations behind capability gates.

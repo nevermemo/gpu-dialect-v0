@@ -2,8 +2,8 @@
 
 ## Active: none claimed (2026-09-08)
 
-The cross-platform `xtask` command surface is complete and ready to commit (below).
-The next ordered compiler extension remains T10 atomics.
+The DX xtask automation batch is complete and ready to commit (below). The next
+ordered compiler extension remains T10 atomics.
 
 ```text
 owner: none
@@ -11,6 +11,45 @@ claim: none
 next_focused_check: cargo xtask check-feature macro
 full_check_needed_before_commit: no
 ```
+
+## DX — xtask automation batch — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `adaff36`. Implemented all requested DX efficiency items
+except item 9 (`status --update`) and item 13 (`GUST_EXAMPLE_SIZE` example-size
+overrides), as requested. No compiler/runtime semantics changes.
+
+What changed. `cargo xtask verify` now supports `--record` / `--no-record`; only full
+verification records by default, so routine `gpu`/`fast` checks do not dirty
+`.ai/VALIDATION.json`. Added `check-workspace`, which runs workspace tests with all
+example packages excluded. Added `check-changed`, `status`, `doctor`, `check-format`,
+`check-lints`, `list-tests`, and `explain-check`. Added GPU subgroups: `gpu-smoke`,
+`gpu-semantics`, and `gpu-runtime`. `measure-tests` now accepts `--json <path>` and
+its default workspace timing uses the optimized non-example workspace path. README,
+VS Code tasks, AGENTS, and the GUST Builder profile advertise the expanded command
+surface. Shared `HeadlessDevice` fixtures remain deliberately unimplemented because
+the evidence does not yet isolate adapter/device creation as the bottleneck;
+cache-stat tests still need isolated devices.
+
+Verification. `cargo xtask status`, `doctor`, and `explain-check gpu-semantics`
+printed expected guidance. `cargo xtask list-tests` summarized 109 listed Rust tests
+and 5 doctests. `cargo xtask measure-tests --json target/tmp/test-times.json cargo
+test -p gpu-dialect-macros regression_tests::loops_golden` passed and wrote valid
+JSON. `cargo xtask check-workspace` passed with example packages excluded. `cargo
+xtask check-feature gpu-smoke` passed (5), `gpu-runtime` passed (4), and
+`gpu-semantics` passed (10). `cargo xtask verify --mode gpu` left
+`.ai/VALIDATION.json` byte-identical; `cargo xtask verify --mode gpu --record` wrote a
+valid GPU-mode record. `cargo fmt --all -- --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, and `cargo xtask check-workspace` passed. `cargo xtask
+check-full` passed and refreshed `.ai/VALIDATION.json` at 2026-09-08T09:46:39Z with
+mode `full`, passed `true`, 32 checks, 12 validated SPIR-V artifacts, and 109 summed
+test passes in the captured log (ignored count 0 because example tests are run
+explicitly after the optimized non-example workspace stage).
+
+Skipped by request: no `.ai/STATUS.md` auto-update command and no example-size
+environment overrides.
+
+Next command: claim T10 here, then write the atomics contract before code.
 
 ## DX — cross-platform `xtask` command surface — COMPLETE (2026-09-08)
 

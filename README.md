@@ -95,19 +95,32 @@ Purpose-built check scripts keep the inner loop honest:
 | `cargo xtask check-feature macro` | Macro/validator/emitter work | `cargo test -p gpu-dialect-macros` |
 | `cargo xtask check-feature reflection` | Reflection/layout work | helper version check, core reflection tests, wgpu reflection tests |
 | `cargo xtask check-feature loops` | Bounded-loop work | loop golden/rejection test plus GPU loop test |
+| `cargo xtask check-feature gpu-smoke` | Cheapest wgpu runtime sanity | wgpu crate unit tests only |
+| `cargo xtask check-feature gpu-semantics` | GPU semantic differential work | semantics, numeric, option, loops, struct-assignment tests |
+| `cargo xtask check-feature gpu-runtime` | Runtime/reflection gate work | wgpu reflection integration tests |
+| `cargo xtask check-changed` | Dirty-tree routing | chooses a focused check from changed paths |
+| `cargo xtask check-format` | Formatting only | `cargo fmt --all -- --check` |
+| `cargo xtask check-lints` | Strict lints | workspace Clippy with warnings denied |
 | `cargo xtask check-fast` | Fast routine confidence | helper version check, fmt check, macro tests, core lib tests, wgpu tests |
-| `cargo test --workspace` | Default workspace confidence | all non-ignored workspace tests; example validation stays ignored |
+| `cargo xtask check-workspace` | Default workspace confidence | workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | ignored example tests plus example binaries |
 | `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation |
 | `cargo xtask check-full` | Release confidence | full staged verification |
-| `cargo xtask measure-tests` | Profiling before pruning | timed default test commands, or one custom command |
+| `cargo xtask status` | Resume context | git status, active claim, validation summary, suggested check |
+| `cargo xtask doctor` | Environment readiness | required tools and reflection helper status |
+| `cargo xtask list-tests` | Test inventory | summarizes test categories from Cargo's test list |
+| `cargo xtask explain-check <area>` | Command intent | prints why/when to use a check |
+| `cargo xtask measure-tests --json target/test-times.json` | Profiling before pruning | timed default test commands or one custom command |
 
 `cargo xtask verify --mode fast|gpu|examples|artifacts|full` exposes the same staged
-checks. The native reflection helper build is timestamp-gated and still runs
-`--version`, so repeated checks do not relink unchanged C++ code.
+checks. Routine verify modes do not rewrite `.ai/VALIDATION.json` unless passed
+`--record`; `check-full` and `verify --mode full` record by default. The native
+reflection helper build is timestamp-gated and still runs `--version`, so repeated
+checks do not relink unchanged C++ code.
 
 The same checks are exposed as VS Code tasks: `GUST: check fast`, `GUST: check
-feature`, `GUST: check examples`, `GUST: check artifacts`, and `GUST: check full`.
+feature`, `GUST: check changed`, `GUST: check examples`, `GUST: check artifacts`, and
+`GUST: check full`.
 Do not introduce shared `HeadlessDevice` fixtures until `cargo xtask measure-tests` shows
 adapter/device setup is the bottleneck; cache-stat tests intentionally use isolated
 devices.
