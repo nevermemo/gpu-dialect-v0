@@ -2,9 +2,16 @@
 
 Ownership released. The repository is ready for a local AI to resume manually.
 
-Latest pass (GitHub Copilot, VS Code agent, "GUST Builder" profile), committed to
-`main` with fmt, strict Clippy, full workspace tests, full `verify.ps1 -Full`, and
-an independent read-only review (PASS WITH NOTES, notes applied) — see STATUS:
+Latest pass (GitHub Copilot, VS Code agent, "GUST Builder" profile), ready to commit
+after fmt, strict Clippy, `cargo xtask check-full`, and an independent read-only
+review (PASS WITH NOTES, notes applied) — see STATUS:
+- Cross-platform command surface complete: PowerShell command scripts were replaced by
+  `cargo xtask`: `check-feature <area>`, `check-fast`, `check-examples`,
+  `check-artifacts`, `check-full`, `export-artifacts`, `measure-tests`,
+  `build-slang-reflect`, `verify --mode ...`, `hook-format-rust-after-edit`, and
+  `self-test`. VS Code tasks and hooks call cargo. The native reflection helper is
+  built by `cargo xtask build-slang-reflect` and `cargo xtask check-full` refreshes
+  `.ai/VALIDATION.json`.
 - T09 complete (D18): bounded `for i in start..end` loops now lower directly to
   Slang with the end bound evaluated once, immutable loop variables, `_` counters,
   and unlabeled valueless `break`/`continue`. Unsupported loop shapes (`while`,
@@ -15,9 +22,10 @@ an independent read-only review (PASS WITH NOTES, notes applied) — see STATUS:
   reflection helper `gust-slang-reflect` proves the descriptor's StorageV1 contract
   (names, slots, access, workgroup size, every nested offset/size/alignment/stride)
   against the same linked program whose WGSL it then executes. New tool
-  requirement: build the helper once with `pwsh -File scripts/build-slang-reflect.ps1`
-  (needs the Slang SDK from `VULKAN_SDK`/`SLANG_SDK` and MSVC); `verify.ps1` does
-  this automatically. A missing helper is an explicit `HelperUnavailable` error.
+  requirement: build the helper once with `cargo xtask build-slang-reflect` (needs
+  the Slang SDK from `VULKAN_SDK`/`SLANG_SDK` and MSVC on Windows); full xtask
+  verification does this automatically. A missing helper is an explicit
+  `HelperUnavailable` error.
 - Agent customizations under `.github/` (GUST Builder and GUST Verifier agents, a
   `gust-status` prompt) and a PostToolUse `cargo fmt` hook (`.github/hooks`,
   `scripts/hooks`). They are operating profiles on top of AGENTS.md, not new rules.
@@ -26,11 +34,7 @@ T10 atomics is next. Developer-experience update: normal `cargo test --workspace
 now skips example tests (27 ignored) and full verification runs them with `--ignored`
 before example binaries and exported SPIR-V validation.
 
-Developer-experience command surface is complete. New scripts: `check-feature`,
-`check-fast`, `check-examples`, `check-artifacts`, `check-full`, `export-artifacts`,
-and `measure-tests`; VS Code tasks expose the same checks. `verify.ps1` has staged
-modes and still accepts `-Full`. The native reflection helper build is timestamp-gated
-and reports "up to date" when reused.
+The next task is T10 atomics unless the owner redirects.
 
 ## Previous handoff — 2026-09-07
 

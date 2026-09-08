@@ -3,7 +3,7 @@
     "PostToolUse": [
       {
         "type": "command",
-        "command": "pwsh -NoProfile -NonInteractive -File scripts/hooks/format-rust-after-edit.ps1",
+        "command": "cargo xtask hook-format-rust-after-edit",
         "timeout": 60
       }
     ]

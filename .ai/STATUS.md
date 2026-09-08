@@ -2,17 +2,54 @@
 
 ## Active: none claimed (2026-09-08)
 
-The DX command surface and staged verification slice is complete and ready to commit
-(below). The next ordered compiler extension remains T10 atomics. Keep using the new
-command policy: focused feature check first; `check-fast` or normal workspace for
-routine confidence; `check-full` only for major/release evidence.
+The cross-platform `xtask` command surface is complete and ready to commit (below).
+The next ordered compiler extension remains T10 atomics.
 
 ```text
 owner: none
 claim: none
-next_focused_check: pwsh -NoProfile -File scripts/check-feature.ps1 -Area macro
+next_focused_check: cargo xtask check-feature macro
 full_check_needed_before_commit: no
 ```
+
+## DX — cross-platform `xtask` command surface — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `d3e4588`. No compiler/runtime semantics changes.
+
+What changed. Added workspace crate `xtask` plus `.cargo/config.toml` alias so the
+primary command surface is `cargo xtask ...` on Windows, Linux, and macOS. The xtask
+binary replaces the deleted PowerShell scripts with: `build-slang-reflect` (MSVC via
+`cl` or `vcvars64.bat` on Windows, `c++`/`CXX` with rpath on Unix), `verify --mode
+smoke|fast|gpu|examples|artifacts|full`, `check-feature`, `check-fast`,
+`check-examples`, `check-artifacts`, `check-full`, `export-artifacts`,
+`measure-tests`, `hook-format-rust-after-edit`, and `self-test`. The native helper
+reuse remains timestamp-gated and still runs `--version`; full verification still
+rewrites `.ai/VALIDATION.json`, runs workspace tests, ignored example tests, all seven
+example binaries, and validates twelve exported SPIR-V artifacts. Hooks and VS Code
+tasks now call `cargo xtask`, and README/AGENTS/GUST Builder docs point to the cargo
+commands. `scripts/probes/layout.slang` and `scripts/probes/slang-layout.cpp` remain
+as source fixtures.
+
+Verification (Windows host; cross-platform code paths for Linux/macOS are compiled but
+not executed here): `cargo xtask self-test` passed; `cargo xtask check-feature loops`
+passed (1 macro loop test + 2 GPU loop tests); `cargo xtask hook-format-rust-after-edit`
+accepted read/edit JSON smoke inputs and exited 0; `cargo fmt --all -- --check` exit
+0; `cargo clippy --workspace --all-targets -- -D warnings` exit 0; `cargo xtask
+check-fast` passed; `cargo xtask verify --mode gpu` passed; `cargo xtask check-full`
+passed and refreshed `.ai/VALIDATION.json` at 2026-09-08T09:23:47Z with mode `full`,
+passed `true`, 32 recorded checks, and 12 validated SPIR-V artifacts. One artifact
+hash was cross-checked against Python `hashlib` and matched. `cargo xtask measure-tests`
+passed; current timings: macro ~0.38s, core lib ~0.96s, wgpu ~9.55s, workspace
+~13.59s. No `generated-wgpu/` drift. `Cargo.lock` changed only to add the local
+dependency-free `xtask` package.
+
+Known uncertainty: Unix helper compilation (`c++` + rpath) is implemented but not run
+on this Windows session. The hook command uses a tiny dependency-free JSON heuristic
+for PostToolUse input; it is intentionally conservative and formats only when the
+event text contains an edit tool and a `.rs` path.
+
+Next command: claim T10 here, then write the atomics contract before code.
 
 ## DX — command surface and staged verification — COMPLETE (2026-09-08)
 
@@ -31,6 +68,9 @@ feature, examples, artifacts, and full checks. README now has a validation matri
 and the GUST Builder agent points future agents at the staged commands. Kept the
 shared-device idea evidence-gated: use `measure-tests.ps1` before introducing shared
 `HeadlessDevice` fixtures because cache-stat tests need isolated devices.
+
+Superseded on 2026-09-08 by the cross-platform `cargo xtask` command surface above;
+new work should not use these deleted PowerShell scripts.
 
 Verification. `pwsh -File scripts/check-feature.ps1 -Area loops`: 1 macro loop test
 and 2 GPU loop tests passed. `pwsh -File scripts/check-fast.ps1`: helper reported

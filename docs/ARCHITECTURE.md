@@ -98,7 +98,7 @@ This host transfer ABI is not intended to reimplement Slang's full layout system
 It is a narrow executable bridge whose every claim is checked by the compiler.
 
 `reflect::compile_reflected` runs the native helper `gust-slang-reflect`
-(`scripts/probes/slang-layout.cpp`, built by `scripts/build-slang-reflect.ps1`
+(`scripts/probes/slang-layout.cpp`, built by `cargo xtask build-slang-reflect`
 against the installed Slang SDK). The helper links one entry point for one target
 through the Slang API, emits the artifact, and walks the *same linked program's*
 `TypeLayoutReflection` to write a schema-1 JSON record: compiler build tag, target,

@@ -10,6 +10,7 @@ members = [
     "examples/staged-graph",
     "examples/typed-pipeline",
     "examples/vector-add",
+    "xtask",
 ]
 default-members = ["examples/vector-add"]
 resolver = "2"
