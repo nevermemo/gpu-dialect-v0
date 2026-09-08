@@ -25,37 +25,37 @@ fn translate(source: &str) -> syn::Result<String> {
 
 #[test]
 fn semantics_golden() {
-    let source = translate(include_str!("../../../tests/fixtures/semantics.rs")).unwrap();
+    let source = translate(include_str!("../../../../tests/fixtures/semantics.rs")).unwrap();
     assert_eq!(
         source.replace("\r\n", "\n"),
-        include_str!("../../../tests/fixtures/semantics.slang").replace("\r\n", "\n")
+        include_str!("../../../../tests/fixtures/semantics.slang").replace("\r\n", "\n")
     );
 }
 
 #[test]
 fn numeric_golden() {
-    let source = translate(include_str!("../../../tests/fixtures/numeric.rs")).unwrap();
+    let source = translate(include_str!("../../../../tests/fixtures/numeric.rs")).unwrap();
     assert_eq!(
         source.replace("\r\n", "\n"),
-        include_str!("../../../tests/fixtures/numeric.slang").replace("\r\n", "\n")
+        include_str!("../../../../tests/fixtures/numeric.slang").replace("\r\n", "\n")
     );
 }
 
 #[test]
 fn option_golden() {
-    let source = translate(include_str!("../../../tests/fixtures/option.rs")).unwrap();
+    let source = translate(include_str!("../../../../tests/fixtures/option.rs")).unwrap();
     assert_eq!(
         source.replace("\r\n", "\n"),
-        include_str!("../../../tests/fixtures/option.slang").replace("\r\n", "\n")
+        include_str!("../../../../tests/fixtures/option.slang").replace("\r\n", "\n")
     );
 }
 
 #[test]
 fn loops_golden() {
-    let source = translate(include_str!("../../../tests/fixtures/loops.rs")).unwrap();
+    let source = translate(include_str!("../../../../tests/fixtures/loops.rs")).unwrap();
     assert_eq!(
         source.replace("\r\n", "\n"),
-        include_str!("../../../tests/fixtures/loops.slang").replace("\r\n", "\n")
+        include_str!("../../../../tests/fixtures/loops.slang").replace("\r\n", "\n")
     );
 }
 
