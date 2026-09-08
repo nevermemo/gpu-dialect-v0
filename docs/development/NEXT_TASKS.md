@@ -250,17 +250,18 @@ types (rustc shadows and Slang own those today).
 Verify: `cargo test -p gust-macros loops` and `cargo test -p gust-wgpu
 --test loops`.
 
-## T10 — P2, authorized: atomics on `RWStructuredBuffer<u32|i32>`
+## T10 — P2: atomics on `RWStructuredBuffer<u32|i32>` — COMPLETE
 
-Status: not claimed; depends on T09 (satisfied). Goal: a small proven set — `atomic_add`,
-`atomic_min`/`max`, `atomic_exchange`, `atomic_compare_exchange` — as explicit
-methods on buffer elements, lowered to Slang `InterlockedAdd`/... and verified on
-WGSL (`atomicAdd` on `atomic<u32>` storage) and SPIR-V. Why: GPU-side active-count
-generation and compaction (T08 follow-ups, culling) need them. Contract first:
-portable memory-order semantics (relaxed only), which element types, no atomics on
-struct fields until layout evidence exists, host-side buffer declaration changes if
-WGSL requires `atomic<T>` storage types. Done means the same six-layer evidence as
-T09 plus a contention test (257 threads incrementing one counter equals 257).
+Status: complete (2026-09-08). Delivered: `atomic_add`, `atomic_min`, `atomic_max`,
+`atomic_exchange`, `atomic_compare_exchange` on `RWStructuredBuffer<u32>` and
+`RWStructuredBuffer<i32>` (min/max unsigned-only), lowered to Slang `atomicAdd`,
+`atomicMin`, `atomicMax`, `atomicExchange`, `atomicCompareExchange` methods. Relaxed/
+default memory ordering. Rejected: read-only buffers, float elements, unsupported
+types, local variables, non-element receivers, wrong arity, signed min/max. Evidence:
+14 macro regression tests, reviewed golden fixture, 6 GPU tests including 257-thread
+contention (exactly 257 for `atomic_add`), WGSL/SPIR-V compilation, reflection gate
+enforced. Verify: `cargo test -p gust-macros -- atomic` and `cargo test -p
+gust-wgpu --test atomics`.
 
 ## T11 — P2, authorized: standard-prelude lowering
 

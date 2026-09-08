@@ -97,6 +97,18 @@ pub fn option_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
     }
 }
 
+/// The atomic operation name if the path is a recognized atomic intrinsic.
+fn atomic_operation_name(path: &syn::ExprPath) -> Option<&'static str> {
+    match path.path.get_ident()?.to_string().as_str() {
+        "atomic_add" => Some("atomic_add"),
+        "atomic_min" => Some("atomic_min"),
+        "atomic_max" => Some("atomic_max"),
+        "atomic_exchange" => Some("atomic_exchange"),
+        "atomic_compare_exchange" => Some("atomic_compare_exchange"),
+        _ => None,
+    }
+}
+
 /// Whether an expression is an integer literal with value zero, including a
 /// unary negation of one. Float zeros are excluded: floating-point division by
 /// zero is defined (it yields infinity/NaN), so only integer div/rem by zero is
@@ -382,42 +394,47 @@ impl RestrictedVisitor {
         }
     }
 
-    /// Validates `atomic_add(&mut buffer[index], operand)` on a `u32` read-write
-    /// buffer element. The reference receiver is not visited as a value reference;
-    /// the index and operand are validated as ordinary expressions.
-    fn validate_atomic_add(&mut self, call: &syn::ExprCall) {
-        if call.args.len() != 2 {
+    /// Validates an atomic operation call on a read-write buffer element.
+    /// Accepts `atomic_add`, `atomic_min`, `atomic_max`, `atomic_exchange`,
+    /// and `atomic_compare_exchange` on `u32`/`uint` and `i32`/`int` elements.
+    /// `atomic_min` and `atomic_max` are unsigned-only (Slang/WGSL constraint).
+    fn validate_atomic(&mut self, op_name: &str, call: &syn::ExprCall) {
+        let expected_args = match op_name {
+            "atomic_compare_exchange" => 3,
+            _ => 2,
+        };
+        if call.args.len() != expected_args {
             self.reject(
                 call,
-                "`atomic_add` takes exactly two arguments: `atomic_add(&mut buffer[index], operand)`",
+                &format!("`{op_name}` takes exactly {expected_args} arguments"),
             );
             return;
         }
         let syn::Expr::Reference(ref reference) = call.args[0] else {
             self.reject(
                 &call.args[0],
-                "`atomic_add` requires a mutable reference to a buffer element: `&mut buffer[index]`",
+                &format!("`{op_name}` requires a mutable reference to a buffer element: `&mut buffer[index]`"),
             );
             return;
         };
         if reference.mutability.is_none() {
             self.reject(
                 &call.args[0],
-                "`atomic_add` requires a mutable reference: `&mut buffer[index]`",
+                &format!("`{op_name}` requires a mutable reference: `&mut buffer[index]`"),
             );
             return;
         }
         let syn::Expr::Index(index) = reference.expr.as_ref() else {
             self.reject(
                 &reference.expr,
-                "`atomic_add` requires a read-write buffer element: `&mut buffer[index]`",
+                &format!("`{op_name}` requires a read-write buffer element: `&mut buffer[index]`"),
             );
             return;
         };
         let syn::Expr::Path(buffer_path) = index.expr.as_ref() else {
             self.reject(
                 &index.expr,
-                "`atomic_add` requires a direct buffer receiver: `&mut buffer[index]`",
+                &format!("`{op_name}` requires a direct buffer receiver: `&mut buffer[index]`"),
             );
             return;
         };
@@ -430,20 +447,31 @@ impl RestrictedVisitor {
             None => {
                 self.reject(
                     &index.expr,
-                    "`atomic_add` requires a read-write buffer parameter: `RWStructuredBuffer<u32>`",
+                    &format!("`{op_name}` requires a read-write buffer parameter: `RWStructuredBuffer<u32>` or `RWStructuredBuffer<i32>`"),
                 );
                 return;
             }
         };
-        if element != "u32" && element != "uint" {
+        let is_unsigned = element == "u32" || element == "uint";
+        let is_signed = element == "i32" || element == "int";
+        if !is_unsigned && !is_signed {
             self.reject(
                 &index.expr,
-                "`atomic_add` requires a `u32`/`uint` element; other element types are not supported for atomics",
+                &format!("`{op_name}` requires a `u32`/`uint` or `i32`/`int` element; other element types are not supported for atomics"),
+            );
+            return;
+        }
+        if (op_name == "atomic_min" || op_name == "atomic_max") && !is_unsigned {
+            self.reject(
+                &index.expr,
+                &format!("`{op_name}` requires an unsigned element (`u32`/`uint`); signed atomics for min/max are not supported"),
             );
             return;
         }
         self.visit_expr(&index.index);
-        self.visit_expr(&call.args[1]);
+        for arg in call.args.iter().skip(1) {
+            self.visit_expr(arg);
+        }
     }
 }
 
@@ -600,8 +628,8 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.visit_expr(&call.args[0]);
                 return;
             }
-            if path.path.is_ident("atomic_add") {
-                self.validate_atomic_add(call);
+            if let Some(op) = atomic_operation_name(path) {
+                self.validate_atomic(op, call);
                 return;
             }
         }

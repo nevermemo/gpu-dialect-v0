@@ -88,13 +88,15 @@ pub use reflect::{
 };
 pub use runtime::{
     Invocation, RWStructuredBuffer, SV_DispatchThreadID, Storage, StorageMut, StructuredBuffer,
-    UVec3, Uniform, atomic_add, float, int, uint,
+    UVec3, Uniform, atomic_add, atomic_compare_exchange, atomic_exchange, atomic_max, atomic_min,
+    float, int, uint,
 };
 
 /// Names automatically imported into every `#[gpu]` module.
 pub mod prelude {
     pub use crate::{
         Invocation, RWStructuredBuffer, SV_DispatchThreadID, Storage, StorageMut, StructuredBuffer,
-        UVec3, Uniform, atomic_add, float, int, uint,
+        UVec3, Uniform, atomic_add, atomic_compare_exchange, atomic_exchange, atomic_max,
+        atomic_min, float, int, uint,
     };
 }
