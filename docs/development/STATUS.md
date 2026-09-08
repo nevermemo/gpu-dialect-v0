@@ -2,8 +2,9 @@
 
 ## Active: none claimed (2026-09-08)
 
-The macro test-layout cleanup is complete and ready to commit (below). Next cleanup
-candidate: split validator/lowering internals carefully, or pause for a full check.
+The macro module-directory cleanup is complete and ready to commit (below). Next
+cleanup candidate: split internals inside `validate/` or `slang/` carefully, or move
+to `gpu-dialect-wgpu` device/dispatch modules.
 
 ```text
 owner: none
@@ -11,6 +12,21 @@ claim: none
 next_focused_check: cargo xtask check-feature macro
 full_check_needed_before_commit: no
 ```
+
+## Macro crate cleanup — module directories — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `1c4c6d3`; `cargo xtask check-feature macro` passed before
+edits. No behavior changes intended.
+
+What changed. Moved `expand.rs`, `slang.rs`, and `validate.rs` into module directories:
+`expand/mod.rs`, `slang/mod.rs`, and `validate/mod.rs`. The `mod expand; mod slang;
+mod validate;` names in `lib.rs` are unchanged, so crate-internal references and public
+proc-macro behavior stay the same.
+
+Validation: `cargo xtask check-feature macro` passed after the move (31 tests + 0 doctests).
+
+Next command: claim the next cleanup slice here.
 
 ## Macro crate cleanup — regression test layout — COMPLETE (2026-09-08)
 
