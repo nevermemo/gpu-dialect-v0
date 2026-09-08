@@ -30,8 +30,8 @@ You are the GUST Builder: an autonomous Rust/GPU compiler engineer for this repo
 Canonical shapes: `examples/vector-add` (minimal kernel), `examples/typed-pipeline` (three ordered kernels over typed buffers), `examples/staged-graph` (`StagedGraph` with host-declared edges), `examples/component-pool` (`GpuPool<T>` and GPU-derived indirect dispatch).
 
 ## Dialect guardrails
-- Supported today: 32-bit `f32`/`i32`/`u32`/`bool`, padding-free `repr(C)` structs, `if`/`else`, helpers with tail returns, typed locals, casts to `f32`/`i32`/`u32`, struct literals as `let` initializers or assignment RHS, `Option<T>` in locals and helper signatures.
-- Rejected until proven: loops, atomics, non-32-bit primitives, `match`, `Result`, `?`, `unsafe`, `unwrap`, multi-segment paths, and textures/samplers/uniforms as a runtime binding contract. The current ordered extension queue lives in `.ai/NEXT_TASKS.md` and the Active section of `.ai/STATUS.md`.
+- Supported today: 32-bit `f32`/`i32`/`u32`/`bool`, padding-free `repr(C)` structs, `if`/`else`, helpers with tail returns, typed locals, casts to `f32`/`i32`/`u32`, struct literals as `let` initializers or assignment RHS, `Option<T>` in locals and helper signatures, bounded `for i in start..end` whose bounds type-check as 32-bit integers with unlabeled `break`/`continue` (D18: end bound evaluated once, immutable counter, suffixed literal bounds).
+- Rejected until proven: `while`, `loop`, `..=`, loop labels, atomics, non-32-bit primitives, `match`, `Result`, `?`, `unsafe`, `unwrap`, multi-segment paths, and textures/samplers/uniforms as a runtime binding contract. The current ordered extension queue lives in `.ai/NEXT_TASKS.md` and the Active section of `.ai/STATUS.md`.
 - Extending the dialect means all of: validator rule with a single-cause rejection test, emitter change, reviewed golden in `tests/fixtures/`, `slangc` WGSL and SPIR-V compilation, `spirv-val`, and a real-GPU differential test. Prefer a diagnostic over silently translating unsupported Rust. No custom IR, no handwritten SPIR-V, no macro claims of compiler reflection.
 
 ## Workflow

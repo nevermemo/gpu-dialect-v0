@@ -51,6 +51,126 @@ fn option_golden() {
 }
 
 #[test]
+fn loops_golden() {
+    let source = translate(include_str!("../../../tests/fixtures/loops.rs")).unwrap();
+    assert_eq!(
+        source.replace("\r\n", "\n"),
+        include_str!("../../../tests/fixtures/loops.slang").replace("\r\n", "\n")
+    );
+}
+
+#[test]
+fn unbounded_or_unproven_loop_forms_are_rejected() {
+    for (source, message) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let mut i = 0u32; while i < 4u32 { i = i + 1u32; } } }",
+            "`while`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { loop { break; } } }",
+            "`loop`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32..=4u32 { } } }",
+            "inclusive",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32.. { } } }",
+            "both bounds",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in ..4u32 { } } }",
+            "both bounds",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, input: StructuredBuffer<uint>) { for v in input { } } }",
+            "exclusive integer range",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for (a, b) in 0u32..4u32 { } } }",
+            "single identifier",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for mut i in 0u32..4u32 { i = i + 1u32; } } }",
+            "immutable",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { 'outer: for i in 0u32..4u32 { break 'outer; } } }",
+            "labels",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32..4u32 { break 'x; } } }",
+            "labels",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { if id.x > 1u32 { break; } } }",
+            "outside a loop",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { continue; } }",
+            "outside a loop",
+        ),
+        (
+            "mod bad { fn f() -> uint { for i in 0u32..4u32 { fn g() {} } 0u32 } #[kernel] fn run(id: SV_DispatchThreadID) { } }",
+            "items inside",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let r = 0u32..4u32; } }",
+            "only as the iterable",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0..4u32 { } } }",
+            "suffix",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32..(-4) { } } }",
+            "suffix",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<uint>) { for out in 0u32..4u32 { } } }",
+            "cannot shadow",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32..4u32 { let v = break; } } }",
+            "statement",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
+}
+
+#[test]
+fn for_loop_end_bound_is_evaluated_once_and_body_control_flow_maps_directly() {
+    let source = translate(
+        "mod shapes {
+        fn count(limit: uint) -> uint {
+            let mut n = 0u32;
+            for i in 2u32..limit { if i == 3u32 { continue; } if i > 6u32 { break; } n = n + i; }
+            n
+        }
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+            if id.x < out.len() { for _ in 0u32..2u32 { out[id.x] = count(out[id.x]); } }
+        }
+    }",
+    )
+    .unwrap();
+    assert!(source.contains("var __gust_end_1 = limit;"), "{source}");
+    assert!(
+        source.contains("for (var i = uint(2); i < __gust_end_1; i++)"),
+        "{source}"
+    );
+    assert!(source.contains("continue;"), "{source}");
+    assert!(source.contains("break;"), "{source}");
+    assert!(
+        source.contains(
+            "for (var __gust_iter_0 = uint(0); __gust_iter_0 < __gust_end_0; __gust_iter_0++)"
+        ),
+        "{source}"
+    );
+}
+
+#[test]
 fn option_unsafe_forms_are_rejected() {
     for (source, message) in [
         (

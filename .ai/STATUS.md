@@ -2,10 +2,73 @@
 
 ## Active: none claimed (2026-09-08)
 
-T06 is complete and committed (below). The owner's standing authorization for the
-ordered compiler extensions — bounded loops, then atomics, then standard-prelude
-lowering — remains in force; the next Builder should claim exactly one of them here
-before editing, write the contract and failing tests first, and keep the commit small.
+T09 is complete and committed (below). The next ordered compiler extension is T10:
+atomics on `RWStructuredBuffer<u32|i32>`. Claim it here before editing. Keep the
+contract and tests narrow; the owner explicitly wants faster, purpose-driven checks
+and a test-pruning pass after this milestone.
+
+## T09 — bounded `for` loops in the dialect — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile)
+under the owner's pre-authorization. Baseline `main` at `b4ce8e3` (107 workspace
+tests after T06). Decision D18.
+
+What changed. The dialect now accepts the bounded form `for i in start..end { .. }`
+and rejects the unbounded/unproven loop forms. The end bound is evaluated once into a
+reserved `__gust_end_N` temporary before the loop, matching Rust `Range` construction;
+the loop variable is an immutable fresh binding, and `_` becomes a reserved
+`__gust_iter_N` counter. Statement-position unlabeled, valueless `break` and
+`continue` emit directly; `return` inside a loop continues to lower through the
+existing return expression path. The macro validates the syntactic shape plus the
+known literal-inference hazard (unsuffixed integer literal bounds are rejected so
+Slang cannot infer `int` where rustc inferred `u32`); rustc shadows and Slang still
+own non-literal type checking in this proc-macro architecture.
+
+Rejected with single-cause diagnostics: `while`, `loop`, `..=`, open ranges,
+non-range iterables, tuple/`mut`/`ref` patterns, labels, `break` with a value,
+`break`/`continue` outside a loop, `break`/`continue` used as values, expression-
+position ranges, unsuffixed literal bounds, and loop variables shadowing resources or
+the dispatch ID.
+
+Files: `crates/gpu-dialect-macros/src/validate.rs` (`is_unsuffixed_integer_literal`,
+`loop_variable`, `range_bounds`, loop-depth tracking, jump checks, range rejection),
+`crates/gpu-dialect-macros/src/slang.rs` (`emit_for`, statement-position jump arms),
+`crates/gpu-dialect-macros/src/regression_tests.rs`, new
+`tests/fixtures/loops.{rs,slang}`, new `crates/gpu-dialect-wgpu/tests/loops.rs`,
+`docs/ARCHITECTURE.md`, `docs/DECISIONS.md` D18, README and GUST Builder guardrails,
+`.ai/` records. No runtime, ABI, dependency, example, or generated-wgpu export changes.
+
+Tests. `loops_golden` locks end-bound hoisting, `_` counter naming, nested loops,
+`break`, `continue`, `return`, signed and unsigned loops. Rejection tests cover 17
+unsupported forms above. The GPU test uses an independent host reference with closed
+forms where possible and runs at 1/63/64/65/257 on NVIDIA GeForce RTX 5090/Vulkan:
+initial trip count is preserved while the loop body shrinks the bound; the window loop
+takes the `break` path; nested loops produce nonzero outputs; signed helper loops
+skip zero via `continue`; both WGSL and SPIR-V compile.
+
+Verification (Rust 1.98.0, Slang 2026.13.1-1-g84792eb15, SPIRV-Tools v2026.3,
+NVIDIA GeForce RTX 5090 / Vulkan, pwsh 7.6.5): focused `cargo test -p
+gpu-dialect-macros` **31 passed**; `cargo test -p gpu-dialect-wgpu --test loops`
+**2 passed**; `cargo clippy --workspace --all-targets -- -D warnings` exit 0;
+`pwsh -File scripts/verify.ps1 -Full` **GUST verification passed**, 26 checks, seven
+examples, all twelve existing exported SPIR-V artifacts validated, no `generated-wgpu/`
+drift, `.ai/VALIDATION.json` refreshed at 2026-09-07T23:35Z. After independent review,
+doc wording was tightened to avoid overclaiming validator-side type knowledge and the
+reviewed loop golden was compiled to `target/tmp/t09-loops.spv` and validated with
+`spirv-val --target-env vulkan1.2` exit 0; focused macro loop tests and GPU loop tests
+still pass.
+
+Independent read-only review (GUST Verifier): **PASS WITH NOTES**. Notes: (1) direct
+validator proof covers syntax plus unsuffixed-literal hazards, while non-literal range
+types are checked by rustc shadows/Slang; docs updated accordingly. (2) loop-specific
+external `spirv-val` was not run by the reviewer; Builder ran it afterward as recorded
+above. Tree unchanged during review.
+
+Open follow-ups (not claimed): run a deliberate test-pruning/developer-experience pass
+before continuing deep into T10/T11; consider a rustc-type integration story if the
+dialect wants the macro validator itself to prove all non-literal range operand types.
+
+Next command: claim T10 here, then write the atomic semantics contract before any code.
 
 ## T06 — compiler-authoritative StorageV1 layouts (native Slang reflection) — COMPLETE (2026-09-08)
 

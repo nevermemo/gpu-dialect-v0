@@ -285,6 +285,32 @@ there while GPU code cannot. `Result`, `match`, `?`, let chains, and other patte
 remain rejected. The `option` fixture locks the Slang, both targets compile, and a
 real-GPU test matches an independent host `Option` reference at workgroup boundaries.
 
+Loops are bounded by construction (D18). The only accepted form is
+`for i in start..end { .. }`; after rustc shadow checking and Slang checking, the
+bounds must be 32-bit integers. It lowers to
+
+```slang
+var __gust_end_3 = limit;
+for (var i = uint(0); i < __gust_end_3; i++)
+{
+    ...
+}
+```
+
+The end bound is evaluated exactly once before the loop, matching Rust's `Range`
+construction, so mutating `limit` inside the body does not change the trip count. The
+loop variable is `var`-typed from the start expression; an unsuffixed integer literal
+start is rejected so that Slang cannot infer `int` where rustc inferred `u32`. `_`
+patterns become a reserved `__gust_iter_N` counter. The temporary index is the
+statement's position in its block, as for `__gust_struct_N`/`__gust_opt_N`; an inner
+loop at the same position legally shadows the outer temporary in its nested scope.
+`break` and `continue` (unlabeled, valueless) and `return` inside the body map
+directly. `while`, `loop`, `..=`, labels, `mut`/tuple patterns, non-range iterables,
+and `break`/`continue` outside a loop are rejected with diagnostics; the reasons are
+recorded in D18. The `loops` fixture locks the Slang, both targets compile, and a
+real-GPU test matches an independent host reference (closed forms where possible) at
+workgroup boundaries, including a body that shrinks its own end bound.
+
 The syn translator still lacks rustc-resolved semantics. Inferred integer types,
 overflow, casts outside their safe input domain, evaluation ordering for effectful
 expressions, resource aliases, and comprehensive identifier hygiene need further
