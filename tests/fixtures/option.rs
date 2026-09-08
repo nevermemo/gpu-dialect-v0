@@ -1,4 +1,4 @@
-#[gpu_dialect::gpu]
+#[gust::gpu]
 mod optional {
     pub struct Pair {
         pub first: uint,

@@ -136,16 +136,11 @@ fn verify_inner(
     }
     match mode {
         VerifyMode::Fast => {
-            run_checked(root, checks, "cargo", &["test", "-p", "gpu-dialect-macros"])?;
-            run_checked(
-                root,
-                checks,
-                "cargo",
-                &["test", "-p", "gpu-dialect", "--lib"],
-            )?;
-            run_checked(root, checks, "cargo", &["test", "-p", "gpu-dialect-wgpu"])?;
+            run_checked(root, checks, "cargo", &["test", "-p", "gust-macros"])?;
+            run_checked(root, checks, "cargo", &["test", "-p", "gust", "--lib"])?;
+            run_checked(root, checks, "cargo", &["test", "-p", "gust-wgpu"])?;
         }
-        VerifyMode::Gpu => run_checked(root, checks, "cargo", &["test", "-p", "gpu-dialect-wgpu"])?,
+        VerifyMode::Gpu => run_checked(root, checks, "cargo", &["test", "-p", "gust-wgpu"])?,
         VerifyMode::Smoke | VerifyMode::Full => {
             run_checked_owned(root, checks, "cargo", &workspace_test_args())?
         }

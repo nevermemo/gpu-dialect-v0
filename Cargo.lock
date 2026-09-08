@@ -110,8 +110,8 @@ dependencies = [
 name = "component-pool"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect",
- "gpu-dialect-wgpu",
+ "gust",
+ "gust-wgpu",
 ]
 
 [[package]]
@@ -189,14 +189,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-dialect"
+name = "gust"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect-macros",
+ "gust-macros",
 ]
 
 [[package]]
-name = "gpu-dialect-macros"
+name = "gust-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -205,10 +205,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpu-dialect-wgpu"
+name = "gust-wgpu"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect",
+ "gust",
  "pollster",
  "wgpu",
 ]
@@ -460,8 +460,8 @@ dependencies = [
 name = "particle-step"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect",
- "gpu-dialect-wgpu",
+ "gust",
+ "gust-wgpu",
 ]
 
 [[package]]
@@ -480,8 +480,8 @@ checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 name = "polynomial"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect",
- "gpu-dialect-wgpu",
+ "gust",
+ "gust-wgpu",
 ]
 
 [[package]]
@@ -584,8 +584,8 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "signal-pipeline"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect",
- "gpu-dialect-wgpu",
+ "gust",
+ "gust-wgpu",
 ]
 
 [[package]]
@@ -613,8 +613,8 @@ dependencies = [
 name = "staged-graph"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect",
- "gpu-dialect-wgpu",
+ "gust",
+ "gust-wgpu",
 ]
 
 [[package]]
@@ -669,8 +669,8 @@ dependencies = [
 name = "typed-pipeline"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect",
- "gpu-dialect-wgpu",
+ "gust",
+ "gust-wgpu",
 ]
 
 [[package]]
@@ -689,8 +689,8 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 name = "vector-add"
 version = "0.1.0"
 dependencies = [
- "gpu-dialect",
- "gpu-dialect-wgpu",
+ "gust",
+ "gust-wgpu",
 ]
 
 [[package]]

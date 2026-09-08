@@ -1,9 +1,9 @@
 use std::{path::PathBuf, time::Instant};
 
 #[cfg(test)]
-use gpu_dialect::GpuPod;
-use gpu_dialect::{KernelDescriptor, gpu};
-use gpu_dialect_wgpu::{
+use gust::GpuPod;
+use gust::{KernelDescriptor, gpu};
+use gust_wgpu::{
     BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice, PipelineCacheStats,
     render_wgpu_source,
 };
@@ -275,10 +275,7 @@ fn run_cpu(inputs: &Inputs) -> PipelineOutput {
     }
 }
 
-fn run_gpu(
-    device: &HeadlessDevice,
-    inputs: &Inputs,
-) -> Result<PipelineOutput, gpu_dialect_wgpu::Error> {
+fn run_gpu(device: &HeadlessDevice, inputs: &Inputs) -> Result<PipelineOutput, gust_wgpu::Error> {
     let count = inputs.readings.len();
     let readings = device.create_typed_buffer(
         "sensor readings",
@@ -424,11 +421,11 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
         )?;
         std::fs::write(
             directory.join(format!("{stem}.wgsl")),
-            gpu_dialect::slang::compile_wgsl(descriptor)?,
+            gust::slang::compile_wgsl(descriptor)?,
         )?;
         std::fs::write(
             directory.join(format!("{stem}.spv")),
-            gpu_dialect::spirv::words_as_le_bytes(&gpu_dialect::slang::compile_spirv(descriptor)?),
+            gust::spirv::words_as_le_bytes(&gust::slang::compile_spirv(descriptor)?),
         )?;
         std::fs::write(
             directory.join(format!("{stem}.rs")),
@@ -504,7 +501,7 @@ mod tests {
     #[ignore = "example validation runs only in full verification"]
     fn every_stage_compiles_to_wgsl() {
         for descriptor in descriptors() {
-            let wgsl = gpu_dialect::slang::compile_wgsl(descriptor).unwrap();
+            let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
             assert!(wgsl.contains("@compute"));
             assert!(wgsl.contains(descriptor.entry_point));
         }

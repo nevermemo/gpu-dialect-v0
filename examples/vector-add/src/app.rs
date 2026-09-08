@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 #[cfg(test)]
-use gpu_dialect::{Access, ResourceBinding};
-use gpu_dialect::{gpu, slang, spirv};
-use gpu_dialect_wgpu::{F32Binding, HeadlessDevice, render_wgpu_source};
+use gust::{Access, ResourceBinding};
+use gust::{gpu, slang, spirv};
+use gust_wgpu::{F32Binding, HeadlessDevice, render_wgpu_source};
 
 #[gpu]
 mod vector_add {

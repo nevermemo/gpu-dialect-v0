@@ -1,6 +1,6 @@
 # Engineering agreement
 
-GUST is the project; GPU Dialect is the existing Rust → Slang subsystem. Read
+GUST is the project and the Rust → Slang subsystem. Read
 `docs/development/STATUS.md`, `docs/development/NEXT_TASKS.md`, and
 `docs/development/HANDOFF.md` before editing. Consult
 `docs/development/REPO_STRUCTURE.md`, `docs/development/VALIDATION.md`,

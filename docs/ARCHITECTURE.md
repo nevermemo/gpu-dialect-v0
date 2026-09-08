@@ -1,4 +1,4 @@
-# Current architecture: GPU Dialect inside GUST
+# Current architecture: GUST
 
 This file describes implemented mechanisms, not the future semantic frontend or
 execution-graph compiler. See [vision](VISION.md), [execution graph](EXECUTION_GRAPH.md),
@@ -6,7 +6,7 @@ and [engine destination](ENGINE_NORTH_STAR.md) for those separately labeled plan
 
 ## Decision
 
-GPU Dialect no longer treats a custom IR or a handwritten SPIR-V emitter as its
+GUST no longer treats a custom IR or a handwritten SPIR-V emitter as its
 compiler core. The macro's job is intentionally smaller:
 
 1. Parse and validate a GPU-safe subset of Rust syntax.
@@ -23,7 +23,7 @@ code generation.
 
 ## Component responsibilities
 
-### `gpu-dialect-macros`
+### `gust-macros`
 
 The proc macro owns validation, syntax translation, binding assignment, and host
 handle generation. Translation happens directly from `syn` nodes; there is no
@@ -38,7 +38,7 @@ The original kernel function is renamed to a private `__gpu_typecheck_*` item in
 the expanded Rust module. It is compiled only to make rustc check the user's body.
 There is deliberately no public `.cpu(...)` wrapper.
 
-### `gpu-dialect`
+### `gust`
 
 The core crate owns:
 
@@ -54,7 +54,7 @@ The core crate owns:
 the generated symbol can avoid Slang intrinsic collisions and target-language
 reserved identifiers.
 
-### `gpu-dialect-wgpu`
+### `gust-wgpu`
 
 The wgpu crate validates host bindings against descriptors, manages typed GPU
 buffers, and owns the per-device pipeline cache. On a cache miss it asks Slang for
@@ -123,7 +123,7 @@ artifact, so the executed shader and the reflected layout come from one compilat
 The cache key is descriptor identity (`&'static` source and parameter slices plus
 entry point), so a descriptor whose contract differs from a cached one produces a
 different key, misses, and is checked before it can run (see
-`crates/gpu-dialect-wgpu/tests/reflection.rs`). The helper's SPIR-V is byte-identical
+`crates/gust-wgpu/tests/reflection.rs`). The helper's SPIR-V is byte-identical
 to `slang::compile_spirv`; its WGSL differs from `slang::compile_wgsl` only in line
 endings.
 
@@ -179,8 +179,8 @@ not one sequential backend path: WGSL execution and SPIR-V validation are branch
 2. rustc checks shadow types, names, indexing, fields, and arithmetic.
 3. `slangc` checks the generated shader and produces WGSL/SPIR-V.
 4. The core SPIR-V helper checks binary structure.
-5. `spirv-val --target-env vulkan1.2` performs external semantic validation in
-   example tests when SPIRV-Tools is installed.
+5. `spirv-val --target-env vulkan1.2` performs external semantic validation of
+   exported modules in artifact/full checks; a missing tool fails those checks.
 6. wgpu validates the generated WGSL, bind-group layout, pipeline, and dispatch.
 7. Integration tests compare readback values with independent CPU references.
 
@@ -205,7 +205,7 @@ work; current attribution is kernel-level only.
 The architecture is ready for several incremental extensions without changing the
 core boundary:
 
-- consume Slang reflection JSON for layouts and bindings;
+- extend the existing native reflection gate as new resource/layout contracts are proven;
 - add vectors, matrices, textures, samplers, and constant buffers;
 - map Slang errors back to Rust spans;
 - cache Slang artifacts by content hash and compiler identity;
@@ -262,7 +262,9 @@ integer division/remainder by zero as a panic and float-to-integer `as` casts as
 saturating (NaN maps to zero); do not describe those Rust operations as undefined.
 See the [Rust operator reference](https://doc.rust-lang.org/reference/expressions/operator-expr.html).
 
-Type names are fail-closed at the macro boundary. `as` casts accept only the proven
+Primitive type names and cast targets are fail-closed at the macro boundary;
+some other standard-prelude names in helper signatures remain a T11 frontier.
+`as` casts accept only the proven
 32-bit scalar targets (`f32`/`float`, `i32`/`int`, `u32`/`uint`); Rust primitives
 outside the four-byte subset (`u8`, `i64`, `usize`, `f64`, `char`, ...) are rejected
 in every type position, and inline `const { .. }` blocks are rejected by name. These
@@ -281,8 +283,10 @@ a reserved `__gust_opt_N` temporary and binds the payload inside the taken branc
 payload must be a supported scalar or a module struct. Option is a local/helper value
 only: it is rejected in struct fields and resource element types because it has no
 proven storage layout, and `.unwrap()`/`.expect()` are rejected because Rust panics
-there while GPU code cannot. `Result`, `match`, `?`, let chains, and other patterns
-remain rejected. The `option` fixture locks the Slang, both targets compile, and a
+there while GPU code cannot. `match`, `?`, let chains, and other patterns remain
+rejected. `Result` construction is rejected, but its name can still reach Slang
+unlowered in a helper signature; T11 must close that gap. The `option` fixture
+locks the Slang, both targets compile, and a
 real-GPU test matches an independent host `Option` reference at workgroup boundaries.
 
 Loops are bounded by construction (D18). The only accepted form is

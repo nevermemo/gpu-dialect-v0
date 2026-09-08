@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
-use gpu_dialect::{GpuPod, gpu};
-use gpu_dialect_wgpu::{
+use gust::{GpuPod, gpu};
+use gust_wgpu::{
     BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice, render_wgpu_source,
 };
 
@@ -203,7 +203,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let actual = device.read_typed_buffer(&gpu_snapshot)?;
     let energy = device.read_f32_buffer(&gpu_energy)?;
     assert_matches(&actual, &energy, &expected, &expected_energy);
-    let job = gpu_dialect::Device::submit(&device, &batch)?;
+    let job = gust::Device::submit(&device, &batch)?;
     job.wait()?;
     println!(
         "Particle step: {count} particles on {}",
@@ -242,11 +242,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         std::fs::write(
             directory.join(format!("{stem}.wgsl")),
-            gpu_dialect::slang::compile_wgsl(descriptor)?,
+            gust::slang::compile_wgsl(descriptor)?,
         )?;
         std::fs::write(
             directory.join(format!("{stem}.spv")),
-            gpu_dialect::spirv::words_as_le_bytes(&gpu_dialect::slang::compile_spirv(descriptor)?),
+            gust::spirv::words_as_le_bytes(&gust::slang::compile_spirv(descriptor)?),
         )?;
         println!(
             "generated shader artifacts: {}",
@@ -259,12 +259,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpu_dialect::TypeLayoutKind;
+    use gust::TypeLayoutKind;
 
     fn device() -> Option<HeadlessDevice> {
         match HeadlessDevice::new() {
             Ok(device) => Some(device),
-            Err(gpu_dialect_wgpu::Error::NoAdapter(_)) => None,
+            Err(gust_wgpu::Error::NoAdapter(_)) => None,
             Err(error) => panic!("could not initialize headless wgpu: {error}"),
         }
     }
@@ -299,8 +299,8 @@ mod tests {
                 &particles::scalar_order::DESCRIPTOR,
                 1,
                 &[
-                    gpu_dialect_wgpu::F32Binding::ReadWrite(&[0.0]),
-                    gpu_dialect_wgpu::F32Binding::ReadWrite(&[0.0]),
+                    gust_wgpu::F32Binding::ReadWrite(&[0.0]),
+                    gust_wgpu::F32Binding::ReadWrite(&[0.0]),
                 ],
             )
             .unwrap();
@@ -374,7 +374,7 @@ mod tests {
                     &snapshot_bindings,
                 ),
             ];
-            gpu_dialect::Device::submit(&device, &batch)
+            gust::Device::submit(&device, &batch)
                 .unwrap()
                 .wait()
                 .unwrap();

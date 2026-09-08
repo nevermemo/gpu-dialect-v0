@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/gpu-dialect",
-    "crates/gpu-dialect-macros",
-    "crates/gpu-dialect-wgpu",
+    "crates/gust",
+    "crates/gust-macros",
+    "crates/gust-wgpu",
     "examples/component-pool",
     "examples/polynomial",
     "examples/particle-step",
@@ -22,9 +22,9 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.87"
 
 [workspace.dependencies]
-gpu-dialect = { path = "crates/gpu-dialect" }
-gpu-dialect-macros = { path = "crates/gpu-dialect-macros" }
-gpu-dialect-wgpu = { path = "crates/gpu-dialect-wgpu" }
+gust = { path = "crates/gust" }
+gust-macros = { path = "crates/gust-macros" }
+gust-wgpu = { path = "crates/gust-wgpu" }
 pollster = "0.4"
 proc-macro2 = "1.0"
 quote = "1.0"
