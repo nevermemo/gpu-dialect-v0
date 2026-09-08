@@ -9,10 +9,15 @@ Rust supplies the higher-level language and checking environment; Slang owns GPU
 code generation; GUST will connect intentional CPU and GPU execution. We preserve
 the working subsystem while proving that larger model incrementally.
 
-Start with [current status](.ai/STATUS.md), [next tasks](.ai/NEXT_TASKS.md), and
-[the handoff](.ai/HANDOFF.md). Engineering agents should read [AGENTS.md](AGENTS.md).
+Start with [current status](docs/development/STATUS.md),
+[next tasks](docs/development/NEXT_TASKS.md), and
+[the handoff](docs/development/HANDOFF.md). Engineering agents should read
+[AGENTS.md](AGENTS.md).
 The [vision](docs/VISION.md), [roadmap](docs/ROADMAP.md), and
 [engine north star](docs/ENGINE_NORTH_STAR.md) distinguish implementation from plans.
+Development conventions live in [repository structure](docs/development/REPO_STRUCTURE.md),
+[validation strategy](docs/development/VALIDATION.md), and
+[agent workflow](docs/development/AGENT_WORKFLOW.md).
 
 The current executable path is:
 

@@ -2,15 +2,47 @@
 
 ## Active: none claimed (2026-09-08)
 
-The DX xtask automation batch is complete and ready to commit (below). The next
+The repository structure pass is complete and ready to commit (below). The next
 ordered compiler extension remains T10 atomics.
 
 ```text
 owner: none
 claim: none
-next_focused_check: cargo xtask check-feature macro
+next_focused_check: cargo xtask status
 full_check_needed_before_commit: no
 ```
+
+## Repository structure pass — operational docs and examples — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `d8577cc`. No compiler/runtime semantics changes.
+
+What changed. Human-readable operational markdown moved out of `.ai/` into
+`docs/development/`: `STATUS.md`, `NEXT_TASKS.md`, `HANDOFF.md`, and
+`CHANGED_FILES.md`. `.ai/VALIDATION.json` and `.ai/BASELINE.sha256` remain in `.ai/`
+as machine-readable/generated state. Added durable development docs:
+`docs/development/README.md`, `REPO_STRUCTURE.md`, `VALIDATION.md`, and
+`AGENT_WORKFLOW.md`. Updated AGENTS, README, custom agents/prompts, docs links, and
+`cargo xtask status` so future agents use `docs/development/*` paths.
+
+All seven examples now have a thin `src/main.rs` entry point and a `src/app.rs`
+implementation module, including `vector-add`. The app modules preserve the existing
+GPU module, host/reference code, artifact export, and ignored example tests; this is a
+low-risk first split that makes entry points uniform. Larger examples can later split
+`app.rs` into `gpu.rs`, `cpu.rs`, `host.rs`, and `tests.rs` as described in
+`docs/development/REPO_STRUCTURE.md`.
+
+Verification (Rust 1.98.0, Slang 2026.13.1, NVIDIA GeForce RTX 5090/Vulkan): pre-move
+`cargo xtask status` worked; after the move `cargo xtask status` reads
+`docs/development/STATUS.md`; `cargo xtask check-workspace` passed; `cargo xtask
+check-examples` passed all 27 ignored example tests and all seven example binaries;
+`cargo xtask check-lints` passed after removing one unused `WORKGROUP` constant exposed
+by the module split; `cargo xtask check-format` passed. `cargo xtask check-full`
+passed and refreshed `.ai/VALIDATION.json` at 2026-09-08T10:15:53Z with mode `full`,
+passed `true`, 32 checks, 12 validated SPIR-V artifacts, and 109 summed test passes.
+No `generated-wgpu/` drift.
+
+Next command: claim T10 here, then write the atomics contract before code.
 
 ## DX — xtask automation batch — COMPLETE (2026-09-08)
 
@@ -46,7 +78,7 @@ mode `full`, passed `true`, 32 checks, 12 validated SPIR-V artifacts, and 109 su
 test passes in the captured log (ignored count 0 because example tests are run
 explicitly after the optimized non-example workspace stage).
 
-Skipped by request: no `.ai/STATUS.md` auto-update command and no example-size
+Skipped by request: no `cargo xtask status --update` command and no example-size
 environment overrides.
 
 Next command: claim T10 here, then write the atomics contract before code.

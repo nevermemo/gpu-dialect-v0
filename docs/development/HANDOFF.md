@@ -3,8 +3,12 @@
 Ownership released. The repository is ready for a local AI to resume manually.
 
 Latest pass (GitHub Copilot, VS Code agent, "GUST Builder" profile), ready to commit
-after fmt, strict Clippy, `cargo xtask check-full`, and an independent read-only
-review (PASS WITH NOTES, notes applied) — see STATUS:
+after `cargo xtask check-workspace`, `check-examples`, `check-lints`, `check-format`,
+and `check-full` — see STATUS:
+- Repository structure pass complete: human-readable operational markdown moved from
+  `.ai/` to `docs/development/`; `.ai/` keeps `VALIDATION.json` and `BASELINE.sha256`.
+  Added development docs for structure, validation and agent workflow. All examples
+  now have thin `src/main.rs` wrappers and `src/app.rs` implementation modules.
 - Cross-platform command surface complete: PowerShell command scripts were replaced by
   `cargo xtask`: `check-feature <area>`, `check-fast`, `check-examples`,
   `check-artifacts`, `check-full`, `export-artifacts`, `measure-tests`,

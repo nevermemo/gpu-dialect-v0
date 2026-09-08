@@ -316,4 +316,4 @@ overflow, casts outside their safe input domain, evaluation ordering for effectf
 expressions, resource aliases, and comprehensive identifier hygiene need further
 proofs or restrictions. Uniform emission is not an executable wgpu binding contract.
 Do not infer arbitrary Rust support from successful parsing or shadow typechecking.
-The ranked work list is in [next tasks](../.ai/NEXT_TASKS.md).
+The ranked work list is in [next tasks](development/NEXT_TASKS.md).
