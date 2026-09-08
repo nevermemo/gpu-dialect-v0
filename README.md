@@ -67,14 +67,18 @@ It executes real code on the selected GPU and writes four inspectable artifacts 
 - `vector_add__add.spv` — Slang-generated SPIR-V
 - `vector_add__add.rs` — readable descriptor-specialized wgpu host code
 
-Run every compiler, artifact, runtime, batch, persistent-buffer, and example test:
+Run the normal development suite:
 
 ```powershell
 cargo test --workspace
 ```
 
-For the full release-readiness check (including all seven examples and mandatory
-external validation of all twelve SPIR-V exports):
+Example crate tests are intentionally ignored by default. They remain available for
+major changes and release validation, but the ordinary workspace loop prioritizes
+compiler/runtime feedback over full example proofs.
+
+For the full release-readiness check (including ignored example tests, all seven
+examples, and mandatory external validation of all twelve SPIR-V exports):
 
 ```powershell
 .\scripts\verify.ps1 -Full
@@ -317,6 +321,11 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+Use focused checks first. `cargo test --workspace` skips ignored example tests;
+`scripts/verify.ps1 -Full` runs them with `--ignored`, runs each example binary, and
+validates exported SPIR-V artifacts. Per-feature compile-smoke tests use WGSL only;
+SPIR-V structure/semantic validation is centralized in full verification.
 
 Golden Slang and a real-GPU semantics fixture live in `tests/fixtures/`; update
 expected output only after reviewing the change and testing both target compilers.

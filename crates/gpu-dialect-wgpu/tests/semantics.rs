@@ -55,13 +55,11 @@ fn translated_semantics_execute_on_gpu() {
 }
 
 #[test]
-fn semantics_compile_to_both_targets() {
+fn semantics_compile_to_wgsl() {
     let descriptor = &semantics::run::DESCRIPTOR;
     assert!(
         gpu_dialect::slang::compile_wgsl(descriptor)
             .unwrap()
             .contains("@compute")
     );
-    let words = gpu_dialect::slang::compile_spirv(descriptor).unwrap();
-    gpu_dialect::spirv::validate_structure(&words).unwrap();
 }

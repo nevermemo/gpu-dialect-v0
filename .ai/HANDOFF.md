@@ -22,8 +22,9 @@ an independent read-only review (PASS WITH NOTES, notes applied) — see STATUS:
   `gust-status` prompt) and a PostToolUse `cargo fmt` hook (`.github/hooks`,
   `scripts/hooks`). They are operating profiles on top of AGENTS.md, not new rules.
 Next: nothing claimed. The owner pre-authorized the ordered compiler extensions;
-T10 atomics is next, but the owner also asked for a test-pruning/developer-experience
-inventory after T09 because validation is becoming too slow.
+T10 atomics is next. Developer-experience update: normal `cargo test --workspace`
+now skips example tests (27 ignored) and full verification runs them with `--ignored`
+before example binaries and exported SPIR-V validation.
 
 ## Previous handoff — 2026-09-07
 

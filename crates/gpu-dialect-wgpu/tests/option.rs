@@ -89,13 +89,11 @@ fn option_lowering_executes_on_gpu() {
 }
 
 #[test]
-fn option_compiles_to_both_targets() {
+fn option_compiles_to_wgsl() {
     let descriptor = &optional::run::DESCRIPTOR;
     assert!(
         gpu_dialect::slang::compile_wgsl(descriptor)
             .unwrap()
             .contains("@compute")
     );
-    let words = gpu_dialect::slang::compile_spirv(descriptor).unwrap();
-    gpu_dialect::spirv::validate_structure(&words).unwrap();
 }

@@ -86,7 +86,6 @@ fn struct_assignment_reads_the_complete_rhs_before_writing() {
 }
 
 #[test]
-fn struct_assignment_compiles_for_both_targets() {
+fn struct_assignment_compiles_to_wgsl() {
     gpu_dialect::slang::compile_wgsl(&assignments::run::DESCRIPTOR).unwrap();
-    gpu_dialect::slang::compile_spirv(&assignments::run::DESCRIPTOR).unwrap();
 }
