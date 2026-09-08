@@ -33,9 +33,9 @@ Human-readable operating state lives in `docs/development/`:
 
 Keep the current crate split until a measured need appears:
 
-- `gpu-dialect`: public API, descriptors, ABI metadata, Rust shadow types, Slang/compiler bridge, reflection and SPIR-V helpers.
-- `gpu-dialect-macros`: proc-macro validation, expansion and Rust AST -> Slang lowering.
-- `gpu-dialect-wgpu`: headless wgpu runtime, buffers, dispatch, pipeline cache, graph and pool support.
+- `gust`: public API, descriptors, ABI metadata, Rust shadow types, Slang/compiler bridge, reflection and SPIR-V helpers.
+- `gust-macros`: proc-macro validation, expansion and Rust AST -> Slang lowering.
+- `gust-wgpu`: headless wgpu runtime, buffers, dispatch, pipeline cache, graph and pool support.
 - `xtask`: dependency-light project automation and validation commands.
 
 Prefer internal modules before new crates. Split a crate only when there is a stable public boundary, independent dependency profile, or clear compile-time/ownership benefit.

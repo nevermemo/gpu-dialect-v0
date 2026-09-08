@@ -54,7 +54,7 @@ independent read-only review (PASS) — see STATUS for evidence:
 - `Option<T>` lowers to Slang `Optional<T>` (D14): `Some`/`None`/`is_some`/`is_none`/
   `unwrap_or`/`if let Some(x)`; Option stays out of struct fields and buffers.
   Reviewed golden `tests/fixtures/option.slang` and a real-GPU test.
-- T07 staged graph (D15): `gpu_dialect_wgpu::StagedGraph` with checked host-declared
+- T07 staged graph (D15): `gust_wgpu::StagedGraph` with checked host-declared
   edges, ordered uploads, transfer/residency report; `examples/staged-graph`;
   `BufferBinding::independent_length()`.
 - T08 component pool (D16): `GpuPool<T>` with GPU→GPU growth copies, retirement,
@@ -90,7 +90,7 @@ contacted. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming work.
 
 ## What changed and why
 
-1. Re-anchored README and docs around GUST while retaining the working GPU Dialect
+1. Re-anchored README and docs around GUST while retaining the working GPU compiler
    crate APIs. The vision, compiler evolution, execution graph/CPU domains,
    portability tiers, and ECS destination are clearly separate from implemented code.
    Added decisions, ranked roadmap, agent agreement, and durable status/tasks.
@@ -133,9 +133,9 @@ contacted. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming work.
 
 ## Important files
 
-- Frontend: `crates/gpu-dialect-macros/src/{slang,validate,expand,regression_tests}.rs`.
-- Bridge/contract: `crates/gpu-dialect/src/{slang,descriptor,abi,lib}.rs`.
-- Cache/tests: `crates/gpu-dialect-wgpu/src/lib.rs`, `tests/semantics.rs` under that crate.
+- Frontend: `crates/gust-macros/src/{slang,validate,expand,tests/regression}.rs`.
+- Bridge/contract: `crates/gust/src/{slang,descriptor,abi,lib}.rs`.
+- Cache/tests: `crates/gust-wgpu/src/lib.rs`, `tests/semantics.rs` under that crate.
 - Shared expectations: `tests/fixtures/semantics.{rs,slang}` and `numeric.{rs,slang}`.
 - Validation: `scripts/verify.ps1`, `.ai/VALIDATION.json`.
 - Documentation: README, AGENTS, `docs/`, and `.ai/`.
@@ -171,9 +171,9 @@ The stderr-capture patch was then **verified end-to-end** on 2026-09-07 under
 `stderr` (lines 59, 69); the `µs` timings render correctly (UTF-8 fix confirmed — no
 more `┬╡`). **Environment note for future runs: use `pwsh` (PowerShell 7), not 5.1.**
 
-T05 (both slices) was then verified on 2026-09-07: `cargo test -p gpu-dialect --lib`
-12 passed (incl. both diagnostic-mapping tests), `cargo test -p gpu-dialect-macros`
-20 passed (marker goldens), `cargo test -p gpu-dialect-wgpu --test semantics` 2 passed
+T05 (both slices) was then verified on 2026-09-07: `cargo test -p gust --lib`
+12 passed (incl. both diagnostic-mapping tests), `cargo test -p gust-macros`
+20 passed (marker goldens), `cargo test -p gust-wgpu --test semantics` 2 passed
 on RTX 5090, and a full `cargo test --workspace` re-run after the slice 2 commit:
 **66 passed, 0 failed** (62 unit/integration incl. 5 example binaries on RTX 5090,
 + 4 compile-fail doc tests). A full `verify.ps1 -Full` (fmt/clippy/examples/SPIR-V)
@@ -206,7 +206,7 @@ diagnosed at the Rust boundary, and struct literals lower to construct-then-assi
 See the T04 evidence block in NEXT_TASKS.md and `docs/ARCHITECTURE.md`.
 
 **T05 (P1) is complete** — slice 1 is capability probe records (`TargetProbe` +
-`probe` in `crates/gpu-dialect/src/slang.rs`, failing-first WGSL/SPIR-V tests);
+`probe` in `crates/gust/src/slang/mod.rs`, failing-first WGSL/SPIR-V tests);
 slice 2 is kernel-level diagnostic source mapping (`// @rust kernel:` markers,
 nearest-marker lookup appended to `CompilationFailed`).
 
@@ -227,8 +227,8 @@ Start from the workspace root:
 
 ```powershell
 .\scripts\verify.ps1 -Full
-cargo test -p gpu-dialect-macros regression_tests
-cargo test -p gpu-dialect-wgpu --test semantics
+cargo test -p gust-macros regression_tests
+cargo test -p gust-wgpu --test semantics
 ```
 
 Do not blindly regenerate golden expectations. Review emitted Slang and actual GPU

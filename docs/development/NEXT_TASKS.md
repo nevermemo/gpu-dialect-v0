@@ -60,8 +60,8 @@ measure first and keep cache-stat tests isolated.
 
 Status: first slice complete. Goal: preserve helper returns, literals, grouping, and
 negation. Why: reproduced wrong/invalid Slang from accepted Rust. Files:
-`crates/gpu-dialect-macros/src/{slang,regression_tests,validate}.rs`,
-`tests/fixtures/semantics.*`, `crates/gpu-dialect-wgpu/tests/semantics.rs`.
+`crates/gust-macros/src/{slang,tests/regression,validate}.rs`,
+`tests/fixtures/semantics.*`, `crates/gust-wgpu/tests/semantics.rs`.
 Dependencies: installed Slang and Vulkan adapter for integration.
 Done: failing-before tests, reviewed golden, both target compilers, real GPU results
 at 1/63/64/65/257 elements. Verify: `cargo test --workspace`.
@@ -110,7 +110,7 @@ the probe above is now a supported program. Still open: other std-prelude names 
 helper *signatures* (e.g. `fn f(r: Result<uint, uint>)`) pass the validator and
 fail only in slangc; they cannot be constructed (`Ok`/`Err` calls are rejected), so
 the leak is limited to signatures. A type-name allowlist remains the fix if wanted.
-Verify: `cargo test -p gpu-dialect-macros` and `cargo test --workspace`.
+Verify: `cargo test -p gust-macros` and `cargo test --workspace`.
 
 ## T04 — P1: Resolved numeric semantics and struct construction — COMPLETE
 
@@ -146,10 +146,10 @@ Status: complete (2026-09-07). Both slices done: capability probe records and
 kernel-level Slang→Rust diagnostic mapping.
 Goal: machine-readable probe records and useful Rust locations for Slang errors.
 Why: target claims and layouts must follow evidence. Files:
-`crates/gpu-dialect/src/slang.rs`, `crates/gpu-dialect-macros/src/slang.rs`,
+`crates/gust/src/slang/mod.rs`, `crates/gust-macros/src/slang/mod.rs`,
 `tests/fixtures/{numeric,semantics}.slang`, docs/PORTABLE_SLANG_CORE.md.
 Dependencies: T02/T03.
-Slice 1: `TargetProbe` record + `probe` in `crates/gpu-dialect/src/slang.rs`
+Slice 1: `TargetProbe` record + `probe` in `crates/gust/src/slang/mod.rs`
 compiles a known-good minimal kernel to a target and records `supported`/`detail`;
 failing-first tests (WGSL + SPIR-V); PORTABLE_SLANG_CORE.md documents the record
 format.
@@ -159,9 +159,9 @@ appends `originating Rust kernel: {module}::{kernel}` (nearest marker at or befo
 that line) to the `CompilationFailed` diagnostic. Kernel-level, not line-level:
 stable-Rust `proc_macro` spans do not expose line numbers. Golden fixtures updated
 with the marker; two tests cover mapping with a marker and `None` without.
-Evidence (2026-09-07): `cargo test -p gpu-dialect --lib` 12 passed (incl. both
-mapping tests); `cargo test -p gpu-dialect-macros` 20 passed (marker goldens);
-`cargo test -p gpu-dialect-wgpu --test semantics` 2 passed on RTX 5090.
+Evidence (2026-09-07): `cargo test -p gust --lib` 12 passed (incl. both
+mapping tests); `cargo test -p gust-macros` 20 passed (marker goldens);
+`cargo test -p gust-wgpu --test semantics` 2 passed on RTX 5090.
 Verify: repeat probes and intentional failing input; no silent skips.
 
 ## T06 — P1: Slang reflection / broader shadows — COMPLETE
@@ -178,22 +178,22 @@ linked program through the Slang API and emits complete StorageV1 layouts or fai
 `reflect::compile_reflected` + `Reflection::cross_check_kernel` verify names, slots,
 access, workgroup size and every nested offset/size/alignment/stride; the wgpu
 runtime gates every pipeline-cache miss on that check and executes the helper's WGSL.
-Tests: core 5→9, new GPU `crates/gpu-dialect-wgpu/tests/reflection.rs` (4). Full
+Tests: core 5→9, new GPU `crates/gust-wgpu/tests/reflection.rs` (4). Full
 `verify.ps1 -Full` passed; it now builds the helper first.
 Not done (by design): textures, samplers, uniforms, vectors/matrices, multiple
 binding groups, specialization — each needs its own reflected evidence before it
 enters the runtime contract. Follow-ups: exported `.rs` host snippets still show the
 ungated `compile_wgsl` path; consider a content-hash `KernelCacheKey` if descriptors
 ever stop being `&'static`.
-Verify: `cargo test -p gpu-dialect --test reflection` and
-`cargo test -p gpu-dialect-wgpu --test reflection`.
+Verify: `cargo test -p gust --test reflection` and
+`cargo test -p gust-wgpu --test reflection`.
 
 ## T07 — P2: First explicit staged graph proof — COMPLETE
 
 Status: complete (2026-09-07). Goal: CPU settings → two GPU stages → small summary,
 with inspectable dependencies and transfer sizes. Why: bridge current batches toward
 GUST execution.
-Done: `gpu_dialect_wgpu::StagedGraph` (`crates/gpu-dialect-wgpu/src/graph.rs`) with
+Done: `gust_wgpu::StagedGraph` (`crates/gust-wgpu/src/graph.rs`) with
 upload/dispatch/readback nodes, host-declared dependencies validated against actual
 buffer hazards (`GraphDependencyOrder`, `GraphMissingDependency`), uploads encoded as
 ordered copies, `GraphReport` with per-transfer bytes, dispatch/workgroup counts, and
@@ -211,7 +211,7 @@ CPU nodes, continuations. Verify: `cargo test -p staged-graph` and the workspace
 Status: complete (2026-09-07). Goal: GPU data survives host-driven capacity growth
 without resize readback, then active-count-driven indirect dispatch. Why: concrete ECS
 prerequisites. Contract specified first in `docs/ENGINE_NORTH_STAR.md` (D16).
-Done: `gpu_dialect_wgpu::GpuPool<T>` (`crates/gpu-dialect-wgpu/src/pool.rs`):
+Done: `gust_wgpu::GpuPool<T>` (`crates/gust-wgpu/src/pool.rs`):
 capacity, host-tracked logical length mirrored to a one-element count buffer,
 `pool_push`/`pool_reserve` growth by GPU→GPU copy of the live prefix with
 `GrowthRecord` evidence, retirement list drained by `pool_reclaim`, `pool_truncate`,
@@ -247,7 +247,7 @@ and resource/dispatch-ID shadowing. Evidence: reviewed D18 contract,
 Not done (by design): `while` with budgets, inclusive ranges, iterator adaptors,
 runtime trip-count analysis, and validator-side proof of non-literal range operand
 types (rustc shadows and Slang own those today).
-Verify: `cargo test -p gpu-dialect-macros loops` and `cargo test -p gpu-dialect-wgpu
+Verify: `cargo test -p gust-macros loops` and `cargo test -p gust-wgpu
 --test loops`.
 
 ## T10 — P2, authorized: atomics on `RWStructuredBuffer<u32|i32>`

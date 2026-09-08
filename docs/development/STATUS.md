@@ -1,9 +1,51 @@
 # Current status
 
-## Active: none claimed (2026-09-08)
+## Active: review follow-up fixes (2026-09-08)
+
+Owner: Codex at the user's request. Preserve the existing uncommitted GUST naming
+pass on `c47532d`; no commit or push is requested. T10 is planning-only and awaits
+the user's approval before implementation or probes.
+
+```text
+owner: Codex
+claim: check routing, live-prefix pool readback, generated-host reflection parity, setup diagnostic and current-doc reconciliation
+next_focused_check: cargo xtask check-workspace
+full_check_needed_before_commit: yes
+```
+
+File ownership: routing Builder owns `xtask/src/checks.rs` and routing tests;
+readback Builder owns `gust-wgpu/src/{lib,pool}.rs` and its new pool tests;
+host-template Builder owns `gust-wgpu/src/generated_host.rs`, its new tests,
+`gust/src/reflect/mod.rs` and the helper-error regression. Codex owns the roadmap,
+architecture/development documentation and final validation record. Builders must
+not edit another scope or regenerate exports; full verification owns regeneration.
+No dependencies, macro language changes, shader ABI expansion or T10 code.
+
+Baseline: `cargo xtask check-fast` passed on Rust 1.98.0 / Slang 2026.13.1
+(31 macro, 18 core, 19 runtime tests; real GPU integration tests did not skip).
+Workspace baseline and independent reviews are pending.
+
+## Historical: GUST naming pass (2026-09-08)
+
+The GUST naming pass is complete. Workspace packages are now `gust`, `gust-macros`,
+and `gust-wgpu`; Rust imports, macro paths, examples, xtask routing, current docs,
+and generated artifact headers use the same identity. Technical GPU/Slang terms and
+runtime behavior were preserved.
+
+```text
+owner: none
+claim: none
+next_focused_check: cargo xtask check-fast
+full_check_needed_before_commit: no
+```
+
+Validation: `cargo check --workspace` passed; `cargo xtask check-workspace` passed
+(18 core + 31 macro + 5 runtime unit tests and all runtime integration tests);
+`cargo xtask check-format` passed; `cargo xtask check-artifacts` passed on NVIDIA
+GeForce RTX 5090 with all seven examples and 12 SPIR-V exports validated.
 
 The lean upstream generated-output cleanup is complete and ready for independent review
-and commit. Next candidate: deeper internal splits inside `gpu-dialect-wgpu/src/lib.rs`
+and commit. Next candidate: deeper internal splits inside `gust-wgpu/src/lib.rs`
 or macro `validate/`/`slang/`, but those are no longer pure file moves and should be
 scoped carefully.
 
@@ -48,7 +90,7 @@ edits. No behavior changes intended.
 
 What changed. Moved core compiler-facing modules into same-name directories:
 `reflect/mod.rs`, `slang/mod.rs`, and `spirv/mod.rs`. Public paths remain
-`gpu_dialect::reflect`, `gpu_dialect::slang`, and `gpu_dialect::spirv` because the
+`gust::reflect`, `gust::slang`, and `gust::spirv` because the
 module declarations in `lib.rs` are unchanged.
 
 Validation: `cargo xtask check-feature core` passed (18). `cargo xtask check-feature
@@ -78,8 +120,8 @@ Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" prof
 Baseline: clean `main` at `b473f29`; `cargo xtask check-feature macro` passed before
 edits. No validator/lowering behavior changes intended.
 
-What changed. Moved `crates/gpu-dialect-macros/src/regression_tests.rs` to
-`crates/gpu-dialect-macros/src/tests/regression.rs` and used `#[path =
+What changed. Moved `crates/gust-macros/src/regression_tests.rs` to
+`crates/gust-macros/src/tests/regression.rs` and used `#[path =
 "tests/regression.rs"] mod regression_tests;` so existing `regression_tests::...` test
 names remain stable. Updated fixture `include_str!` paths for the deeper file.
 
@@ -95,8 +137,8 @@ Baseline: clean `main` at `c65e60c`; `cargo xtask check-feature gpu-smoke` passe
 before edits. No behavior changes intended.
 
 What changed. Moved `PipelineCacheStats`, `KernelCacheKey`, `CachedKernel`, and
-`PipelineCache` from `crates/gpu-dialect-wgpu/src/lib.rs` into
-`crates/gpu-dialect-wgpu/src/cache.rs`. Re-exported public `PipelineCacheStats` and
+`PipelineCache` from `crates/gust-wgpu/src/lib.rs` into
+`crates/gust-wgpu/src/cache.rs`. Re-exported public `PipelineCacheStats` and
 kept cache internals `pub(crate)` for the runtime module.
 
 Validation: `cargo xtask check-feature gpu-smoke` passed (5, including cache-key tests).
@@ -111,7 +153,7 @@ Baseline: clean `main` at `8584bc2`; `cargo xtask check-feature gpu-smoke` passe
 before edits. No behavior changes intended.
 
 What changed. Moved `render_wgpu_source` and its private string-rendering helpers from
-`crates/gpu-dialect-wgpu/src/lib.rs` into `crates/gpu-dialect-wgpu/src/generated_host.rs`.
+`crates/gust-wgpu/src/lib.rs` into `crates/gust-wgpu/src/generated_host.rs`.
 Re-exported `render_wgpu_source` from `lib.rs` to keep the public path stable, and made
 `validate_kernel` `pub(crate)` so the renderer continues to use the same descriptor
 validation path.
@@ -129,10 +171,10 @@ Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" prof
 Baseline: clean `main` at `ccc3068`; `cargo xtask check-feature gpu-smoke` passed
 before edits. No runtime behavior changes intended.
 
-What changed. Moved `gpu_dialect_wgpu::Error` and its `Display`/`std::error::Error`
-impls out of `crates/gpu-dialect-wgpu/src/lib.rs` into
-`crates/gpu-dialect-wgpu/src/error.rs`, then re-exported it from `lib.rs` so the public
-`gpu_dialect_wgpu::Error` path remains stable. Removed the stale `std::error` import
+What changed. Moved `gust_wgpu::Error` and its `Display`/`std::error::Error`
+impls out of `crates/gust-wgpu/src/lib.rs` into
+`crates/gust-wgpu/src/error.rs`, then re-exported it from `lib.rs` so the public
+`gust_wgpu::Error` path remains stable. Removed the stale `std::error` import
 from `lib.rs`.
 
 Validation: first smoke compile caught the old import collision; after removing it,
@@ -215,7 +257,7 @@ cache-stat tests still need isolated devices.
 Verification. `cargo xtask status`, `doctor`, and `explain-check gpu-semantics`
 printed expected guidance. `cargo xtask list-tests` summarized 109 listed Rust tests
 and 5 doctests. `cargo xtask measure-tests --json target/tmp/test-times.json cargo
-test -p gpu-dialect-macros regression_tests::loops_golden` passed and wrote valid
+test -p gust-macros regression_tests::loops_golden` passed and wrote valid
 JSON. `cargo xtask check-workspace` passed with example packages excluded. `cargo
 xtask check-feature gpu-smoke` passed (5), `gpu-runtime` passed (4), and
 `gpu-semantics` passed (10). `cargo xtask verify --mode gpu` left
@@ -329,12 +371,12 @@ Regular per-feature target compile smoke tests now compile WGSL only:
 example-side SPIR-V structure / `spirv-val` tests were removed; centralized full
 verification still validates all twelve exported `.spv` artifacts.
 
-Files: `crates/gpu-dialect-wgpu/tests/{semantics,numeric,option,struct_assignment,loops}.rs`,
+Files: `crates/gust-wgpu/tests/{semantics,numeric,option,struct_assignment,loops}.rs`,
 all seven `examples/*/src/main.rs`, `scripts/verify.ps1`, README, `.ai/` records.
 
 Verification (Rust 1.98.0, Slang 2026.13.1-1-g84792eb15, SPIRV-Tools v2026.3,
 NVIDIA GeForce RTX 5090 / Vulkan, pwsh 7.6.5): focused touched wgpu tests
-`cargo test -p gpu-dialect-wgpu --test semantics --test numeric --test option --test
+`cargo test -p gust-wgpu --test semantics --test numeric --test option --test
 struct_assignment --test loops` **10 passed**. `cargo test --workspace` now reports
 **82 passed, 27 ignored** (ignored = example tests) plus 5 doctests, instead of
 running the example validation tests every time. `cargo test -p vector-add --
@@ -376,11 +418,11 @@ non-range iterables, tuple/`mut`/`ref` patterns, labels, `break` with a value,
 position ranges, unsuffixed literal bounds, and loop variables shadowing resources or
 the dispatch ID.
 
-Files: `crates/gpu-dialect-macros/src/validate.rs` (`is_unsuffixed_integer_literal`,
+Files: `crates/gust-macros/src/validate/mod.rs` (`is_unsuffixed_integer_literal`,
 `loop_variable`, `range_bounds`, loop-depth tracking, jump checks, range rejection),
-`crates/gpu-dialect-macros/src/slang.rs` (`emit_for`, statement-position jump arms),
-`crates/gpu-dialect-macros/src/regression_tests.rs`, new
-`tests/fixtures/loops.{rs,slang}`, new `crates/gpu-dialect-wgpu/tests/loops.rs`,
+`crates/gust-macros/src/slang/mod.rs` (`emit_for`, statement-position jump arms),
+`crates/gust-macros/src/tests/regression.rs`, new
+`tests/fixtures/loops.{rs,slang}`, new `crates/gust-wgpu/tests/loops.rs`,
 `docs/ARCHITECTURE.md`, `docs/DECISIONS.md` D18, README and GUST Builder guardrails,
 `.ai/` records. No runtime, ABI, dependency, example, or generated-wgpu export changes.
 
@@ -394,7 +436,7 @@ skip zero via `continue`; both WGSL and SPIR-V compile.
 
 Verification (Rust 1.98.0, Slang 2026.13.1-1-g84792eb15, SPIRV-Tools v2026.3,
 NVIDIA GeForce RTX 5090 / Vulkan, pwsh 7.6.5): focused `cargo test -p
-gpu-dialect-macros` **31 passed**; `cargo test -p gpu-dialect-wgpu --test loops`
+gust-macros` **31 passed**; `cargo test -p gust-wgpu --test loops`
 **2 passed**; `cargo clippy --workspace --all-targets -- -D warnings` exit 0;
 `pwsh -File scripts/verify.ps1 -Full` **GUST verification passed**, 26 checks, seven
 examples, all twelve existing exported SPIR-V artifacts validated, no `generated-wgpu/`
@@ -434,7 +476,7 @@ outside StorageV1 — vectors, arrays, non-32-bit scalars, counters, entry-point
 resources, uniforms, binding arrays — makes it exit 1 with a message rather than emit
 a partial record.
 
-Core (`crates/gpu-dialect/src/reflect.rs`): `compile_reflected`,
+Core (`crates/gust/src/reflect/mod.rs`): `compile_reflected`,
 `compile_reflected_with_helper`, `native_compiler_path` (`GUST_SLANG_REFLECT`, then
 `target/slang-reflect/`, then PATH), `CompiledReflection::from_output` (schema and
 identity checks, fingerprints re-derived in Rust, UTF-8 for WGSL, structural SPIR-V
@@ -444,7 +486,7 @@ names/slots on either side, one compiler resource per storage parameter and none
 over, equal group/binding/access, recursive field identity/offset/size/alignment/stride),
 new `Error::{HelperUnavailable, Incomplete}`. `slang::decode_spirv` is `pub(crate)`.
 
-Runtime (`crates/gpu-dialect-wgpu/src/lib.rs`): private
+Runtime (`crates/gust-wgpu/src/lib.rs`): private
 `HeadlessDevice::compile_kernel` (via `cached_kernel`) runs `compile_reflected` +
 `cross_check_kernel` before any wgpu object is created, uses the helper's WGSL as the
 shader source, and returns `Error::Reflection` on any failure; cache counters change
@@ -457,12 +499,12 @@ runtime section, `docs/ARCHITECTURE.md` "Struct ABI", `docs/DECISIONS.md` D17,
 `docs/ROADMAP.md` S2, `AGENTS.md` invariant.
 
 Tests (failing-first where the gate did not exist): core
-`crates/gpu-dialect/tests/reflection.rs` 5→9 — native compilation complete for both
+`crates/gust/tests/reflection.rs` 5→9 — native compilation complete for both
 targets with exact `Outer` layout (size 12, align 4, stride 12) and full-ABI reports;
 missing helper → `HelperUnavailable` naming `GUST_SLANG_REFLECT`; padded `float3`
 fixture → `Compiler(CompilationFailed)` from the helper on both targets (pinned to the
 variant after review); outer size alone does not certify nested sizes on the CLI path.
-GPU `crates/gpu-dialect-wgpu/tests/reflection.rs` (new, 4) — workgroup mismatch fails
+GPU `crates/gust-wgpu/tests/reflection.rs` (new, 4) — workgroup mismatch fails
 before dispatch with cache (0,0,0) and buffer untouched; renamed resource, wrong
 binding, wrong access, wrong element type, and extra compiler resource each fail with
 the exact expected message; a cached pipeline does not authorize a changed descriptor
@@ -493,7 +535,7 @@ native path; the `KernelCacheKey` is pointer identity of `&'static` descriptor s
 sound today but worth a content hash if descriptors ever become dynamic.
 
 Next command: claim bounded loops here, then
-`cargo test -p gpu-dialect-macros regression_tests` as the baseline before writing the
+`cargo test -p gust-macros regression_tests` as the baseline before writing the
 failing validator/emitter tests.
 
 ## Historical: T06 claim text (2026-09-08, superseded by the COMPLETE entry above)
@@ -515,7 +557,7 @@ evidence, `pool_truncate`, `pool_read`), `create_indirect_buffer`, and
 `StagedGraph::dispatch_indirect`. New `examples/component-pool`. Not in scope and not
 done: freelists, compaction, entity IDs, atomics, culling/rendering.
 
-Files: new `crates/gpu-dialect-wgpu/src/pool.rs`; `lib.rs` (`indirect` tag on
+Files: new `crates/gust-wgpu/src/pool.rs`; `lib.rs` (`indirect` tag on
 `GpuBuffer`/`BufferBinding`, `is_indirect_args_layout`, errors `IndirectArgsLayout`,
 `IndirectBindingLength`, `PoolTruncateGrows`, module wiring); `graph.rs`
 (`DispatchIndirect` node, args counted as a read for hazards, every binding must be
@@ -566,7 +608,7 @@ host-declared dependencies, inspectable transfer byte counts, intermediate resid
 and rejection of invalid resources/dependencies. No inference, no reordering, no
 transfer planner, no ECS (D15).
 
-Files: new `crates/gpu-dialect-wgpu/src/graph.rs` (`StagedGraph`, `NodeId`,
+Files: new `crates/gust-wgpu/src/graph.rs` (`StagedGraph`, `NodeId`,
 `GraphReport`, `GraphOutput`, `HeadlessDevice::execute_graph`), `lib.rs`
 (`BufferBinding::independent_length`, `IndependentLengthEmpty`, four `Graph*` error
 variants, module wiring), new `examples/staged-graph/` (kernels `transform` and
@@ -621,9 +663,9 @@ VISION "deterministic lowering" row for `Option`; `Result`, `match`, `?`, and pa
 enums stay out of scope. `f64`/`u64`/8-bit primitives are NOT emulated: WGSL has no
 such scalars and the storage ABI stays four-byte (D08/D09).
 
-Files: `crates/gpu-dialect-macros/src/{validate,slang,regression_tests}.rs`, new
+Files: `crates/gust-macros/src/{validate,slang,tests/regression}.rs`, new
 `tests/fixtures/option.{rs,slang}` (reviewed golden), new
-`crates/gpu-dialect-wgpu/tests/option.rs`, `docs/{ARCHITECTURE,DECISIONS}.md`,
+`crates/gust-wgpu/tests/option.rs`, `docs/{ARCHITECTURE,DECISIONS}.md`,
 `.ai/` records. No runtime, ABI, dependency, or signing changes.
 
 Evidence before editing (slangc 2026.13.1, WGSL + SPIR-V + `spirv-val`, all exit 0):
@@ -660,8 +702,8 @@ Next command: T07 (first explicit staged graph proof) per NEXT_TASKS and
 
 Ownership released. Owner was GitHub Copilot (VS Code agent) at the user's request.
 Bounded scope, as claimed: the T03 remaining frontier only. Files changed:
-`crates/gpu-dialect-macros/src/validate.rs`, `crates/gpu-dialect-macros/src/regression_tests.rs`,
-one `compile_fail` doctest in `crates/gpu-dialect/src/lib.rs`, a limits paragraph in
+`crates/gust-macros/src/validate/mod.rs`, `crates/gust-macros/src/tests/regression.rs`,
+one `compile_fail` doctest in `crates/gust/src/lib.rs`, a limits paragraph in
 `docs/ARCHITECTURE.md`, and the `.ai/` records. No emitter, runtime, ABI, dependency,
 or signing changes. Committed on top of `3fd0aac` in two scopes (below) and pushed
 to `origin/main` at the user's request; unsigned like `3fd0aac` (no signing configured).
@@ -744,7 +786,7 @@ passed before this review. Preserve those edits. Bounded review scope: recent
 T03/T04 macro changes and T05 compiler diagnostics; targeted regression-backed
 fixes plus status/handoff/architecture corrections. No dependencies, ABI expansion,
 signing changes, or commit in this review. Core diagnostics Builder owns
-`crates/gpu-dialect/src/slang.rs`; Scout is read-only in macro sources.
+`crates/gust/src/slang/mod.rs`; Scout is read-only in macro sources.
 Scout found struct self-assignment and dropped `..base` correctness gaps. Workers
 then hit an allowance limit; Codex finished locally. Expanded bounded fix scope:
 macro `slang.rs`, `validate.rs`, `regression_tests.rs`, numeric golden, and new
@@ -795,10 +837,10 @@ This continuation implements that bounded slice; no wider ABI expansion.
 ## This pass (T06 slice 1 — compiler-authoritative layout reflection)
 
 T06 was deferred; the owner authorized this bounded first slice. Added
-`crates/gpu-dialect/src/reflect.rs`: dependency-free strict JSON parser,
+`crates/gust/src/reflect/mod.rs`: dependency-free strict JSON parser,
 `Reflection::from_json`, target-specific `reflect`, recursive field/resource records,
 and `cross_check_pod::<T>`. Added the public module/re-exports in `lib.rs` and
-`crates/gpu-dialect/tests/reflection.rs`. The existing public `TemporaryDirectory`
+`crates/gust/tests/reflection.rs`. The existing public `TemporaryDirectory`
 from baseline commit `d99d176` is reused; no changes to `slang.rs` or dependencies.
 
 Actual Slang 2026.13.1 WGSL and SPIR-V JSON reports field offsets/sizes and resource
@@ -834,7 +876,7 @@ the scoped files with `feat(reflect): add Slang JSON reflection and POD cross-ch
 ## This pass (T03 second slice — name resolution + effect analysis)
 
 Fail-closed the gap between what the validator accepted and what the translator can
-lower. Two classes of diagnostic added in `crates/gpu-dialect-macros/src/validate.rs`:
+lower. Two classes of diagnostic added in `crates/gust-macros/src/validate/mod.rs`:
 
 - **Name resolution.** A bare path *value* must be a single identifier (a local or
   parameter). Multi-segment paths are associated constants or foreign items (`f32::
@@ -873,7 +915,7 @@ by the validator and only fail at Slang compile time.
   - **Environment note:** run the script under **PowerShell 7** (`pwsh`, 7.6.5), not
     Windows PowerShell 5.1. `pwsh` is on PATH; `$PSHOME` confirms 7.6.5.
 - **T05 (P1) complete — both slices.** Slice 1: `TargetProbe` record + `probe` in
-  `crates/gpu-dialect/src/slang.rs` compiles a known-good minimal kernel to a target
+  `crates/gust/src/slang/mod.rs` compiles a known-good minimal kernel to a target
   and records `supported`/`detail` (failing-first tests, WGSL + SPIR-V);
   PORTABLE_SLANG_CORE.md documents the record format. Slice 2: `emit_kernel` writes a
   `// @rust kernel: {module}::{kernel}` marker per kernel; on `slangc` failure the
@@ -889,7 +931,7 @@ by the validator and only fail at Slang compile time.
 
 ## Verified baseline
 
-- Checkout: `C:\Users\micro\Desktop\gpu-dialect-v0`. Git repository exists
+- Checkout: local workspace. Git repository exists
   (owner-initialized 2026-09-07; branch `main`, 9 commits as of this update; working
   tree clean, `.agents/skills/` fully tracked). A Kilo worktree
   (`.kilo/worktrees/enchanted-farmhouse`) sits on the same commit.
@@ -899,7 +941,7 @@ by the validator and only fail at Slang compile time.
 
 ## Implemented and verified during this pass
 
-- GUST documentation retains the working GPU Dialect subsystem and records future
+- GUST documentation retains the working GPU compiler subsystem and records future
   semantic frontend, execution graph, portability tiers, and ECS destination.
 - Tail helper returns, numeric literal lowering, binary grouping, and boolean/integer
   negation; unsafe positional struct literals now fail explicitly.

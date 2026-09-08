@@ -17,7 +17,7 @@ cross-target capability matrix. Missing tools cannot count as successful probes.
 
 ## Capability probe records
 
-`gpu_dialect::slang::probe(target)` compiles a known-good minimal compute kernel to
+`gust::slang::probe(target)` compiles a known-good minimal compute kernel to
 `target` and returns a `TargetProbe { target, supported, detail }` record. `supported`
 is true only when `slangc` actually emitted the target; `detail` carries the success
 marker or the compiler diagnostic on failure. This is the first machine-readable
