@@ -2,15 +2,35 @@
 
 ## Active: none claimed (2026-09-08)
 
-The repository structure pass is complete and ready to commit (below). The next
-ordered compiler extension remains T10 atomics.
+The `xtask` modularization slice is complete and ready to commit (below). Next cleanup
+candidate: split low-risk pieces from `crates/gpu-dialect-wgpu/src/lib.rs`.
 
 ```text
 owner: none
 claim: none
-next_focused_check: cargo xtask status
+next_focused_check: cargo xtask check-feature gpu-smoke
 full_check_needed_before_commit: no
 ```
+
+## Xtask modularization — COMPLETE (2026-09-08)
+
+Ownership released. Owner was GitHub Copilot (VS Code agent, "GUST Builder" profile).
+Baseline: clean `main` at `013edda`; `cargo xtask self-test` passed before edits. No
+behavioral or command-surface changes intended.
+
+What changed. Split the former 1300+ line `xtask/src/main.rs` into internal modules:
+`checks.rs` (user-facing commands and routing), `verify.rs` (staged verification and
+record policy), `reflect.rs` (native Slang reflection helper build), `process.rs`
+(command execution/capture), `workspace.rs` (workspace constants and changed-file
+discovery), `validation.rs` (VALIDATION.json, JSON escaping and SHA-256), and
+`time.rs` (UTC timestamp formatting). `main.rs` is now a thin dispatcher.
+
+Validation: `cargo xtask self-test` passed after the split; `cargo xtask check-format`
+passed; `cargo xtask check-lints` passed; `cargo xtask status` reads the active status;
+`cargo xtask check-feature loops` passed (1 macro golden/rejection group + 2 GPU loop
+tests); `cargo xtask check-workspace` passed. No generated artifact drift observed.
+
+Next command: claim the wgpu runtime file split here, then run `cargo xtask check-feature gpu-smoke`.
 
 ## Repository structure pass — operational docs and examples — COMPLETE (2026-09-08)
 
