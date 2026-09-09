@@ -33,6 +33,7 @@ pub(crate) const FEATURE_AREAS: &[&str] = &[
     "gpu-runtime",
     "reflection",
     "loops",
+    "result",
     "examples",
     "artifacts",
     "full",
