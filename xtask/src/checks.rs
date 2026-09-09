@@ -63,6 +63,18 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 &["test", "-p", "gust-wgpu", "--test", "loops"],
             )
         }
+        "result" => {
+            run_direct(
+                &root,
+                "cargo",
+                &["test", "-p", "gust-macros", "--", "result"],
+            )?;
+            run_direct(
+                &root,
+                "cargo",
+                &["test", "-p", "gust-wgpu", "--test", "result"],
+            )
+        }
         "examples" => verify(VerifyMode::Examples, false),
         "artifacts" => verify(VerifyMode::Artifacts, false),
         "full" => verify(VerifyMode::Full, true),
@@ -300,6 +312,9 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         "gpu-runtime" => "gpu-runtime: reflection gate and cache/runtime mismatch tests",
         "reflection" => "reflection: native Slang helper + core/wgpu reflection contract",
         "loops" => "loops: bounded-loop golden/rejection test plus real-GPU loop differential test",
+        "result" => {
+            "result: Result lowering/match regressions plus WGSL, SPIR-V, and real-GPU Result tests"
+        }
         "examples" => {
             "examples: ignored example tests and example binaries; use for major behavior confidence"
         }

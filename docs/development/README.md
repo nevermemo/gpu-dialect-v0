@@ -2,7 +2,9 @@
 
 This directory holds human-readable operating state and workflow guidance for GUST.
 
-- `STATUS.md` — active claim, completed slices and validation evidence.
+- `STATUS.md` — compact active claim, current contracts, and latest evidence.
+- `history/` — archived completed-task reports and superseded operational state.
+- `tasks/` — compact per-task contracts and executable acceptance checks.
 - `NEXT_TASKS.md` — ranked work list and acceptance criteria.
 - `HANDOFF.md` — compact pickup notes for future humans and agents.
 - `CHANGED_FILES.md` — historical baseline inventory.
