@@ -262,8 +262,8 @@ integer division/remainder by zero as a panic and float-to-integer `as` casts as
 saturating (NaN maps to zero); do not describe those Rust operations as undefined.
 See the [Rust operator reference](https://doc.rust-lang.org/reference/expressions/operator-expr.html).
 
-Primitive type names and cast targets are fail-closed at the macro boundary;
-some other standard-prelude names in helper signatures remain a T11 frontier.
+Primitive type names and cast targets are fail-closed at the macro boundary; tuples,
+slices, and other standard-prelude names without a proven lowering remain rejected.
 `as` casts accept only the proven
 32-bit scalar targets (`f32`/`float`, `i32`/`int`, `u32`/`uint`); Rust primitives
 outside the four-byte subset (`u8`, `i64`, `usize`, `f64`, `char`, ...) are rejected
@@ -284,9 +284,13 @@ payload must be a supported scalar or a module struct. Option is a local/helper 
 only: it is rejected in struct fields and resource element types because it has no
 proven storage layout, and `.unwrap()`/`.expect()` are rejected because Rust panics
 there while GPU code cannot. `match`, `?`, let chains, and other patterns remain
-rejected. `Result` construction is rejected, but its name can still reach Slang
-unlowered in a helper signature; T11 must close that gap. The `option` fixture
-locks the Slang, both targets compile, and a
+rejected. `Result<T, T>` is also lowered deterministically as a local/helper-only
+tagged `__GustResult<T>`: `Ok`/`Err`, `is_ok`/`is_err`, `unwrap_or`, `if let Ok`, and
+statement-only exhaustive `match` with `Ok(identifier)` / `Err(identifier)` block arms
+are supported. A match evaluates its scrutinee once into a generated temporary before
+branching on the tag. Equal payload types are required because Slang cannot infer an
+absent type parameter from a single-payload constructor. Mixed/nested Results and
+Results in structs or resources remain rejected. The `option` fixture locks the Slang, both targets compile, and a
 real-GPU test matches an independent host `Option` reference at workgroup boundaries.
 
 Loops are bounded by construction (D18). The only accepted form is

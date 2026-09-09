@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use quote::ToTokens;
 use syn::visit::{self, Visit};
 
 const BANNED_NAMES: &[&str] = &[
@@ -58,6 +59,32 @@ fn option_payload(ty: &syn::TypePath) -> Option<Option<&syn::Type>> {
     }
 }
 
+/// The deterministic `Result<T, T>` subset lowered to `__GustResult<T>`.
+fn result_payload(ty: &syn::TypePath) -> Option<Option<(&syn::Type, &syn::Type)>> {
+    if ty.qself.is_some() || ty.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = &ty.path.segments[0];
+    if segment.ident != "Result" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return Some(None);
+    };
+    let types = arguments
+        .args
+        .iter()
+        .filter_map(|argument| match argument {
+            syn::GenericArgument::Type(ty) => Some(ty),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match types.as_slice() {
+        [ok, err] if arguments.args.len() == 2 => Some(Some((*ok, *err))),
+        _ => Some(None),
+    }
+}
+
 /// The element type of an `RWStructuredBuffer<T>` parameter, when the type is a
 /// single-segment path with exactly one type argument.
 fn rw_buffer_element_type(ty: &syn::Type) -> Option<String> {
@@ -94,6 +121,102 @@ pub fn option_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
     match &tuple.elems[0] {
         syn::Pat::Ident(ident) => Some(ident),
         _ => None,
+    }
+}
+
+pub fn result_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
+    let syn::Pat::TupleStruct(tuple) = pattern else {
+        return None;
+    };
+    if !tuple.path.is_ident("Ok") || tuple.elems.len() != 1 {
+        return None;
+    }
+    match &tuple.elems[0] {
+        syn::Pat::Ident(ident) => Some(ident),
+        _ => None,
+    }
+}
+
+fn err_pattern(pattern: &syn::Pat) -> Option<&syn::PatIdent> {
+    let syn::Pat::TupleStruct(tuple) = pattern else {
+        return None;
+    };
+    if !tuple.path.is_ident("Err") || tuple.elems.len() != 1 {
+        return None;
+    }
+    match &tuple.elems[0] {
+        syn::Pat::Ident(ident) => Some(ident),
+        _ => None,
+    }
+}
+
+pub fn result_match_arms(
+    expression: &syn::ExprMatch,
+) -> syn::Result<(&syn::PatIdent, &syn::Block, &syn::PatIdent, &syn::Block)> {
+    let mut ok = None;
+    let mut err = None;
+    for arm in &expression.arms {
+        if !arm.attrs.is_empty() {
+            return Err(syn::Error::new_spanned(
+                &arm.attrs[0],
+                "match arm attributes are not supported",
+            ));
+        }
+        if arm.guard.is_some() {
+            return Err(syn::Error::new_spanned(
+                arm,
+                "match guards are not supported in the Rust-to-Slang subset",
+            ));
+        }
+        let syn::Expr::Block(body) = arm.body.as_ref() else {
+            return Err(syn::Error::new_spanned(
+                &arm.body,
+                "Result matches require block arms",
+            ));
+        };
+        if let Some(binding) = result_pattern(&arm.pat) {
+            if binding.mutability.is_some() || binding.by_ref.is_some() || binding.subpat.is_some()
+            {
+                return Err(syn::Error::new_spanned(
+                    binding,
+                    "Result match bindings must be plain identifiers; `mut`, `ref`, and @ bindings are not supported",
+                ));
+            }
+            if ok.replace((binding, &body.block)).is_some() {
+                return Err(syn::Error::new_spanned(
+                    &arm.pat,
+                    "Result matches require exactly one `Ok` arm and one `Err` arm",
+                ));
+            }
+        } else if let Some(binding) = err_pattern(&arm.pat) {
+            if binding.mutability.is_some() || binding.by_ref.is_some() || binding.subpat.is_some()
+            {
+                return Err(syn::Error::new_spanned(
+                    binding,
+                    "Result match bindings must be plain identifiers; `mut`, `ref`, and @ bindings are not supported",
+                ));
+            }
+            if err.replace((binding, &body.block)).is_some() {
+                return Err(syn::Error::new_spanned(
+                    &arm.pat,
+                    "Result matches require exactly one `Ok` arm and one `Err` arm",
+                ));
+            }
+        } else {
+            return Err(syn::Error::new_spanned(
+                &arm.pat,
+                "Result matches support only `Ok(identifier)` and `Err(identifier)` patterns",
+            ));
+        }
+    }
+    match (ok, err) {
+        (Some((ok_name, ok_body)), Some((err_name, err_body))) => {
+            Ok((ok_name, ok_body, err_name, err_body))
+        }
+        _ => Err(syn::Error::new_spanned(
+            expression,
+            "Result matches require exactly one `Ok` arm and one `Err` arm",
+        )),
     }
 }
 
@@ -202,9 +325,23 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
         })
         .collect();
 
+    let result_helpers = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function)
+                if matches!(&function.sig.output, syn::ReturnType::Type(_, ty) if matches!(ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some())) =>
+            {
+                Some(function.sig.ident.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+
     for item in items {
         match item {
-            syn::Item::Fn(function) => validate_function(function, &function_names)?,
+            syn::Item::Fn(function) => {
+                validate_function(function, &function_names, &result_helpers)?
+            }
             syn::Item::Struct(item) => validate_struct(item)?,
             _ => {
                 return Err(syn::Error::new_spanned(
@@ -265,13 +402,18 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
             ));
         }
     }
-    let mut visitor = RestrictedVisitor::new(HashSet::new());
+    let mut visitor = RestrictedVisitor::new(HashSet::new(), HashSet::new());
     visitor.option_forbidden = Some("GPU struct fields");
+    visitor.result_forbidden = Some("GPU struct fields");
     visitor.visit_item_struct(item);
     visitor.finish()
 }
 
-fn validate_function(function: &syn::ItemFn, function_names: &HashSet<String>) -> syn::Result<()> {
+fn validate_function(
+    function: &syn::ItemFn,
+    function_names: &HashSet<String>,
+    result_helpers: &HashSet<String>,
+) -> syn::Result<()> {
     use crate::slang::{ParameterFlavor, parameter_flavor};
 
     let is_kernel = crate::expand::kernel_options(function)?.is_some();
@@ -308,7 +450,7 @@ fn validate_function(function: &syn::ItemFn, function_names: &HashSet<String>) -
         ));
     }
 
-    let mut visitor = RestrictedVisitor::new(function_names.clone());
+    let mut visitor = RestrictedVisitor::new(function_names.clone(), result_helpers.clone());
     visitor.atomic_buffers = atomic_buffer_names(function);
     for argument in &function.sig.inputs {
         if let syn::FnArg::Typed(argument) = argument {
@@ -327,6 +469,10 @@ fn validate_function(function: &syn::ItemFn, function_names: &HashSet<String>) -
                                 .read_write_buffers
                                 .insert(name.ident.to_string(), element);
                         }
+                    }
+                    ParameterFlavor::Value if matches!(argument.ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some()) =>
+                    {
+                        visitor.result_values.insert(name.ident.to_string());
                     }
                     _ => {}
                 }
@@ -367,6 +513,8 @@ impl<'ast> Visit<'ast> for AtomicBufferUsage {
 
 struct RestrictedVisitor {
     function_names: HashSet<String>,
+    result_helpers: HashSet<String>,
+    result_values: HashSet<String>,
     resources: HashSet<String>,
     invocations: HashSet<String>,
     /// Read-write buffer parameters and their element type, for atomic receivers.
@@ -375,20 +523,25 @@ struct RestrictedVisitor {
     atomic_buffers: HashSet<String>,
     /// Set while inside a type position where `Option` has no proven layout.
     option_forbidden: Option<&'static str>,
+    /// Set while inside a type position where `Result` has no proven layout.
+    result_forbidden: Option<&'static str>,
     /// Number of enclosing `for` loops; `break`/`continue` need at least one.
     loop_depth: usize,
     error: Option<syn::Error>,
 }
 
 impl RestrictedVisitor {
-    fn new(function_names: HashSet<String>) -> Self {
+    fn new(function_names: HashSet<String>, result_helpers: HashSet<String>) -> Self {
         Self {
             function_names,
+            result_helpers,
+            result_values: HashSet::new(),
             resources: HashSet::new(),
             invocations: HashSet::new(),
             read_write_buffers: HashMap::new(),
             atomic_buffers: HashSet::new(),
             option_forbidden: None,
+            result_forbidden: None,
             loop_depth: 0,
             error: None,
         }
@@ -405,6 +558,25 @@ impl RestrictedVisitor {
 
     fn finish(self) -> syn::Result<()> {
         self.error.map_or(Ok(()), Err)
+    }
+
+    fn is_known_result(&self, expression: &syn::Expr) -> bool {
+        match expression {
+            syn::Expr::Path(path) => path
+                .path
+                .get_ident()
+                .is_some_and(|name| self.result_values.contains(&name.to_string())),
+            syn::Expr::Call(call) => match call.func.as_ref() {
+                syn::Expr::Path(path) => path
+                    .path
+                    .get_ident()
+                    .is_some_and(|name| self.result_helpers.contains(&name.to_string())),
+                _ => false,
+            },
+            syn::Expr::Paren(paren) => self.is_known_result(&paren.expr),
+            syn::Expr::Group(group) => self.is_known_result(&group.expr),
+            _ => false,
+        }
     }
 
     /// Shared checks for `break` and `continue` in statement position.
@@ -585,6 +757,33 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             visit::visit_type_path(self, ty);
             return;
         }
+        if let Some(payloads) = result_payload(ty) {
+            if let Some(context) = self.result_forbidden {
+                self.reject(
+                    ty,
+                    &format!(
+                        "`Result` is not supported in {context}: it has no proven storage layout; keep Result values in locals and helper functions"
+                    ),
+                );
+                return;
+            }
+            let supported = payloads.is_some_and(|(ok, err)| {
+                ok.to_token_stream().to_string() == err.to_token_stream().to_string()
+                    && matches!(ok, syn::Type::Path(inner) if inner.path.get_ident().is_some()
+                        && option_payload(inner).is_none()
+                        && result_payload(inner).is_none()
+                        && parameter_flavor(ok) == ParameterFlavor::Value)
+            });
+            if !supported {
+                self.reject(
+                    ty,
+                    "`Result` is supported only as `Result<T, T>` with a supported scalar or module-struct payload; mixed, nested, and resource payloads are not lowered",
+                );
+                return;
+            }
+            visit::visit_type_path(self, ty);
+            return;
+        }
         if let Some(ident) = ty.path.get_ident() {
             let name = ident.to_string();
             if UNSUPPORTED_PRIMITIVES.contains(&name.as_str()) {
@@ -605,8 +804,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         );
         if is_resource {
             let previous = self.option_forbidden.replace("resource element types");
+            let previous_result = self.result_forbidden.replace("resource element types");
             visit::visit_type_path(self, ty);
             self.option_forbidden = previous;
+            self.result_forbidden = previous_result;
             return;
         }
         visit::visit_type_path(self, ty);
@@ -657,6 +858,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     return;
                 }
                 // The callee is the prelude constructor, not a bare path value.
+                self.visit_expr(&call.args[0]);
+                return;
+            }
+            if path.path.is_ident("Ok") || path.path.is_ident("Err") {
+                if call.args.len() != 1 {
+                    self.reject(call, "`Ok` and `Err` take exactly one argument");
+                    return;
+                }
                 self.visit_expr(&call.args[0]);
                 return;
             }
@@ -718,7 +927,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         let method = call.method.to_string();
         match method.as_str() {
-            "is_some" | "is_none" if call.args.is_empty() => {
+            "is_some" | "is_none" | "is_ok" | "is_err" if call.args.is_empty() => {
                 visit::visit_expr_method_call(self, call);
                 return;
             }
@@ -726,8 +935,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 visit::visit_expr_method_call(self, call);
                 return;
             }
-            "is_some" | "is_none" => {
-                self.reject(call, "`is_some` and `is_none` take no arguments");
+            "is_some" | "is_none" | "is_ok" | "is_err" => {
+                self.reject(
+                    call,
+                    "`is_some`, `is_none`, `is_ok`, and `is_err` take no arguments",
+                );
                 return;
             }
             "unwrap_or" => {
@@ -753,7 +965,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         if !matches!(method.as_str(), "global_id" | "len") {
             self.reject(
                 call,
-                "only the compatibility built-ins `.global_id()` and `.len()` and the Option methods `.is_some()`, `.is_none()`, `.unwrap_or(default)` are supported",
+                "only the compatibility built-ins `.global_id()` and `.len()` and the Option/Result methods `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`, `.unwrap_or(default)` are supported",
             );
             return;
         }
@@ -793,8 +1005,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 path,
                 "associated constants and foreign paths are not in the Rust-to-Slang subset; reference local variables, parameters, or same-module helpers",
             );
-        } else if path.path.is_ident("Some") {
-            self.reject(path, "`Some` must be called with one argument");
+        } else if path.path.is_ident("Some")
+            || path.path.is_ident("Ok")
+            || path.path.is_ident("Err")
+        {
+            self.reject(
+                path,
+                "`Some`, `Ok`, and `Err` must be called with one argument",
+            );
         }
     }
 
@@ -803,10 +1021,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             visit::visit_expr_if(self, expression);
             return;
         };
-        let Some(name) = option_pattern(&binding.pat) else {
+        let name = option_pattern(&binding.pat).or_else(|| result_pattern(&binding.pat));
+        let Some(name) = name else {
             self.reject(
                 &binding.pat,
-                "`if let` supports only the `Some(identifier)` pattern",
+                "`if let` supports only the `Some(identifier)` or `Ok(identifier)` pattern",
             );
             return;
         };
@@ -826,11 +1045,18 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
     }
 
+    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
+        self.reject(
+            expression,
+            "Result match is supported only as a statement, not as a value",
+        );
+    }
+
     fn visit_expr_let(&mut self, expression: &'ast syn::ExprLet) {
         // Reached only outside the direct `if let` condition position.
         self.reject(
             expression,
-            "`if let` is supported only as `if let Some(x) = value { .. }`; let chains and other let positions are not",
+            "`if let` is supported only as `if let Some(x) = value { .. }` or `if let Ok(x) = value { .. }`; let chains and other let positions are not",
         );
     }
 
@@ -947,6 +1173,51 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_stmt(&mut self, statement: &'ast syn::Stmt) {
         match statement {
+            syn::Stmt::Expr(syn::Expr::Match(expression), semicolon) => {
+                let (ok_name, _, err_name, _) = match result_match_arms(expression) {
+                    Ok(arms) => arms,
+                    Err(error) => {
+                        if let Some(existing) = &mut self.error {
+                            existing.combine(error);
+                        } else {
+                            self.error = Some(error);
+                        }
+                        return;
+                    }
+                };
+                if semicolon.is_none() {
+                    self.reject(
+                        expression,
+                        "Result match is supported only as a statement; terminate it with `;`",
+                    );
+                    return;
+                }
+                if !self.is_known_result(&expression.expr) {
+                    self.reject(
+                        &expression.expr,
+                        "statement match is supported only for a known `Result<T, T>` local, parameter, or same-module helper call",
+                    );
+                    return;
+                }
+                for name in [ok_name, err_name] {
+                    let text = name.ident.to_string();
+                    if self.resources.contains(&text) || self.invocations.contains(&text) {
+                        self.reject(
+                            name,
+                            "GPU locals cannot shadow resource or dispatch-thread parameters",
+                        );
+                        return;
+                    }
+                    self.visit_pat_ident(name);
+                }
+                self.visit_expr(&expression.expr);
+                for arm in &expression.arms {
+                    let syn::Expr::Block(body) = arm.body.as_ref() else {
+                        unreachable!("result_match_arms checked block bodies");
+                    };
+                    self.visit_block(&body.block);
+                }
+            }
             syn::Stmt::Expr(syn::Expr::Call(call), _) => {
                 if let syn::Expr::Path(path) = call.func.as_ref()
                     && let Some(op) = atomic_operation_name(path)
@@ -982,13 +1253,6 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         self.reject(
             expression,
             "`break` and `continue` are supported only as statements, not as values",
-        );
-    }
-
-    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
-        self.reject(
-            expression,
-            "match is not supported in the Rust-to-Slang subset",
         );
     }
 
@@ -1033,6 +1297,24 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         visit::visit_local(self, local);
+        let (pattern, annotated_result) = match &local.pat {
+            syn::Pat::Ident(pattern) => (pattern, false),
+            syn::Pat::Type(typed) => {
+                let syn::Pat::Ident(pattern) = typed.pat.as_ref() else {
+                    return;
+                };
+                let result = matches!(typed.ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some());
+                (pattern, result)
+            }
+            _ => return,
+        };
+        let initialized_result = local
+            .init
+            .as_ref()
+            .is_some_and(|initial| self.is_known_result(&initial.expr));
+        if annotated_result || initialized_result {
+            self.result_values.insert(pattern.ident.to_string());
+        }
     }
 }
 

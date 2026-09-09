@@ -46,6 +46,192 @@ fn option_golden() {
 }
 
 #[test]
+fn result_lowering_emits_tagged_representation() {
+    let source = translate(include_str!("../../../../tests/fixtures/result.rs")).unwrap();
+    for expected in [
+        "struct __GustResult<T> { bool isOk; T value; }",
+        "__gust_ok((value / uint(2)))",
+        "__gust_err(value)",
+        "result.isOk",
+        "(!result.isOk)",
+        "__gust_unwrap_or(value, fallback)",
+        "var __gust_match_",
+    ] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+}
+
+#[test]
+fn result_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/result.rs")).unwrap();
+    assert_eq!(
+        source.replace("\r\n", "\n"),
+        format!(
+            "{}\n",
+            include_str!("../../../../tests/fixtures/result.slang")
+                .replace("\r\n", "\n")
+                .trim_end()
+        )
+    );
+}
+
+#[test]
+fn result_rejects_unproven_forms() {
+    for (source, message) in [
+        (
+            "mod bad { fn f() -> Result<uint, int> { Ok(1u32) } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "Result<T, T>",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<Option<uint>, Option<uint>> = Ok(Some(1u32)); } }",
+            "nested",
+        ),
+        (
+            "mod bad { struct State { value: Result<uint, uint> } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "struct fields",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<Result<uint, uint>>) {} }",
+            "resource element",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); let x = value.unwrap(); } }",
+            "unwrap",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
+}
+
+#[test]
+fn result_match_rejects_unproven_shapes() {
+    for (source, message) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) => { let y = x; } } } }",
+            "exactly one `Ok` arm and one `Err` arm",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) => { } Ok(y) => { } Err(e) => { } }; } }",
+            "exactly one `Ok` arm and one `Err` arm",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) if x > 0u32 => { } Err(e) => { } } } }",
+            "guards",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { #[allow(unused)] Ok(x) => { } Err(e) => { } }; } }",
+            "attributes",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { _ => { } Err(e) => { } }; } }",
+            "only `Ok(identifier)` and `Err(identifier)`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok((x, y)) => { } Err(e) => { } }; } }",
+            "only `Ok(identifier)` and `Err(identifier)`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(mut x) => { } Err(e) => { } }; } }",
+            "plain identifiers",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(ref x) => { } Err(e) => { } }; } }",
+            "plain identifiers",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x @ _) => { } Err(e) => { } }; } }",
+            "plain identifiers",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut output: RWStructuredBuffer<uint>) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(output) => { } Err(error) => { } }; } }",
+            "cannot shadow",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(id) => { } Err(error) => { } }; } }",
+            "cannot shadow",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) => x, Err(e) => e } } }",
+            "block arms",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) => { let y = x; } Err(e) => { let y = e; } } } }",
+            "terminate it with `;`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); let output = match value { Ok(x) => { x } Err(e) => { e } }; } }",
+            "statement",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { match 1u32 { Ok(x) => { } Err(e) => { } }; } }",
+            "only for a known `Result<T, T>`",
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Option<uint> = Some(1u32); match value { Ok(x) => { } Err(e) => { } }; } }",
+            "only for a known `Result<T, T>`",
+        ),
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}: {source}");
+    }
+}
+
+#[test]
+fn result_match_emits_single_scrutinee_evaluation() {
+    let source = translate(
+        "mod results {
+            fn classify(value: uint) -> Result<uint, uint> { if value > 0u32 { Ok(value) } else { Err(value) } }
+            #[kernel] fn run(id: SV_DispatchThreadID, mut output: RWStructuredBuffer<uint>) {
+                match classify(id.x) {
+                    Err(error) => { output[id.x] = error + 1u32; }
+                    Ok(value) => { output[id.x] = value + 2u32; }
+                };
+            }
+        }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("var __gust_match_0 = classify(id.x);"),
+        "{source}"
+    );
+    assert!(source.contains("if (__gust_match_0.isOk)"), "{source}");
+    assert!(
+        source.contains("var value = __gust_match_0.value;"),
+        "{source}"
+    );
+    assert!(
+        source.contains("var error = __gust_match_0.value;"),
+        "{source}"
+    );
+}
+
+#[test]
+fn result_match_accepts_a_result_parameter() {
+    let source = translate(
+        "mod results {
+            fn select(value: Result<uint, uint>) -> uint {
+                let mut output = 0u32;
+                match value {
+                    Ok(ok) => { output = ok; }
+                    Err(error) => { output = error + 1u32; }
+                };
+                output
+            }
+            #[kernel] fn run(id: SV_DispatchThreadID, mut output: RWStructuredBuffer<uint>) {
+                output[id.x] = select(Ok(id.x));
+            }
+        }",
+    )
+    .unwrap();
+    assert!(
+        source.contains("uint select(__GustResult<uint> value)"),
+        "{source}"
+    );
+    assert!(source.contains("var __gust_match_1 = value;"), "{source}");
+}
+
+#[test]
 fn loops_golden() {
     let source = translate(include_str!("../../../../tests/fixtures/loops.rs")).unwrap();
     assert_eq!(

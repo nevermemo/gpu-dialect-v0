@@ -267,11 +267,28 @@ verification, including reflection, all examples, and `spirv-val`, passed on the
 5090/Vulkan adapter. Verify: `cargo test -p gust-macros -- atomic`, `cargo test -p
 gust-wgpu --test atomics`, and `cargo xtask check-full`.
 
-## T11 — P2, authorized: standard-prelude lowering
+## T12 — P2: statement `match Result<T, T>` lowering — COMPLETE
 
-Status: not claimed; depends on T09/T10 for its tests. Goal: either lower or
-fail-close the remaining std-prelude names that still pass the validator in helper
-*signatures* (`Result<T, E>`, tuples, slices) — see T03 "Still open". Deterministic
-lowering follows the D14 `Option` precedent (Slang type, generic helpers, reviewed
+Status: complete (2026-09-09). An exhaustive, semicolon-terminated Result match
+now lowers as one evaluated `__gust_match_N` temporary plus an `if/else` over its
+tag. Exactly one `Ok(identifier)` block arm and one `Err(identifier)` block arm are
+required; arm order is irrelevant. Match expressions, missing/duplicate arms, guards,
+arm attributes, non-block arms, wildcard/nested/ref/mut patterns, Option/scalar
+matches, and `?` remain rejected. Evidence: match-shape and evaluation-once macro
+regressions, the reviewed Result golden, WGSL and SPIR-V compilation with external
+`spirv-val`, and real GPU differential results at 1/63/64/65/257 elements. Verify:
+`cargo test -p gust-macros -- match` and `cargo test -p gust-wgpu --test result`.
+
 golden, GPU test); anything not lowered gets a type-name allowlist diagnostic.
-Done means no std-prelude type name can reach `slangc` unlowered.
+## T11 — P2: standard-prelude lowering — COMPLETE
+
+Status: complete (2026-09-09). `Result<T, T>` now lowers deterministically as a
+local/helper-only `__GustResult<T>` tagged value. `Ok(value)`, `Err(value)`,
+`.is_ok()`, `.is_err()`, `.unwrap_or(fallback)`, and `if let Ok(value) = result`
+are supported. The single shared payload type is required because Slang cannot infer
+the absent error type from `Ok(value)`/`Err(value)` constructors. Mixed-payload and
+nested Results, struct/resource Results, tuples, slices, `unwrap`/`expect`,
+combinators, `match`, and `?` remain rejected. Evidence: reviewed `result` Slang
+golden, three macro regressions, WGSL compilation, and real GPU differential results
+at 1/63/64/65/257 elements. Verify: `cargo test -p gust-macros -- result` and
+`cargo test -p gust-wgpu --test result`.
