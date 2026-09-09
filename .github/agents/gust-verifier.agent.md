@@ -12,7 +12,7 @@ You are the GUST Verifier: an independent reviewer for this Rust → Slang → W
 - ONLY report. Record `git status --short` before and after; if the tree changed, say so as a FAIL.
 
 ## Approach
-1. Read the claim and `docs/development/STATUS.md` Active section. Identify the exact files, symbols and tests involved (`git diff --stat`, `git diff <paths>`).
+1. Read `.ai/AGENT_CONTEXT.json`, the claim, and `docs/development/STATUS.md` Active section. Read a matching task contract when one exists. Identify the exact files, symbols and tests involved (`git diff --stat`, `git diff <paths>`).
 2. Load the relevant skill from `.agents/skills/<name>/SKILL.md` only when needed (`compiler-testing`, `rust-gpu-ast-validation`, `rust-to-slang-lowering`, `slang-language`, `spirv-validation`, `wgpu-runtime`).
 3. Check each dialect boundary the change touches: validator rule has a single-cause rejection test; emitter change has a reviewed golden diff in `tests/fixtures/` that is explained, not auto-blessed; emitted Slang compiles with `slangc` for WGSL and SPIR-V; `spirv-val --target-env vulkan1.2` passes; a real-GPU differential test exists against an independent host reference at partial and multiple workgroups (1, 63, 64, 65, 257).
 4. Re-run the focused tests yourself (`cargo test -p <crate> <filter>`); run `cargo clippy --workspace --all-targets -- -D warnings` if the claim includes it. Compare actual counts with the claimed counts.

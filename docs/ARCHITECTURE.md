@@ -185,10 +185,11 @@ not one sequential backend path: WGSL execution and SPIR-V validation are branch
 7. Integration tests compare readback values with independent CPU references.
 
 Slang diagnostics point to generated `.slang` lines. The bridge recognizes current
-multiline and legacy locations and appends the nearest originating-kernel marker
-for an error in `kernel.slang`. Warnings, unrelated filenames, and out-of-range
-locations do not establish a kernel attribution. Exact Rust-span maps remain future
-work; current attribution is kernel-level only.
+multiline and legacy locations, writes a temporary `kernel.map.json` beside its
+owned `kernel.slang`, and appends the mapped kernel plus a stable generated construct
+label when an error line is covered. Warnings, unrelated filenames, and out-of-range
+locations do not establish attribution. Exact Rust file/line spans remain future
+work because stable proc-macro spans do not expose portable source locations.
 
 ## Deliberate non-goals for this slice
 

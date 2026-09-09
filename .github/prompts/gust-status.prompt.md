@@ -8,11 +8,12 @@ tools: [read, search, execute]
 Report the current GUST state and recommend the next claimable task. Do not edit any file.
 
 Read, in this order:
-1. [docs/development/STATUS.md](../../docs/development/STATUS.md) — only the first `## Active` section (if any) and the newest `COMPLETE` section.
-2. [docs/development/NEXT_TASKS.md](../../docs/development/NEXT_TASKS.md) — task list with status lines.
-3. [docs/development/HANDOFF.md](../../docs/development/HANDOFF.md) — the first 40 lines only.
-4. Run `git status --short` and `git log --oneline -5`.
-5. If `.ai/VALIDATION.json` exists, read its `finished_utc`, `mode`, and `passed` fields only.
+1. [.ai/AGENT_CONTEXT.json](../../.ai/AGENT_CONTEXT.json) — current document pointers.
+2. [docs/development/STATUS.md](../../docs/development/STATUS.md) — active ownership and baseline only.
+3. [docs/development/NEXT_TASKS.md](../../docs/development/NEXT_TASKS.md) — active and deferred queue only.
+4. [docs/development/HANDOFF.md](../../docs/development/HANDOFF.md) — the first 40 lines only.
+5. Run `git status --short` and `git log --oneline -5`.
+6. If `.ai/VALIDATION.json` exists, read its `finished_utc`, `mode`, and `passed` fields only.
 
 Then answer with exactly these sections:
 

@@ -10,6 +10,7 @@ Validation is layered. Choose the cheapest command that can falsify the current 
 | Reflection/layout change | `cargo xtask check-feature reflection` | `cargo xtask check-feature gpu-runtime` | `cargo xtask check-full` |
 | Loop dialect change | `cargo xtask check-feature loops` | `cargo xtask check-feature gpu-semantics` | `cargo xtask check-full` |
 | Result lowering/match | `cargo xtask check-feature result` | `cargo xtask check-feature gpu-semantics` | `cargo xtask check-full` |
+| Diagnostic sidecar maps | `cargo xtask check-feature core` | `cargo xtask check-workspace` | `cargo xtask check-full` |
 | wgpu runtime/cache/buffer change | `cargo xtask check-feature gpu-smoke` or `gpu-runtime` | `cargo xtask check-feature wgpu` | `cargo xtask check-full` |
 | GPU semantic feature | focused macro/golden test + one GPU feature test | `cargo xtask check-feature gpu-semantics` | `cargo xtask check-full` |
 | Example-only change | `cargo test -p <example> -- --ignored` | `cargo xtask check-examples` | `cargo xtask check-full` |

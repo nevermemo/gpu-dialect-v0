@@ -12,4 +12,7 @@ This directory holds human-readable operating state and workflow guidance for GU
 - `VALIDATION.md` — command tiers and evidence rules.
 - `AGENT_WORKFLOW.md` — pickup, claim, review and handoff protocol.
 
+Detailed historical handoff and completed-task reports live in `history/`.
+
 Machine-readable validation output remains in `.ai/VALIDATION.json`.
+Machine-readable agent entry points live in `.ai/AGENT_CONTEXT.json`.

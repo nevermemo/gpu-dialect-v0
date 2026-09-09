@@ -1,247 +1,29 @@
-# GUST handoff — 2026-09-08
+# GUST handoff
 
-Ownership released. The repository is ready for a local AI to resume manually.
+## Current state
 
-Latest pass (GitHub Copilot, VS Code agent, "GUST Builder" profile), ready to commit
-after `cargo xtask check-workspace`, `check-examples`, `check-lints`, `check-format`,
-and `check-full` — see STATUS:
-- Repository structure pass complete: human-readable operational markdown moved from
-  `.ai/` to `docs/development/`; `.ai/` keeps `VALIDATION.json` and `BASELINE.sha256`.
-  Added development docs for structure, validation and agent workflow. All examples
-  now have thin `src/main.rs` wrappers and `src/app.rs` implementation modules.
-- Cross-platform command surface complete: PowerShell command scripts were replaced by
-  `cargo xtask`: `check-feature <area>`, `check-fast`, `check-examples`,
-  `check-artifacts`, `check-full`, `export-artifacts`, `measure-tests`,
-  `build-slang-reflect`, `verify --mode ...`, `hook-format-rust-after-edit`, and
-  `self-test`. VS Code tasks and hooks call cargo. The native reflection helper is
-  built by `cargo xtask build-slang-reflect` and `cargo xtask check-full` refreshes
-  `.ai/VALIDATION.json`.
-- T09 complete (D18): bounded `for i in start..end` loops now lower directly to
-  Slang with the end bound evaluated once, immutable loop variables, `_` counters,
-  and unlabeled valueless `break`/`continue`. Unsupported loop shapes (`while`,
-  `loop`, `..=`, labels, non-range iterables, value-position jumps, unsuffixed
-  literal bounds) are rejected. New `loops` golden and real-GPU differential test at
-  1/63/64/65/257; loop-specific SPIR-V also passed external `spirv-val`.
-- T06 complete (D17): the wgpu runtime refuses a pipeline unless the native Slang
-  reflection helper `gust-slang-reflect` proves the descriptor's StorageV1 contract
-  (names, slots, access, workgroup size, every nested offset/size/alignment/stride)
-  against the same linked program whose WGSL it then executes. New tool
-  requirement: build the helper once with `cargo xtask build-slang-reflect` (needs
-  the Slang SDK from `VULKAN_SDK`/`SLANG_SDK` and MSVC on Windows); full xtask
-  verification does this automatically. A missing helper is an explicit
-  `HelperUnavailable` error.
-- Agent customizations under `.github/` (GUST Builder and GUST Verifier agents, a
-  `gust-status` prompt) and a PostToolUse `cargo fmt` hook (`.github/hooks`,
-  `scripts/hooks`). They are operating profiles on top of AGENTS.md, not new rules.
-Next: nothing claimed. The owner pre-authorized the ordered compiler extensions;
-T10 atomics is next. Developer-experience update: normal `cargo test --workspace`
-now skips example tests (27 ignored) and full verification runs them with `--ignored`
-before example binaries and exported SPIR-V validation.
+- Branch: `main`
+- Active: D19 sidecar diagnostic maps; see [STATUS.md](STATUS.md) and
+  [tasks/D19-sidecar-diagnostic-maps.md](tasks/D19-sidecar-diagnostic-maps.md)
+- T13 GPU active-count proof is deferred by owner. Preserve its existing worktree
+  changes; do not continue, validate, commit, or alter that work without explicit
+  direction.
+- Last committed feature: T11/T12 Result lowering and statement Result match.
 
-The next task is T10 atomics unless the owner redirects.
+## Pickup
 
-Latest DX batch adds command intelligence on top of xtask: `check-changed`, `status`,
-`doctor`, `check-workspace`, `check-format`, `check-lints`, `list-tests`,
-`explain-check`, `measure-tests --json`, `verify --record/--no-record`, and split GPU
-groups (`gpu-smoke`, `gpu-semantics`, `gpu-runtime`). Skipped by request: automatic
-STATUS mutation and example-size overrides.
+1. Read `.ai/AGENT_CONTEXT.json`.
+2. Read the active section of [STATUS.md](STATUS.md).
+3. Read [NEXT_TASKS.md](NEXT_TASKS.md) and the matching task contract.
+4. Run `git status --short --branch` and the contract's focused check.
 
-## Previous handoff — 2026-09-07
+## Evidence
 
-Earlier passes (GitHub Copilot, VS Code agent), each committed and pushed to
-`origin/main` with fmt, strict Clippy, full workspace tests, smoke examples, and an
-independent read-only review (PASS) — see STATUS for evidence:
-- `Option<T>` lowers to Slang `Optional<T>` (D14): `Some`/`None`/`is_some`/`is_none`/
-  `unwrap_or`/`if let Some(x)`; Option stays out of struct fields and buffers.
-  Reviewed golden `tests/fixtures/option.slang` and a real-GPU test.
-- T07 staged graph (D15): `gust_wgpu::StagedGraph` with checked host-declared
-  edges, ordered uploads, transfer/residency report; `examples/staged-graph`;
-  `BufferBinding::independent_length()`.
-- T08 component pool (D16): `GpuPool<T>` with GPU→GPU growth copies, retirement,
-  count buffer; `create_indirect_buffer` and `StagedGraph::dispatch_indirect`;
-  `examples/component-pool`. Contract in ENGINE_NORTH_STAR. `verify.ps1` now expects
-  seven examples and twelve SPIR-V exports. 99 workspace tests. Full
-  `verify.ps1 -Full` passed.
-Next: nothing claimed. Candidates: T06 slice 2 (layout evidence), the std-prelude
-type-name allowlist, a growth benchmark, or the culling → indirect-args proof.
+- Last release-level project record before current DX work:
+  `cargo xtask check-full` passed at 2026-09-09T12:10:13Z on NVIDIA GeForce RTX
+  5090 / Vulkan, with 13 SPIR-V artifacts validated.
+- D19 focused bridge evidence: `cargo test -p gust --lib slang` and
+  `cargo test -p xtask` pass.
 
-Earlier in the same day: the quality patch below was independently reviewed (PASS),
-`verify.ps1 -Full` passed after `3fd0aac` (four stale kernel-marker exports were
-regenerated), and the T03 type-name frontier was closed: casts limited to 32-bit
-scalar targets, non-32-bit Rust primitives rejected in every type position, `const`
-blocks rejected by name.
-
-Note on git state: the "pending signed commit at `d99d176`" wording below is
-historical. The owner committed that work as `3fd0aac` ("T06 Continued", unsigned)
-and pushed it to `origin/main` before this pass started.
-
-Earlier quality review: Codex fixed struct RHS self-aliasing/shadowing, rejected
-dropped record-update fields, and fixed current Slang diagnostic mapping. Baseline
-74 tests became 82 passing tests; fmt, strict Clippy, and both smoke examples pass.
-Worker allowance failures prevented independent review of the final quality patch
-at the time; that review has since been completed (PASS). See STATUS.
-T06 slice 1 is implemented and independently reviewed: 74 workspace tests,
-formatting, strict Clippy, vector-add, and typed-pipeline verified on 2026-09-07.
-The signed commit is pending the owner's existing signing public-key path; edits
-remain uncommitted at baseline HEAD `d99d176`. See STATUS for scope and evidence.
-No local model endpoint was configured and no account reset was used. T06 slice 1
-uses delegated Codex Builder/Verifier review under AGENTS; no local AI service was
-contacted. Read AGENTS, STATUS, NEXT_TASKS, then DECISIONS before claiming work.
-
-## What changed and why
-
-1. Re-anchored README and docs around GUST while retaining the working GPU compiler
-   crate APIs. The vision, compiler evolution, execution graph/CPU domains,
-   portability tiers, and ECS destination are clearly separate from implemented code.
-   Added decisions, ranked roadmap, agent agreement, and durable status/tasks.
-2. Reproduced and fixed implicit helper-return loss, Rust numeric-suffix emission,
-   binary precedence mismatch, and boolean versus integer `!`. Added typed local
-   declarations. The typed-pipeline helpers now use ordinary Rust tail returns.
-3. Replaced unproven positional shader struct construction with an explicit error.
-   Whole-struct buffer copies and field updates remain supported. Added early
-   diagnostics for kernel contracts, duplicate/zero workgroups, dropped attributes,
-   malformed builtin receivers, resource-shadowing, generic structs, and ref patterns.
-4. Corrected cache identity to include entrypoint. A GPU test alternates two
-   entrypoints sharing one compilation unit and verifies outputs 11/22 plus two
-   cache misses and two hits.
-5. Hardened the compiler bridge with exclusive temp-directory creation and owned
-   cleanup on all return paths (best effort if deletion is OS-blocked), both diagnostic
-   streams, and SPIR-V structure checks. Tests cover collisions, compiler failure,
-   early I/O failure, and malformed binary output.
-6. Added reviewed full Slang golden, shared shader/GPU semantics fixture, four
-   compile-fail documentation tests, and `scripts/verify.ps1`. The script stops on
-   errors and emits `.ai/VALIDATION.json`; a deliberate missing-tool check was tested.
-7. Hardened `scripts/verify.ps1` `Invoke-Checked` to capture **stderr** as well as
-   stdout (redirected to temp files) and record both in `VALIDATION.json` (`stdout`
-   plus a new `stderr` field). Previously a failing command's diagnostic — which
-   cargo/clippy emit on stderr — was missing from the JSON record, leaving only the
-   generic `"... failed (exit N)"` message. Exit-code/throw behavior and the
-   stop-on-first-failure / always-write-record contract are unchanged.
-8. Completed T05 (P1): `TargetProbe` capability records with failing-first
-   WGSL/SPIR-V tests, and kernel-level Slang→Rust diagnostic mapping — `emit_kernel`
-   writes a `// @rust kernel: {module}::{kernel}` marker per kernel, and on `slangc`
-   failure the bridge appends the nearest marker's kernel to the `CompilationFailed`
-   diagnostic. Line-level mapping is not possible on stable Rust (`proc_macro`
-   spans do not expose line numbers).
-9. Completed the T03 second slice (P0): broader name resolution and effect analysis.
-   `visit_expr_path` rejects multi-segment bare path values (associated constants /
-   foreign items such as `f32::INFINITY`, `u32::MAX`, `core::f32::consts::PI`) that
-   the translator would otherwise emit as invalid Slang; `core` added to
-   `BANNED_NAMES`; `visit_expr_try` rejects the `?` operator; `visit_expr_unsafe`
-   rejects `unsafe` blocks. `asm!` needs no new rule (syn 2.0 parses it as
-   `Expr::Macro`, already rejected). Two failing-first regression tests added.
-
-## Important files
-
-- Frontend: `crates/gust-macros/src/{slang,validate,expand,tests/regression}.rs`.
-- Bridge/contract: `crates/gust/src/{slang,descriptor,abi,lib}.rs`.
-- Cache/tests: `crates/gust-wgpu/src/lib.rs`, `tests/semantics.rs` under that crate.
-- Shared expectations: `tests/fixtures/semantics.{rs,slang}` and `numeric.{rs,slang}`.
-- Validation: `scripts/verify.ps1`, `.ai/VALIDATION.json`.
-- Documentation: README, AGENTS, `docs/`, and `.ai/`.
-- Derived output: all 8 kernels in `generated-wgpu/` regenerated via the 5 examples;
-  shader grouping and typed-pipeline source changed. Some binary/WGSL outputs remain
-  byte-identical because Slang optimizes equivalent expressions.
-- `.ai/CHANGED_FILES.md` inventories added/modified files against `BASELINE.sha256`.
-  The owner then initialized Git (2026-09-07); `main` carries 9 commits through the
-  skill-tracking work, and a Kilo worktree
-  (`.kilo/worktrees/enchanted-farmhouse`) sits on the same commit.
-
-## Verification evidence
-
-Baseline before edits: 34 passing tests. Final: **57 passing tests**, zero failed
-or ignored, formatting check and strict Clippy clean. All five runnable programs
-passed on NVIDIA GeForce RTX 5090 (native Vulkan wgpu). All eight exported SPIR-V
-modules passed external Vulkan 1.2 validation. WGSL is the execution route; SPIR-V
-validation is separate. The generated `.rs` files are readable host snippets, not
-independently compiled standalone packages.
-
-Tool versions: Rust 1.98.0; Slang 2026.13.1-1-g84792eb15;
-SPIRV-Tools v2026.3.rc1-0-gb707790a. Final local evidence is timestamped in
-VALIDATION.json (successful command records, 8 validated artifact hashes). Each check
-record now carries `stdout` and `stderr` so a failing command's diagnostic is
-preserved in the record. Debug example timings are smoke evidence, not a CPU/GPU
-performance conclusion. Browser WebGPU, DXIL, Metal, other vendors, and the
-manifest's older Rust minimum are unverified.
-
-The stderr-capture patch was then **verified end-to-end** on 2026-09-07 under
-**PowerShell 7.6.5** (`pwsh`; not Windows PowerShell 5.1): a full `-Full` run passed
-(`VALIDATION.json` `passed: true`, 19 checks exit 0). `slangc -version` now lands in
-`stderr` (record line 33); `cargo clippy`/`cargo test` runner lines are captured in
-`stderr` (lines 59, 69); the `µs` timings render correctly (UTF-8 fix confirmed — no
-more `┬╡`). **Environment note for future runs: use `pwsh` (PowerShell 7), not 5.1.**
-
-T05 (both slices) was then verified on 2026-09-07: `cargo test -p gust --lib`
-12 passed (incl. both diagnostic-mapping tests), `cargo test -p gust-macros`
-20 passed (marker goldens), `cargo test -p gust-wgpu --test semantics` 2 passed
-on RTX 5090, and a full `cargo test --workspace` re-run after the slice 2 commit:
-**66 passed, 0 failed** (62 unit/integration incl. 5 example binaries on RTX 5090,
-+ 4 compile-fail doc tests). A full `verify.ps1 -Full` (fmt/clippy/examples/SPIR-V)
-re-run after the slice 2 commit was not completed; the last full pass in
-VALIDATION.json (2026-09-07 13:54 UTC) predates the slice 2 commit.
-
-## Deferred and known risks
-
-- The owner authorized T06 slice 1 on 2026-09-07. The new explicit reflection API
-  reads Slang JSON and cross-checks nested POD fields. Runtime metadata remains
-  macro-assigned, not reflection-derived. JSON from the tested compiler omits
-  aggregate size, alignment, and buffer stride; successful cross-check reports are
-  partial evidence, not complete ABI certification. No broader ABI was introduced.
-- No rustc semantic integration, execution-graph compiler, ECS/renderer, dynamic
-  pool growth, indirect execution, CPU fallback, or custom shader instruction IR.
-- Explicit local types help but do not provide full Rust inference. Effect/evaluation
-  order, aliases, and complete identifier hygiene remain open. Shader struct literals
-  and resource-valued helpers fail explicitly until their lowering is proven.
-  Slang→Rust source maps are kernel-level only: `slangc` diagnostics now name the
-  originating Rust kernel, but line-level mapping needs non-stable spans.
-- Concurrent first cache misses can compile twice; this is not a single-flight cache.
-- Graph/engine APIs (T07/T08) remain planned, not completed.
-
-## Recommended pickup
-
-T04 (numeric semantics + struct construction) is complete: the `numeric` fixture
-locks the emitted Slang, a real-GPU test proves signed/unsigned div/mod, float→int
-casts, and struct field identity + source order, integer div/rem by a literal zero is
-diagnosed at the Rust boundary, and struct literals lower to construct-then-assign.
-See the T04 evidence block in NEXT_TASKS.md and `docs/ARCHITECTURE.md`.
-
-**T05 (P1) is complete** — slice 1 is capability probe records (`TargetProbe` +
-`probe` in `crates/gust/src/slang/mod.rs`, failing-first WGSL/SPIR-V tests);
-slice 2 is kernel-level diagnostic source mapping (`// @rust kernel:` markers,
-nearest-marker lookup appended to `CompilationFailed`).
-
-**T03 (P0) is complete (both slices)** — slice 1 is fail-closed signature/attribute/
-builtin diagnostics; slice 2 (this pass) is broader name resolution and effect
-analysis: `visit_expr_path` rejects multi-segment bare path values (associated
-constants / foreign items), `core` is banned, `visit_expr_try` rejects `?`, and
-`visit_expr_unsafe` rejects `unsafe` blocks. Failing-first tests in
-`regression_tests.rs`. With T03, T04, and T05 done, the P0 and P1 rows are complete
-except T06, whose first slice is now authorized. See STATUS for the slice 1
-implementation and verification record. The next reflection step needs actual
-compiler aggregate size/alignment/stride evidence before runtime enforcement.
-Do not bundle a wider ABI or an ECS framework (T08) into this slice.
-Remaining bounded frontier: cast target types and `const` blocks
-are still accepted by the validator and only fail at Slang compile time.
-
-Start from the workspace root:
-
-```powershell
-.\scripts\verify.ps1 -Full
-cargo test -p gust-macros regression_tests
-cargo test -p gust-wgpu --test semantics
-```
-
-Do not blindly regenerate golden expectations. Review emitted Slang and actual GPU
-results; retain the independent host expectations. Record task/file ownership in
-STATUS and exact verification results before the next handoff.
-
-## Allowance policy
-
-The owner asked Codex to reserve the final portion of either allowance window for
-stabilization and handoff near 10% remaining. Reliable starting readings were 88%
-five-hour and 29% weekly. No reset credit was used. The final account snapshot is
-added below; it is historical and does not constrain a future local AI's runtime.
-
-Final handoff checkpoint: **12% five-hour / 17% weekly remaining**. New implementation
-stopped at this natural milestone near the requested 10% reserve; only inventory,
-documentation checks, and the final response followed. No reset credit consumed.
+Historical handoff records are in
+[history/HANDOFF-2026-09-09.md](history/HANDOFF-2026-09-09.md).
