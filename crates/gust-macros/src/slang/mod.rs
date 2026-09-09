@@ -508,6 +508,7 @@ fn emit_result_match(
     let (ok_name, ok_body, err_name, err_body) = crate::validate::result_match_arms(expression)?;
     let padding = "    ".repeat(indent);
     let temporary = format!("__gust_match_{index}");
+    writeln!(output, "{padding}// @gust construct: match #{index}").unwrap();
     writeln!(
         output,
         "{padding}var {temporary} = {};",

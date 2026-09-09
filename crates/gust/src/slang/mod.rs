@@ -11,6 +11,9 @@ use std::{
 };
 
 use crate::KernelDescriptor;
+use source_map::{SourceMap, SourceMapSegment};
+
+mod source_map;
 
 static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(1);
 
@@ -125,8 +128,11 @@ fn compile_in_directory(
     target: Target,
 ) -> Result<Vec<u8>, Error> {
     let source_path = directory.0.join("kernel.slang");
+    let map_path = directory.0.join("kernel.map.json");
     let output_path = directory.0.join(format!("kernel.{}", target.extension()));
+    let source_map = SourceMap::from_slang(source);
     fs::write(&source_path, source)?;
+    fs::write(&map_path, source_map.json())?;
 
     let mut command = Command::new("slangc");
     command.arg(&source_path).args([
@@ -157,8 +163,13 @@ fn compile_in_directory(
             String::from_utf8_lossy(&output.stdout),
             output.status
         );
-        let diagnostics = map_slang_diagnostic(source, &diagnostics)
-            .map(|kernel| format!("{diagnostics}\noriginating Rust kernel: {kernel}"))
+        let diagnostics = map_slang_diagnostic(&source_map, source, &diagnostics)
+            .map(|origin| {
+                format!(
+                    "{diagnostics}\noriginating Rust kernel: {}\noriginating Rust construct: {} #{}",
+                    origin.kernel, origin.construct, origin.ordinal
+                )
+            })
             .unwrap_or(diagnostics);
         return Err(Error::CompilationFailed {
             target,
@@ -169,14 +180,20 @@ fn compile_in_directory(
     Ok(artifact)
 }
 
-/// Map a `slangc` diagnostic back to the originating Rust kernel name by
-/// looking up the nearest `// @rust kernel:` marker at or before the reported
-/// line. Kernel-level (not line-level) mapping, a stable-Rust constraint since
-/// `proc_macro` spans don't expose line numbers.
-fn map_slang_diagnostic(slang_source: &str, diagnostic: &str) -> Option<String> {
+/// Map a `slangc` diagnostic to a generated construct segment. The map is a
+/// temporary sidecar next to `kernel.slang`; kernel-marker fallback preserves
+/// attribution for unmapped declaration lines.
+fn map_slang_diagnostic(
+    source_map: &SourceMap,
+    slang_source: &str,
+    diagnostic: &str,
+) -> Option<SourceMapSegment> {
     let target_line = parse_slang_line(diagnostic)?;
     if target_line > slang_source.lines().count() {
         return None;
+    }
+    if let Some(segment) = source_map.origin_at(target_line) {
+        return Some(segment.clone());
     }
     let mut kernel = None;
     for (index, line) in slang_source.lines().enumerate() {
@@ -187,7 +204,13 @@ fn map_slang_diagnostic(slang_source: &str, diagnostic: &str) -> Option<String> 
             kernel = (!name.trim().is_empty()).then(|| name.trim().to_owned());
         }
     }
-    kernel
+    kernel.map(|kernel| SourceMapSegment {
+        start_line: target_line,
+        end_line: target_line,
+        kernel,
+        construct: "kernel",
+        ordinal: 0,
+    })
 }
 
 /// Select an error in this compilation unit, not an earlier warning or a filename
@@ -332,6 +355,11 @@ pub fn probe(target: Target) -> TargetProbe {
 mod tests {
     use super::*;
 
+    fn mapped_kernel(source: &str, diagnostic: &str) -> Option<String> {
+        map_slang_diagnostic(&SourceMap::from_slang(source), source, diagnostic)
+            .map(|origin| origin.kernel)
+    }
+
     #[test]
     fn never_claims_or_removes_an_existing_directory() {
         let owner = TemporaryDirectory::create().unwrap();
@@ -397,8 +425,59 @@ mod tests {
             "}\n",
         );
         let diagnostic = "kernel.slang(6): error: expected an expression\n";
-        let kernel = map_slang_diagnostic(source, diagnostic).expect("should map");
-        assert_eq!(kernel, "vector_add::add");
+        let origin = map_slang_diagnostic(&SourceMap::from_slang(source), source, diagnostic)
+            .expect("should map");
+        assert_eq!(origin.kernel, "vector_add::add");
+        assert_eq!(origin.construct, "local");
+    }
+
+    #[test]
+    fn sidecar_map_serializes_stable_construct_segments() {
+        let source = concat!(
+            "// @rust kernel: example::run\n",
+            "void run(uint3 id : SV_DispatchThreadID) {\n",
+            "    // @gust construct: match #0\n",
+            "    var value = id.x;\n",
+            "    if (value > 0) {\n",
+            "        value = value - 1;\n",
+            "    }\n",
+            "}\n",
+        );
+        let map = SourceMap::from_slang(source);
+        assert_eq!(
+            map.segments(),
+            vec![
+                SourceMapSegment {
+                    start_line: 3,
+                    end_line: 3,
+                    kernel: "example::run".into(),
+                    construct: "match",
+                    ordinal: 0
+                },
+                SourceMapSegment {
+                    start_line: 4,
+                    end_line: 4,
+                    kernel: "example::run".into(),
+                    construct: "local",
+                    ordinal: 1
+                },
+                SourceMapSegment {
+                    start_line: 5,
+                    end_line: 5,
+                    kernel: "example::run".into(),
+                    construct: "conditional",
+                    ordinal: 2
+                },
+                SourceMapSegment {
+                    start_line: 6,
+                    end_line: 6,
+                    kernel: "example::run".into(),
+                    construct: "assignment",
+                    ordinal: 3
+                },
+            ]
+        );
+        assert!(map.json().contains("\"construct\":\"conditional\""));
     }
 
     #[test]
@@ -411,7 +490,7 @@ mod tests {
             "}\n",
         );
         let diagnostic = "kernel.slang(3): error: expected an expression\n";
-        assert!(map_slang_diagnostic(source, diagnostic).is_none());
+        assert!(mapped_kernel(source, diagnostic).is_none());
     }
 
     #[test]
@@ -425,11 +504,7 @@ mod tests {
             "kernel.slang(2,0): error: bad expression",
             "kernel.slang(2,1,4): error: bad expression",
         ] {
-            assert_eq!(
-                map_slang_diagnostic(source, diagnostic),
-                None,
-                "{diagnostic}"
-            );
+            assert_eq!(mapped_kernel(source, diagnostic), None, "{diagnostic}");
         }
     }
 
@@ -442,7 +517,7 @@ mod tests {
             "kernel.slang(2, 7): error: bad expression",
         ] {
             assert_eq!(
-                map_slang_diagnostic(source, diagnostic).as_deref(),
+                mapped_kernel(source, diagnostic).as_deref(),
                 Some("example::first"),
                 "{diagnostic}"
             );
@@ -461,7 +536,7 @@ mod tests {
             "kernel.slang(4,3): error 30015: actual failure\n",
         );
         assert_eq!(
-            map_slang_diagnostic(source, diagnostic).as_deref(),
+            mapped_kernel(source, diagnostic).as_deref(),
             Some("example::second")
         );
     }
@@ -471,11 +546,11 @@ mod tests {
         let source = "// @rust kernel: example::first\nvoid first() {}\n// @rust kernel: example::second\nvoid second() {}\n";
         let diagnostics = "warning[W1]: warning\n --> C:\\generated\\kernel.slang:2:1\nnote: extra context\nerror[E30015]: undefined identifier\n --> C:\\generated\\kernel.slang:4:7\n";
         assert_eq!(
-            map_slang_diagnostic(source, diagnostics).as_deref(),
+            mapped_kernel(source, diagnostics).as_deref(),
             Some("example::second")
         );
         assert_eq!(
-            map_slang_diagnostic(
+            mapped_kernel(
                 source,
                 &diagnostics.replace("kernel.slang", "otherkernel.slang")
             ),
@@ -499,6 +574,10 @@ mod tests {
             assert!(diagnostics.contains("undefined_symbol"), "{diagnostics}");
             assert!(
                 diagnostics.contains("originating Rust kernel: example::broken"),
+                "{target:?}: {diagnostics}"
+            );
+            assert!(
+                diagnostics.contains("originating Rust construct: local #0"),
                 "{target:?}: {diagnostics}"
             );
         }

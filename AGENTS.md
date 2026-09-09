@@ -1,8 +1,11 @@
 # Engineering agreement
 
 GUST is the project and the Rust → Slang subsystem. Read
-`docs/development/STATUS.md`, `docs/development/NEXT_TASKS.md`, and
-`docs/development/HANDOFF.md` before editing. Consult
+`.ai/AGENT_CONTEXT.json`, `docs/development/STATUS.md`,
+`docs/development/NEXT_TASKS.md`, and `docs/development/HANDOFF.md` before editing.
+Read the matching `docs/development/tasks/` contract before implementation;
+consult `docs/development/history/` only when active state leaves an invariant
+unresolved. Consult
 `docs/development/REPO_STRUCTURE.md`, `docs/development/VALIDATION.md`,
 `docs/development/AGENT_WORKFLOW.md`, `docs/DECISIONS.md`, and
 `docs/ARCHITECTURE.md` for constraints. Design aspirations are not implemented
@@ -110,6 +113,7 @@ Do not wait for Codex during normal local swarm work.
 - Prefer a diagnostic over silently translating unsupported Rust semantics.
 - Do not rename crates, initialize Git, remove working examples, add dependencies,
   or expand architecture merely to align branding. Explain necessary changes.
+- Do not create or switch Git branches unless the owner explicitly requests one.
 
 ## Workflow and verification
 

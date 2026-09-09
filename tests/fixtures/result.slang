@@ -56,6 +56,7 @@ void gpu_results_run(uint3 id : SV_DispatchThreadID)
         }
         flags[i] = (flag + score(result, uint(3)));
         var total = __gust_unwrap_or(result, uint(7));
+        // @gust construct: match #7
         var __gust_match_7 = result;
         if (__gust_match_7.isOk)
         {

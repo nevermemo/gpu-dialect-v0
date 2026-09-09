@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "purpose": "Machine-readable entry points for GUST agents. Human narrative remains under docs/development.",
+  "current_status": "docs/development/STATUS.md",
+  "active_queue": "docs/development/NEXT_TASKS.md",
+  "task_contracts": "docs/development/tasks/README.md",
+  "diagnostic_map_contract": "docs/development/tasks/D19-sidecar-diagnostic-maps.md",
+  "completed_task_index": "docs/development/history/COMPLETED_TASKS.md",
+  "status_history": "docs/development/history/STATUS-2026-09-09.md",
+  "task_history": "docs/development/history/NEXT_TASKS-2026-09-09.md",
+  "handoff": "docs/development/HANDOFF.md",
+  "handoff_history": "docs/development/history/HANDOFF-2026-09-09.md",
+  "validation_strategy": "docs/development/VALIDATION.md",
+  "architecture": "docs/ARCHITECTURE.md",
+  "decisions": "docs/DECISIONS.md",
+  "agent_workflow": "docs/development/AGENT_WORKFLOW.md",
+  "rules": [
+    "Read current_status and active_queue before editing.",
+    "Read a matching task contract before implementing a listed task.",
+    "Consult completed_task_index and archives only when active docs leave an invariant unresolved.",
+    "Do not activate deferred work without an explicit owner claim in current_status."
+  ]
+}

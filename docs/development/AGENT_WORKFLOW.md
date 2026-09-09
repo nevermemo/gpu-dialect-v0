@@ -4,11 +4,12 @@ Agents and humans share the same source of truth. Do not use chat history as pro
 
 ## Pickup sequence
 
-1. Read `docs/development/STATUS.md` active section.
+1. Read `.ai/AGENT_CONTEXT.json`, then `docs/development/STATUS.md` active section.
 2. Read `docs/development/NEXT_TASKS.md` for claimable work.
 3. Read `docs/development/HANDOFF.md` for compact recent context.
 4. Read the matching `docs/development/tasks/` contract when one exists; consult
-	`history/` only when current state or an invariant remains unresolved.
+	`history/` only when current state or an invariant remains unresolved. Do not
+	continue a deferred task until it is explicitly claimed in `STATUS.md`.
 5. Check `docs/DECISIONS.md` and `docs/ARCHITECTURE.md` before touching compiler, runtime or engine boundaries.
 6. Run `git status --short --branch` and one focused baseline command.
 
