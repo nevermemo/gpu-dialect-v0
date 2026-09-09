@@ -309,6 +309,7 @@ fn validate_function(function: &syn::ItemFn, function_names: &HashSet<String>) -
     }
 
     let mut visitor = RestrictedVisitor::new(function_names.clone());
+    visitor.atomic_buffers = atomic_buffer_names(function);
     for argument in &function.sig.inputs {
         if let syn::FnArg::Typed(argument) = argument {
             if let syn::Pat::Ident(name) = argument.pat.as_ref() {
@@ -336,12 +337,42 @@ fn validate_function(function: &syn::ItemFn, function_names: &HashSet<String>) -
     visitor.finish()
 }
 
+fn atomic_buffer_names(function: &syn::ItemFn) -> HashSet<String> {
+    let mut usage = AtomicBufferUsage(HashSet::new());
+    usage.visit_item_fn(function);
+    usage.0
+}
+
+struct AtomicBufferUsage(HashSet<String>);
+
+impl<'ast> Visit<'ast> for AtomicBufferUsage {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        let Some(_) = (match call.func.as_ref() {
+            syn::Expr::Path(path) => atomic_operation_name(path),
+            _ => None,
+        }) else {
+            visit::visit_expr_call(self, call);
+            return;
+        };
+        if let Some(syn::Expr::Reference(reference)) = call.args.first()
+            && let syn::Expr::Index(index) = reference.expr.as_ref()
+            && let syn::Expr::Path(path) = index.expr.as_ref()
+            && let Some(name) = path.path.get_ident()
+        {
+            self.0.insert(name.to_string());
+        }
+        visit::visit_expr_call(self, call);
+    }
+}
+
 struct RestrictedVisitor {
     function_names: HashSet<String>,
     resources: HashSet<String>,
     invocations: HashSet<String>,
     /// Read-write buffer parameters and their element type, for atomic receivers.
     read_write_buffers: HashMap<String, String>,
+    /// Buffer parameters used by an atomic operation in this function.
+    atomic_buffers: HashSet<String>,
     /// Set while inside a type position where `Option` has no proven layout.
     option_forbidden: Option<&'static str>,
     /// Number of enclosing `for` loops; `break`/`continue` need at least one.
@@ -356,6 +387,7 @@ impl RestrictedVisitor {
             resources: HashSet::new(),
             invocations: HashSet::new(),
             read_write_buffers: HashMap::new(),
+            atomic_buffers: HashSet::new(),
             option_forbidden: None,
             loop_depth: 0,
             error: None,
@@ -629,7 +661,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 return;
             }
             if let Some(op) = atomic_operation_name(path) {
-                self.validate_atomic(op, call);
+                self.reject(
+                    call,
+                    &format!("`{op}` is supported only as a statement, not as a value"),
+                );
                 return;
             }
         }
@@ -648,6 +683,20 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_index(&mut self, index: &'ast syn::ExprIndex) {
+        if let syn::Expr::Path(path) = index.expr.as_ref()
+            && let Some(name) = path.path.get_ident()
+            && self.atomic_buffers.contains(&name.to_string())
+        {
+            self.reject(
+                index,
+                "atomic buffer elements cannot be read or written directly; use an atomic operation",
+            );
+            return;
+        }
+        visit::visit_expr_index(self, index);
     }
 
     fn visit_expr_binary(&mut self, binary: &'ast syn::ExprBinary) {
@@ -898,6 +947,15 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_stmt(&mut self, statement: &'ast syn::Stmt) {
         match statement {
+            syn::Stmt::Expr(syn::Expr::Call(call), _) => {
+                if let syn::Expr::Path(path) = call.func.as_ref()
+                    && let Some(op) = atomic_operation_name(path)
+                {
+                    self.validate_atomic(op, call);
+                    return;
+                }
+                visit::visit_stmt(self, statement);
+            }
             syn::Stmt::Expr(syn::Expr::Break(jump), _) => {
                 if let Some(value) = &jump.expr {
                     self.reject(value, "`break` with a value is not supported");

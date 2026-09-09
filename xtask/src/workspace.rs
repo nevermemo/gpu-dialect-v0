@@ -1,6 +1,7 @@
 use std::{env, path::PathBuf, process::Command};
 
 pub(crate) const EXAMPLES: &[&str] = &[
+    "atomic-counter",
     "vector-add",
     "polynomial",
     "signal-pipeline",
@@ -13,6 +14,7 @@ pub(crate) const EXAMPLES: &[&str] = &[
 pub(crate) const SMOKE_EXAMPLES: &[&str] = &["vector-add", "typed-pipeline"];
 
 pub(crate) const WORKSPACE_EXCLUDES: &[&str] = &[
+    "atomic-counter",
     "vector-add",
     "polynomial",
     "signal-pipeline",

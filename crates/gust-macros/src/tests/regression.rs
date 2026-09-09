@@ -906,3 +906,75 @@ fn atomic_ops_reject_unsupported_element_types() {
         assert!(error.to_string().contains(message), "{error}: {source}");
     }
 }
+
+#[test]
+fn atomic_ops_are_rejected_in_expression_position() {
+    for source in [
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_add(&mut counter[0], 1u32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { if atomic_compare_exchange(&mut counter[0], 0u32, 1u32) { counter[0] = 2u32; } } }",
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(
+            error.to_string().contains("only as a statement"),
+            "{error}: {source}"
+        );
+    }
+}
+
+#[test]
+fn atomic_buffers_reject_ordinary_index_access() {
+    for source in [
+        "mod bad {
+            #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>, mut output: RWStructuredBuffer<uint>) {
+                atomic_add(&mut counter[0], 1u32);
+                output[id.x] = counter[0];
+            }
+        }",
+        "mod bad {
+            #[kernel] fn run(_id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+                atomic_add(&mut counter[0], 1u32);
+                counter[0] = 0u32;
+            }
+        }",
+    ] {
+        let error = translate(source).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("atomic buffer elements cannot be read or written directly"),
+            "{error}: {source}"
+        );
+    }
+}
+
+#[test]
+fn atomic_usage_is_isolated_to_the_emitted_kernel() {
+    let source = "mod atomics {
+        #[kernel] fn run(_id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) {
+            atomic_add(&mut counter[0], 1u32);
+        }
+        #[kernel] fn reader(id: SV_DispatchThreadID, counter: StructuredBuffer<uint>, mut output: RWStructuredBuffer<uint>) {
+            output[id.x] = counter[id.x];
+        }
+    }";
+    let module: syn::ItemMod = syn::parse_str(source).unwrap();
+    validate_module(&module).unwrap();
+    let reader = module
+        .content
+        .as_ref()
+        .unwrap()
+        .1
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == "reader" => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    let options = kernel_options(reader).unwrap().unwrap();
+    let emitted = emit_kernel(&module, reader, options).unwrap();
+    assert!(
+        emitted.contains("StructuredBuffer<uint> counter;"),
+        "{emitted}"
+    );
+    assert!(!emitted.contains("Atomic<uint> counter"), "{emitted}");
+}

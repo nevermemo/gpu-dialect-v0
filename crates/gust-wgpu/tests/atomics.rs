@@ -100,13 +100,14 @@ fn atomic_exchange_produces_valid_value() {
     );
 }
 
-/// 257 threads each attempt `atomic_compare_exchange(counter, 0, id.x)`.
-/// Only threads that see 0 will succeed. Final value must be in [0, 256].
+/// 257 threads each attempt to replace the initial sentinel value. One succeeds,
+/// so a no-op implementation cannot pass.
 #[test]
-fn atomic_compare_exchange_produces_valid_value() {
+fn atomic_compare_exchange_contention_changes_the_initial_value() {
     let device =
         HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
-    let counter = device.create_typed_buffer("atomics cas", &[0u32; 1], GpuBufferAccess::ReadWrite);
+    let counter =
+        device.create_typed_buffer("atomics cas", &[999u32; 1], GpuBufferAccess::ReadWrite);
     device
         .dispatch_buffers(
             &atomics::run_cas::DESCRIPTOR,
@@ -117,9 +118,63 @@ fn atomic_compare_exchange_produces_valid_value() {
     let actual = device.read_typed_buffer(&counter).unwrap();
     let value = actual[0];
     assert!(
-        value < INVOCATIONS,
-        "atomic_compare_exchange must produce a value in [0, {INVOCATIONS}), got {value}"
+        (1..=INVOCATIONS).contains(&value),
+        "atomic_compare_exchange must replace the initial sentinel with a thread value in [1, {INVOCATIONS}], got {value}"
     );
+}
+
+#[test]
+fn atomic_compare_exchange_has_deterministic_success_and_failure_cases() {
+    let device =
+        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let success = device.create_typed_buffer(
+        "atomics cas success",
+        &[7u32; 1],
+        GpuBufferAccess::ReadWrite,
+    );
+    device
+        .dispatch_buffers(
+            &atomics::run_cas_success::DESCRIPTOR,
+            1,
+            &[BufferBinding::read_write(&success).independent_length()],
+        )
+        .unwrap();
+    assert_eq!(device.read_typed_buffer(&success).unwrap(), vec![11u32]);
+
+    let failure = device.create_typed_buffer(
+        "atomics cas failure",
+        &[7u32; 1],
+        GpuBufferAccess::ReadWrite,
+    );
+    device
+        .dispatch_buffers(
+            &atomics::run_cas_failure::DESCRIPTOR,
+            1,
+            &[BufferBinding::read_write(&failure).independent_length()],
+        )
+        .unwrap();
+    assert_eq!(device.read_typed_buffer(&failure).unwrap(), vec![7u32]);
+}
+
+#[test]
+fn signed_atomic_add_exchange_and_compare_exchange_execute() {
+    let device =
+        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    let counter =
+        device.create_typed_buffer("signed atomics", &[-7i32; 1], GpuBufferAccess::ReadWrite);
+    let binding = [BufferBinding::read_write(&counter).independent_length()];
+    device
+        .dispatch_buffers(&atomics::run_signed_add::DESCRIPTOR, 1, &binding)
+        .unwrap();
+    assert_eq!(device.read_typed_buffer(&counter).unwrap(), vec![-4i32]);
+    device
+        .dispatch_buffers(&atomics::run_signed_exchange::DESCRIPTOR, 1, &binding)
+        .unwrap();
+    assert_eq!(device.read_typed_buffer(&counter).unwrap(), vec![-5i32]);
+    device
+        .dispatch_buffers(&atomics::run_signed_cas::DESCRIPTOR, 1, &binding)
+        .unwrap();
+    assert_eq!(device.read_typed_buffer(&counter).unwrap(), vec![11i32]);
 }
 
 #[test]

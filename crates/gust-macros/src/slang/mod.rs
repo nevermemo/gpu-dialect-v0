@@ -71,7 +71,7 @@ pub fn emit_kernel(
     // Buffers used with atomic operations need `Atomic<T>` element types in Slang
     // so WGSL emits `array<atomic<T>>` storage.
     let mut atomic = AtomicUsage(std::collections::HashSet::new());
-    atomic.visit_item_mod(module);
+    atomic.visit_item_fn(kernel);
 
     for item in items {
         if let syn::Item::Struct(item) = item {

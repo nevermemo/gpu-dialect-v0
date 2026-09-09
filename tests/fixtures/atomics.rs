@@ -52,6 +52,46 @@ mod atomics {
         id: SV_DispatchThreadID,
         mut counter: RWStructuredBuffer<uint>,
     ) {
-        atomic_compare_exchange(&mut counter[0], 0u32, id.x);
+        atomic_compare_exchange(&mut counter[0], 999u32, id.x + 1u32);
+    }
+
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn run_cas_success(
+        _id: SV_DispatchThreadID,
+        mut counter: RWStructuredBuffer<uint>,
+    ) {
+        atomic_compare_exchange(&mut counter[0], 7u32, 11u32);
+    }
+
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn run_cas_failure(
+        _id: SV_DispatchThreadID,
+        mut counter: RWStructuredBuffer<uint>,
+    ) {
+        atomic_compare_exchange(&mut counter[0], 0u32, 11u32);
+    }
+
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn run_signed_add(
+        _id: SV_DispatchThreadID,
+        mut counter: RWStructuredBuffer<int>,
+    ) {
+        atomic_add(&mut counter[0], 3i32);
+    }
+
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn run_signed_exchange(
+        _id: SV_DispatchThreadID,
+        mut counter: RWStructuredBuffer<int>,
+    ) {
+        atomic_exchange(&mut counter[0], -5i32);
+    }
+
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn run_signed_cas(
+        _id: SV_DispatchThreadID,
+        mut counter: RWStructuredBuffer<int>,
+    ) {
+        atomic_compare_exchange(&mut counter[0], -5i32, 11i32);
     }
 }
