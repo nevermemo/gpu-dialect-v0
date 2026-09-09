@@ -173,9 +173,9 @@ fn verify_inner(
             .filter(|path| path.extension().is_some_and(|extension| extension == "spv"))
             .collect::<Vec<_>>();
         spv.sort();
-        if spv.len() != 12 {
+        if spv.len() != 13 {
             return Err(format!(
-                "Expected 12 exported kernels, found {}; update this check deliberately for new examples.",
+                "Expected 13 exported kernels, found {}; update this check deliberately for new examples.",
                 spv.len()
             ));
         }

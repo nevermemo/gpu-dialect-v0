@@ -252,16 +252,20 @@ Verify: `cargo test -p gust-macros loops` and `cargo test -p gust-wgpu
 
 ## T10 — P2: atomics on `RWStructuredBuffer<u32|i32>` — COMPLETE
 
-Status: complete (2026-09-08). Delivered: `atomic_add`, `atomic_min`, `atomic_max`,
-`atomic_exchange`, `atomic_compare_exchange` on `RWStructuredBuffer<u32>` and
-`RWStructuredBuffer<i32>` (min/max unsigned-only), lowered to Slang `atomicAdd`,
-`atomicMin`, `atomicMax`, `atomicExchange`, `atomicCompareExchange` methods. Relaxed/
-default memory ordering. Rejected: read-only buffers, float elements, unsupported
-types, local variables, non-element receivers, wrong arity, signed min/max. Evidence:
-14 macro regression tests, reviewed golden fixture, 6 GPU tests including 257-thread
-contention (exactly 257 for `atomic_add`), WGSL/SPIR-V compilation, reflection gate
-enforced. Verify: `cargo test -p gust-macros -- atomic` and `cargo test -p
-gust-wgpu --test atomics`.
+Status: complete (review fixes, 2026-09-09). Delivered: statement-only `atomic_add`,
+`atomic_min`, `atomic_max`, `atomic_exchange`, and `atomic_compare_exchange` on
+`RWStructuredBuffer<u32>`; `atomic_add`, `atomic_exchange`, and
+`atomic_compare_exchange` on `RWStructuredBuffer<i32>`; signed min/max remain
+rejected. The emitter discovers atomic buffers per emitted kernel, so sibling kernels
+sharing a parameter name retain their own element type. Mixed ordinary indexed
+read/write access to an atomic buffer is rejected until explicit atomic load/store
+semantics are specified. Evidence: 17 macro regressions, 8 GPU tests including exact
+257-thread add contention, deterministic CAS success/failure and signed execution;
+the registered `atomic-counter` example dispatches one-thread workgroups through an
+independent-length buffer and exports the 13th validated SPIR-V artifact. Full
+verification, including reflection, all examples, and `spirv-val`, passed on the RTX
+5090/Vulkan adapter. Verify: `cargo test -p gust-macros -- atomic`, `cargo test -p
+gust-wgpu --test atomics`, and `cargo xtask check-full`.
 
 ## T11 — P2, authorized: standard-prelude lowering
 

@@ -1,19 +1,18 @@
 # Current status
 
-## T10 — atomics on `RWStructuredBuffer` — COMPLETE (2026-09-08)
+## T10 — atomics review fixes — COMPLETE (2026-09-09)
 
-Owner: Kilo (local agent) at the user's explicit request. Scope: implement all
-five atomic operations (`atomic_add`, `atomic_min`, `atomic_max`,
-`atomic_exchange`, `atomic_compare_exchange`) on `RWStructuredBuffer<u32>` and
-`RWStructuredBuffer<i32>`, through the direct syn-AST → Slang pipeline, with real
-GPU contention tests. No custom IR, no CPU fallback, relaxed/default memory
-ordering, unsupported forms rejected with diagnostics.
+Ownership released. GitHub Copilot (GUST Builder) corrected the atomic boundary
+issues found in independent review: statement-only intrinsic enforcement,
+per-kernel buffer discovery, explicit mixed-access rejection, atomic-counter
+example repair, and stronger CAS evidence. No custom IR, no CPU fallback,
+relaxed/default memory ordering.
 
 ```text
-owner: Kilo
-claim: T10 all atomics on RWStructuredBuffer<u32/i32> — validator, emitter, golden, GPU contention tests, compile-fail coverage
+owner: none
+claim: none
 next_focused_check: cargo xtask check-fast
-full_check_needed_before_commit: yes
+full_check_needed_before_commit: no
 ```
 
 File ownership: `crates/gust-macros/src/validate/mod.rs`,
@@ -62,41 +61,44 @@ Rejected with diagnostics (not silently lowered):
 - Any atomic with a non-element receiver (e.g. `&mut counter` without an index).
 - Any atomic with the wrong arity.
 - `atomic_min`/`atomic_max` on signed elements (`i32`/`int`).
+- Ordinary indexed reads or writes of a buffer used atomically in the same
+  kernel. Atomic load/store semantics are not part of this slice.
 
 ### Files changed
 
-- `crates/gust-macros/src/validate/mod.rs`: generalized `ATOMIC_OPERATIONS` table,
-  `atomic_element_allowed`, `check_atomic_call`, `visit_expr_call` atomic branch.
-- `crates/gust-macros/src/slang/mod.rs`: generalized `atomic_slang_method`,
-  `is_atomic_call`, `atomic_op_name`, `emit_expression` atomic branch.
-- `crates/gust-macros/src/tests/regression.rs`: 14 atomic regression tests
-  (accept/reject/golden).
-- `crates/gust/src/runtime.rs`: generic shadow stubs for all five atomic ops.
-- `crates/gust/src/lib.rs`: prelude exports for all five atomic ops.
-- `tests/fixtures/atomics.rs`: five kernels (`run`, `run_min`, `run_max`,
-  `run_exchange`, `run_cas`).
-- `tests/fixtures/atomics.slang`: reviewed golden (unchanged from first slice).
-- `crates/gust-wgpu/tests/atomics.rs`: six GPU tests including 257-thread
-  contention for `atomic_add`, `atomic_min`, `atomic_max`, `atomic_exchange`,
-  `atomic_compare_exchange`, and WGSL compilation.
+- `crates/gust-macros/src/validate/mod.rs`: accepts atomics only as direct
+  statements and rejects ordinary indexed reads/writes of atomic buffers.
+- `crates/gust-macros/src/slang/mod.rs`: discovers atomic buffer use from the
+  individual emitted kernel rather than the enclosing module.
+- `crates/gust-macros/src/tests/regression.rs`: 17 atomic regressions, including
+  expression-position rejection, mixed read/write rejection, and sibling-kernel
+  isolation.
+- `tests/fixtures/atomics.rs` and `crates/gust-wgpu/tests/atomics.rs`: deterministic
+  CAS success/failure, non-noop CAS contention, and signed add/exchange/CAS tests.
+- `examples/atomic-counter/src/main.rs`, `xtask/src/workspace.rs`, and
+  `xtask/src/verify.rs`: fixed independent-length one-thread dispatch, registered
+  the example, exported atomic artifacts, and raised the expected export count to 13.
 
 ### Verification
 
-- `cargo test -p gust-macros -- atomic`: **14 passed** (all atomic regression tests).
-- `cargo test -p gust-wgpu --test atomics`: **6 passed** (all GPU tests including
-  257-thread contention producing exactly 257 for `atomic_add`).
-- `cargo clippy --workspace --all-targets`: **0 warnings**.
-- `cargo fmt --all -- --check`: **exit 0**.
-- `cargo xtask check-fast`: macro tests **45 passed**, core tests **18 passed**,
-  fmt/clippy clean.
-- GPU: NVIDIA GeForce RTX 5090 / Vulkan, Slang 2026.13.1-1-g84792eb15.
-- Reflection/runtime ABI gate still enforced (buffer declared as `Atomic<uint>`
-  in Slang, cross-checked by native helper before pipeline creation).
+- `cargo test -p gust-macros -- atomic`: **17 passed**.
+- `cargo test -p gust-wgpu --test atomics`: **8 passed**, including exact
+  257-thread add contention, deterministic CAS success/failure, sentinel-replacing
+  CAS contention, and signed add/exchange/CAS execution.
+- `cargo run -p atomic-counter`: passed with GPU readback `[257]` on NVIDIA
+  GeForce RTX 5090 / Vulkan.
+- `cargo xtask check-full`: passed: 48 macro tests, 8 atomic GPU tests, all ignored
+  example tests (including 3 atomic-counter tests), every example binary, and 13
+  SPIR-V exports validated with `spirv-val` for Vulkan 1.2.
+- Independent review: GUST Verifier **PASS WITH NOTES**; the sole direct-write
+  regression gap was added and passed after review.
 
 ### Remaining T10 scope
 
-None. All five atomic operations on `u32` and `i32` are implemented, tested, and
-proven end to end. Future extensions (float atomics, `atomic_sub`,
+None. The allowed operations are implemented and proven end to end: all five on
+`u32`, and `atomic_add`/`atomic_exchange`/`atomic_compare_exchange` on `i32`.
+`atomic_min`/`atomic_max` remain deliberately rejected for `i32`. Future extensions
+(float atomics, signed min/max if target evidence supports them, `atomic_sub`,
 `atomic_and`/`atomic_or`/`atomic_xor`, ordering qualifiers) require explicit
 contracts and are out of scope.
 
