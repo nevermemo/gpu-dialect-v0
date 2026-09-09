@@ -24,9 +24,9 @@ and reviewed generated artifacts. No engine implementation claimed.
 
 Target probes, kernel-level diagnostic attribution, bounded field-aware struct
 creation, local/helper `Option<T>` lowering, and exclusive-range loops are implemented
-(T04–T06, T09). Reflection gates every StorageV1 pipeline through the native helper
-(D17, T06). Still pending: atomics (T10, awaiting plan approval), remaining standard
-types (T11), fine-grained source maps and small vector/math families. The
+(T04–T06, T09–T11). Reflection gates every StorageV1 pipeline through the native
+helper (D17, T06). Still pending: fine-grained source maps and small vector/math
+families. The
 broad uniforms/textures/samplers, parameter groups, and specialized layouts must
 extend that reflected evidence before entering the runtime contract. Any artifact
 disk cache needs source, compiler identity, options, and dependencies in its key.

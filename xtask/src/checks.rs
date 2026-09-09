@@ -29,6 +29,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 "semantics",
                 "numeric",
                 "option",
+                "result",
                 "loops",
                 "struct_assignment",
             ] {

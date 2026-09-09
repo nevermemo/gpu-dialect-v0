@@ -1,5 +1,55 @@
 # Current status
 
+## T12 — statement `match Result<T, T>` lowering — COMPLETE (2026-09-09)
+
+Ownership released. GitHub Copilot (GUST Builder) lowered an exhaustive, statement-only
+two-arm `match` over `Result<T, T>` using `Ok(identifier)` and `Err(identifier)`
+block arms. Value matches, guards, wildcard/nested patterns, Option/scalar matches,
+and `?` remain rejected.
+
+```text
+owner: none
+claim: none
+next_focused_check: cargo xtask check-fast
+full_check_needed_before_commit: no
+```
+
+Validation: `cargo test -p gust-macros -- match` passed (3); `cargo test -p
+gust-macros -- result` passed (6); `cargo test -p gust-wgpu --test result` passed
+(4), including real GPU Result match behavior at 1/63/64/65/257 elements, WGSL,
+SPIR-V, and external `spirv-val`. `cargo xtask check-full` passed at
+2026-09-09T12:10:13Z.
+
+Independent review: GUST Verifier **PASS WITH NOTES** after the final regression
+additions; no functional findings. GPU evidence is NVIDIA/Vulkan-only, with other
+backends and vendors still unverified.
+
+## T11 — deterministic `Result<T, T>` lowering — COMPLETE (2026-09-09)
+
+Ownership released. GitHub Copilot (GUST Builder) lowered local/helper `Result<T, T>`
+values deterministically through direct syn AST to Slang, with explicit constructors,
+inspection, fallback, and `if let` control flow. Tuples and slices remain rejected
+until they have independent contracts and ABI evidence.
+
+```text
+owner: none
+claim: none
+next_focused_check: cargo xtask check-fast
+full_check_needed_before_commit: no
+```
+
+Validation: `cargo test -p gust-macros -- result` passed (3); `cargo test -p
+gust-wgpu --test result` passed (4), including WGSL, actual Result SPIR-V plus
+external `spirv-val`, combined Option/Result overload compilation, and real GPU
+readback at 1/63/64/65/257 on NVIDIA GeForce RTX 5090 / Vulkan. `cargo xtask
+check-full` passed at 2026-09-09T11:28:35Z. Result payloads are constrained to
+`Result<T, T>` because Slang cannot infer an absent generic error type from a
+single-payload `Ok` or `Err` constructor.
+
+Independent review: GUST Verifier **PASS WITH NOTES**. The reviewed tree remained
+unchanged; GPU evidence is NVIDIA/Vulkan-only, with other backends and vendors still
+unverified.
+
 ## T10 — atomics review fixes — COMPLETE (2026-09-09)
 
 Ownership released. GitHub Copilot (GUST Builder) corrected the atomic boundary
