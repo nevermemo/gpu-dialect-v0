@@ -31,6 +31,7 @@ Human-readable operating state lives in `docs/development/`:
 
 `.ai/` is reserved for machine-readable/generated state such as `VALIDATION.json`,
 `BASELINE.sha256`, and `AGENT_CONTEXT.json`. Do not add narrative markdown there.
+`VALIDATION.json` is local and untracked because it records one machine's run.
 
 ## Crates
 

@@ -16,6 +16,11 @@ pub(crate) fn write_validation(
     artifacts: &[ArtifactRecord],
 ) -> Result<(), String> {
     let path = root.join(".ai/VALIDATION.json");
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default();
+    let prefixes = redaction_prefixes(&root.display().to_string(), &home);
+    let redacted = |text: &str| redact(text, &prefixes);
     let mut json = String::new();
     json.push_str("{\n");
     json.push_str("  \"schema_version\": 1,\n");
@@ -27,7 +32,10 @@ pub(crate) fn write_validation(
     json.push_str(&format!("  \"mode\": {},\n", json_string(mode.as_str())));
     json.push_str(&format!("  \"passed\": {},\n", failure.is_none()));
     match failure {
-        Some(error) => json.push_str(&format!("  \"failure\": {},\n", json_string(error))),
+        Some(error) => json.push_str(&format!(
+            "  \"failure\": {},\n",
+            json_string(&redacted(error))
+        )),
         None => json.push_str("  \"failure\": null,\n"),
     }
     json.push_str("  \"scope\": \"Debug native Vulkan wgpu execution of Slang-generated WGSL; SPIR-V export validation is separate.\",\n");
@@ -47,7 +55,7 @@ pub(crate) fn write_validation(
             if arg_index != 0 {
                 json.push_str(", ");
             }
-            json.push_str(&json_string(arg));
+            json.push_str(&json_string(&redacted(arg)));
         }
         json.push_str("],\n");
         match check.exit_code {
@@ -56,11 +64,11 @@ pub(crate) fn write_validation(
         }
         json.push_str(&format!(
             "      \"stdout\": {},\n",
-            json_string(&check.stdout)
+            json_string(&redacted(&check.stdout))
         ));
         json.push_str(&format!(
             "      \"stderr\": {}\n",
-            json_string(&check.stderr)
+            json_string(&redacted(&check.stderr))
         ));
         json.push_str("    }");
     }
@@ -73,7 +81,7 @@ pub(crate) fn write_validation(
         json.push_str("    {\n");
         json.push_str(&format!(
             "      \"file\": {},\n",
-            json_string(&artifact.file)
+            json_string(&redacted(&artifact.file))
         ));
         json.push_str(&format!(
             "      \"sha256\": {},\n",
@@ -86,6 +94,43 @@ pub(crate) fn write_validation(
     json.push_str("\n  ]\n}\n");
     fs::write(path, json).map_err(|error| error.to_string())
 }
+
+/// Machine-specific path prefixes and their placeholders, longest first. Command output
+/// spells the workspace root with backslashes, forward slashes, the `\\?\` verbatim
+/// prefix, and doubled backslashes, so each spelling gets its own entry.
+fn redaction_prefixes(root: &str, home: &str) -> Vec<(String, &'static str)> {
+    let mut prefixes = Vec::new();
+    for (path, placeholder) in [(root, "<workspace>"), (home, "~")] {
+        let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+        if path.is_empty() {
+            continue;
+        }
+        let backslash = path.replace('/', r"\");
+        for spelling in [
+            format!(r"\\?\{backslash}"),
+            backslash.replace('\\', r"\\"),
+            backslash.clone(),
+            backslash.replace('\\', "/"),
+        ] {
+            prefixes.push((spelling, placeholder));
+        }
+    }
+    prefixes.sort_by_key(|(spelling, _)| std::cmp::Reverse(spelling.len()));
+    prefixes.dedup();
+    prefixes
+}
+
+fn redact(text: &str, prefixes: &[(String, &str)]) -> String {
+    let mut out = text.to_owned();
+    for (spelling, placeholder) in prefixes {
+        out = out.replace(spelling.as_str(), placeholder);
+    }
+    out
+}
+
+#[cfg(test)]
+#[path = "tests/validation_redaction.rs"]
+mod validation_redaction_tests;
 
 pub(crate) fn compact_validation_summary(text: &str) -> String {
     let field = |name: &str| -> Option<String> {

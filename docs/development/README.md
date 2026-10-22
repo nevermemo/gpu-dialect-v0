@@ -14,5 +14,6 @@ This directory holds human-readable operating state and workflow guidance for GU
 
 Detailed historical handoff and completed-task reports live in `history/`.
 
-Machine-readable validation output remains in `.ai/VALIDATION.json`.
+Machine-readable validation output remains in `.ai/VALIDATION.json` (local and
+untracked; the committed evidence summary lives in `STATUS.md`).
 Machine-readable agent entry points live in `.ai/AGENT_CONTEXT.json`.

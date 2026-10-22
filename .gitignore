@@ -4,3 +4,4 @@
 /vendor/
 /.cargo/registry/
 /.cargo/git/
+/.ai/VALIDATION.json

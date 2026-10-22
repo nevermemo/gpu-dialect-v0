@@ -44,6 +44,15 @@ full_check_needed_before_commit: no
 
 ## Latest DX evidence
 
+- 2026-10-23 approval and privacy policy: AGENTS.md gained an Approvals section
+  (all actions pre-authorized by the owner) and a parallel-lane branch rule;
+  `.ai/VALIDATION.json` is now untracked and xtask redacts the workspace root and home
+  directory when writing it. `cargo fmt --all -- --check`, `cargo test -p xtask`
+  (6 tests), `cargo clippy -p xtask -- -D warnings`, and `cargo xtask check-fast`
+  passed through the shared cargo slot wrapper.
+- 2026-10-23 cleanup: the stale T13-derived `generated-wgpu/pool__classify.*` exports
+  were moved out of the tree, so `generated-wgpu/` again holds the 13 `.spv` files
+  `check-full` expects. The T13 stash is untouched.
 - 2026-10-22 documentation sync, no code changes: README, ARCHITECTURE,
   ENGINE_NORTH_STAR, NEXT_TASKS, HANDOFF, and the Copilot builder agent profile now
   record D19 as committed with release evidence pending, point T13 at its stash, and

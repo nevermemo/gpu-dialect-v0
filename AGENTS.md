@@ -113,7 +113,18 @@ Do not wait for Codex during normal local swarm work.
 - Prefer a diagnostic over silently translating unsupported Rust semantics.
 - Do not rename crates, initialize Git, remove working examples, add dependencies,
   or expand architecture merely to align branding. Explain necessary changes.
-- Do not create or switch Git branches unless the owner explicitly requests one.
+- Parallel lanes may each use one branch and one Git worktree (owner decision
+  2026-10-23). Update a branch by merging `main` into it; never rebase commits that
+  were already pushed.
+
+## Approvals
+
+The owner pre-authorizes all actions on this project, including commits, pushes to
+GitHub, branches, and file deletions (2026-10-23). Do not stop to ask; report every
+public action (push, PR, release, repository setting) after doing it. Machine-sharing
+limits agreed with the owner still apply: shared cargo build slots, one heavy GPU job at
+a time, and no use of the owner's model-service ports. Contacting another AI family
+(for example Codex) still needs a per-project owner decision.
 
 ## Workflow and verification
 
@@ -135,7 +146,9 @@ Use stable Rust, `slangc` on PATH, and a Vulkan adapter. For release evidence ru
 all exported SPIR-V files. Missing tools are blockers, not passes. Baseline versions
 and actual results belong in `docs/development/STATUS.md`; commands alone are not evidence.
 The command overwrites `.ai/VALIDATION.json` with the latest pass/failure record;
-inspect its timestamp and scope before using it as evidence.
+inspect its timestamp and scope before using it as evidence. That file is local and
+untracked, and xtask redacts the workspace root and home directory in it; copy the
+summary into `STATUS.md`. Never commit machine-specific paths: the repository is public.
 
 ## Artifact and collaboration rules
 
@@ -148,8 +161,8 @@ inspect its timestamp and scope before using it as evidence.
   export. A translation change requires an explained golden diff and GPU tests.
 - Keep commits small if Git is available. This takeover began without Git;
   `.ai/BASELINE.sha256` records source/artifact hashes before edits, not a backup.
-- Do not change account allowances, spend credits, contact another AI, or start
-  background work without authority. A local AI resumes manually from these files.
+- Do not change account allowances, spend credits, or contact another AI family
+  without authority; see Approvals. A local AI resumes manually from these files.
 - Before handing off, clear ownership, record exact files/tests/known failures and
   the next command. Do not mark researched plans complete. Record reliable allowance
   readings only; the human's allowance stop policy applies to this Codex run, not
