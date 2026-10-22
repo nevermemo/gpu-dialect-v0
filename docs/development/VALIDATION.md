@@ -17,6 +17,25 @@ Validation is layered. Choose the cheapest command that can falsify the current 
 | Artifact/export change | relevant example binary | `cargo xtask check-artifacts` | `cargo xtask check-full` |
 | Unknown dirty tree | `cargo xtask check-changed` | command it selects | `cargo xtask check-full` if release evidence is needed |
 
+## Evidence tiers
+
+Every status line, task report, and decision that cites evidence names the highest
+tier it reached. A tier is claimed only with a run record (command, result, and for
+Gpu the device).
+
+| Tier | Claim | Typical command |
+| --- | --- | --- |
+| Unit | Macro validation, translation, and xtask logic pass without external tools | `cargo test -p gust-macros`, `cargo test -p xtask` (CI) |
+| Slangc | The generated Slang compiles to the target | WGSL compile smoke tests, `cargo xtask check-fast` |
+| Spirv | Exported SPIR-V passes `spirv-val --target-env vulkan1.2` | `cargo xtask check-artifacts` |
+| Reflect | The D17 layout gate matches the descriptor | `cargo xtask check-feature reflection` |
+| Gpu | Readback on a device equals an independent host reference | GPU tests, `cargo xtask check-full` |
+
+Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.13.1, <commit>)`.
+A software Vulkan driver such as lavapipe counts as `Gpu (software)`, never as
+hardware evidence. Expected values come from an independent host reference, never from
+the shadow bodies (D04). A missing tool or adapter is a failure for its tier, not a skip.
+
 ## Record policy
 
 Routine checks do not rewrite `.ai/VALIDATION.json`. Use `cargo xtask verify --mode <mode> --record` only when a durable record for a non-full mode is useful. `cargo xtask check-full` records by default and is the release-evidence path.

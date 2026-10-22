@@ -1,0 +1,38 @@
+# Unit-tier gate (docs/development/VALIDATION.md). Hosted runners have no GPU and no
+# slangc, so Slangc, Spirv, Reflect, and Gpu evidence stays local.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned here so a new stable release cannot change CI without a commit;
+  # overrides the "stable" channel in rust-toolchain.toml.
+  RUSTUP_TOOLCHAIN: 1.98.0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Macro tests
+        run: cargo test -p gust-macros
+      - name: xtask tests
+        run: cargo test -p xtask

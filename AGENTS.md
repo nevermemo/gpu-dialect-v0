@@ -123,8 +123,9 @@ The owner pre-authorizes all actions on this project, including commits, pushes 
 GitHub, branches, and file deletions (2026-10-23). Do not stop to ask; report every
 public action (push, PR, release, repository setting) after doing it. Machine-sharing
 limits agreed with the owner still apply: shared cargo build slots, one heavy GPU job at
-a time, and no use of the owner's model-service ports. Contacting another AI family
-(for example Codex) still needs a per-project owner decision.
+a time, and no use of the owner's model-service ports. Codex is approved for
+cross-family reviews on this project (2026-10-23); other AI families still need an
+owner decision.
 
 ## Workflow and verification
 

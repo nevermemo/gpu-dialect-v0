@@ -4,7 +4,7 @@
   "current_status": "docs/development/STATUS.md",
   "active_queue": "docs/development/NEXT_TASKS.md",
   "task_contracts": "docs/development/tasks/README.md",
-  "diagnostic_map_contract": "docs/development/tasks/D19-sidecar-diagnostic-maps.md",
+  "diagnostic_map_contract": "docs/development/tasks/DX19-sidecar-diagnostic-maps.md",
   "completed_task_index": "docs/development/history/COMPLETED_TASKS.md",
   "status_history": "docs/development/history/STATUS-2026-09-09.md",
   "task_history": "docs/development/history/NEXT_TASKS-2026-09-09.md",

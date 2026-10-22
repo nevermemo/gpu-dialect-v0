@@ -12,25 +12,24 @@ active until its owner, scope, and focused check appear there.
 ### T13: GPU active count to indirect dispatch
 
 Deferred by owner. The T13 work in progress is not in the working tree: it is the
-git stash `WIP T13 active count deferred`, based on `a3fbde1`. Its code changes
+git stash `WIP T13 active count deferred`, based on `59a5c3c`. Its code changes
 (`examples/component-pool/src/app.rs`, `xtask/src/{checks,verify}.rs`) applied
-cleanly to `1c7a81c` in a 2026-10-22 dry run; its doc renames are superseded by
+cleanly to `63769fb` in a 2026-10-22 dry run; its doc renames are superseded by
 that commit and conflict. Do not apply, continue, or drop the stash unless the owner
 explicitly requests it. Contract: [tasks/T13-active-count.md](tasks/T13-active-count.md).
 
 ## Release evidence pending
 
-### D19: Sidecar diagnostic maps
+### DX19: Sidecar diagnostic maps
 
-Implemented and committed in `1c7a81c` with focused evidence (see
+Implemented and committed in `63769fb` with focused evidence (see
 [STATUS.md](STATUS.md)). The contract's remaining completion items, a fresh
-`cargo xtask check-full` and an independent review, are not yet recorded. Resolve
-the stale `generated-wgpu/pool__classify.*` blocker in [STATUS.md](STATUS.md) first.
-Contract: [tasks/D19-sidecar-diagnostic-maps.md](tasks/D19-sidecar-diagnostic-maps.md).
+`cargo xtask check-full` and an independent review, are not yet recorded.
+Contract: [tasks/DX19-sidecar-diagnostic-maps.md](tasks/DX19-sidecar-diagnostic-maps.md).
 
 ## Claimable DX
 
-### D20: Internal ownership splits
+### DX20: Internal ownership splits
 
 Split the largest modules only where a named responsibility can move without
 changing public APIs: macro validation by concern, macro regressions by feature,
