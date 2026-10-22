@@ -284,8 +284,8 @@ a reserved `__gust_opt_N` temporary and binds the payload inside the taken branc
 payload must be a supported scalar or a module struct. Option is a local/helper value
 only: it is rejected in struct fields and resource element types because it has no
 proven storage layout, and `.unwrap()`/`.expect()` are rejected because Rust panics
-there while GPU code cannot. `match`, `?`, let chains, and other patterns remain
-rejected. `Result<T, T>` is also lowered deterministically as a local/helper-only
+there while GPU code cannot. `match` on Option, `?`, let chains, and other patterns
+remain rejected. `Result<T, T>` is also lowered deterministically as a local/helper-only
 tagged `__GustResult<T>`: `Ok`/`Err`, `is_ok`/`is_err`, `unwrap_or`, `if let Ok`, and
 statement-only exhaustive `match` with `Ok(identifier)` / `Err(identifier)` block arms
 are supported. A match evaluates its scrutinee once into a generated temporary before
@@ -319,6 +319,18 @@ and `break`/`continue` outside a loop are rejected with diagnostics; the reasons
 recorded in D18. The `loops` fixture locks the Slang, both targets compile, and a
 real-GPU test matches an independent host reference (closed forms where possible) at
 workgroup boundaries, including a body that shrinks its own end bound.
+
+Atomics are statement-only calls on a direct `&mut buffer[index]` element of a
+`RWStructuredBuffer<u32>` or `RWStructuredBuffer<i32>` (T10). `u32` accepts
+`atomic_add`, `atomic_min`, `atomic_max`, `atomic_exchange`, and
+`atomic_compare_exchange`; `i32` accepts all of them except min and max. A buffer used
+atomically in a kernel is emitted as `RWStructuredBuffer<Atomic<T>>` for that kernel
+only, and ordinary indexed reads or writes of it are rejected in that kernel. Only
+relaxed (default) memory ordering is provided. Expression-position atomics, float
+elements, and read-only, local, or non-element receivers are rejected. The `atomics`
+fixture locks the Slang. Real-GPU tests check contended `atomic_add`, `atomic_min`,
+`atomic_max`, and deterministic compare-exchange cases exactly; contended
+`atomic_exchange` and `atomic_compare_exchange` are checked only for a valid result.
 
 The syn translator still lacks rustc-resolved semantics. Inferred integer types,
 overflow, casts outside their safe input domain, evaluation ordering for effectful

@@ -95,8 +95,8 @@ or entity table.
   derived on the GPU from the count buffer **clamped to the data buffer's `.len()`**
   (the allocation), and kernels must guard `i < active && i < buffer.len()`. A
   malformed count then degrades to "process the whole allocation", never to
-  out-of-bounds access or a silent no-op. T09 supplies bounded loops, but atomics are
-  not implemented, so
+  out-of-bounds access or a silent no-op. T09 supplies bounded loops. This proof
+  predates atomics (T10), and the GPU-authored active count is the deferred T13 proof, so
   the count itself is the host-mirrored pool length; what the GPU derives without
   readback is the active count (count clamped by allocation and a settings budget)
   and the dispatch arguments.

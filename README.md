@@ -82,8 +82,8 @@ Example crate tests are intentionally ignored by default. They remain available 
 major changes and release validation, but the ordinary workspace loop prioritizes
 compiler/runtime feedback over full example proofs.
 
-For the full release-readiness check (including ignored example tests, all seven
-examples, and mandatory external validation of all twelve SPIR-V exports):
+For the full release-readiness check (including ignored example tests, all eight
+examples, and mandatory external validation of all thirteen SPIR-V exports):
 
 ```sh
 cargo xtask check-full
@@ -271,7 +271,7 @@ workgroup count the GPU derives; see the contract in
 
 ## Examples
 
-The workspace contains seven runnable programs:
+The workspace contains eight runnable programs:
 
 - `vector-add` uses the preferred Slang-shaped Rust vocabulary and demonstrates
   artifact export.
@@ -295,6 +295,8 @@ The workspace contains seven runnable programs:
   positions survive each GPU-to-GPU copy, and integrates through an indirect
   dispatch whose active count and workgroup arguments a one-invocation kernel
   derives on the GPU, clamped to the allocation and a settings budget.
+- `atomic-counter` has 257 invocations increment one shared counter with
+  `atomic_add` and checks the total against the host count.
 
 Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function; there is currently no environment-variable size override:
@@ -321,19 +323,28 @@ The direct syntax translator currently supports:
   field access, `if`/`else`, returns, casts, and calls to helpers in the same module;
 - implicit helper returns (including tail `if`/`else` and blocks), 32-bit numeric
   suffixes/radix literals, Rust expression grouping, and boolean/integer `!`;
+- struct literals as a `let` initializer or the right side of an assignment (D07);
+- `Option<T>` and `Result<T, T>` as local and helper values, including `if let` and
+  a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);
+- statement-only atomics on `RWStructuredBuffer<u32/i32>` elements: `atomic_add`,
+  `atomic_exchange`, and `atomic_compare_exchange`, plus unsigned-only
+  `atomic_min`/`atomic_max` (T10);
 - bounded `for i in start..end` loops whose bounds type-check as 32-bit integers,
   with `break`/`continue` (the end bound is evaluated once; see D18);
 - one-dimensional runtime dispatch with explicit three-dimensional Slang
   workgroup sizes in descriptors.
 
 The validator intentionally rejects allocation, standard-library access, macros,
-closures, async/await, references, `while`/`loop`/inclusive ranges, `match`, unsafe
-code, arbitrary method calls, and external function calls inside GPU modules. These
-restrictions describe the implemented translator, not limits of Slang itself.
+closures, async/await, references (other than an atomic's `&mut buffer[index]`
+receiver), `while`/`loop`/inclusive ranges, general `match` and `?`,
+`unwrap`/`expect`, unsafe code, arbitrary method calls, and external function calls
+inside GPU modules. These restrictions describe the implemented translator, not
+limits of Slang itself.
 
-Shader struct literals are explicitly rejected pending field-aware lowering;
-whole-struct buffer copies and field updates work. Booleans are expression values,
-not host-shareable `GpuPod` fields. Only padding-free 32-bit scalar/nested-struct
+Struct literals in other expression positions, nested struct literals, and record
+update syntax (`..base`) are rejected; whole-struct buffer copies and field updates
+work. Option and Result values cannot be struct fields or buffer elements.
+Booleans are expression values, not host-shareable `GpuPod` fields. Only padding-free 32-bit scalar/nested-struct
 storage layouts are executable today. Constant-buffer syntax is not yet supported
 by the headless runtime. See [architecture](docs/ARCHITECTURE.md) for known semantic
 gaps; successful Rust checking does not prove equivalence to Slang inference.
@@ -342,18 +353,25 @@ gaps; successful Rust checking does not prove equivalence to Slang inference.
 
 ```text
 crates/
-  gust/                 shadow types, descriptors, ABI metadata, slangc bridge
+  gust/                 shadow types, descriptors, ABI metadata, slangc bridge, reflection
   gust-macros/          validation and direct syn AST -> Slang translation
-  gust-wgpu/            cached headless wgpu execution and persistent buffers
+  gust-wgpu/            cached headless wgpu execution, buffers, StagedGraph, GpuPool
 examples/
   vector-add/
   polynomial/
   signal-pipeline/
   particle-step/
   typed-pipeline/
+  staged-graph/
+  component-pool/
+  atomic-counter/
+tests/fixtures/         reviewed golden Slang and GPU semantics fixtures
+scripts/probes/         native Slang reflection helper source
+xtask/                  project automation and validation commands
 generated-wgpu/         ignored local artifacts emitted by examples
 docs/
   ARCHITECTURE.md
+  development/          status, task queue, contracts, handoff
 ```
 
 ## Development and next milestones

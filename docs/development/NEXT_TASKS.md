@@ -11,19 +11,24 @@ active until its owner, scope, and focused check appear there.
 
 ### T13: GPU active count to indirect dispatch
 
-Deferred by owner. Preserve existing uncommitted T13 work; do not continue it
-unless explicitly requested. Contract: [tasks/T13-active-count.md](tasks/T13-active-count.md).
+Deferred by owner. The T13 work in progress is not in the working tree: it is the
+git stash `WIP T13 active count deferred`, based on `a3fbde1`. Its code changes
+(`examples/component-pool/src/app.rs`, `xtask/src/{checks,verify}.rs`) applied
+cleanly to `1c7a81c` in a 2026-10-22 dry run; its doc renames are superseded by
+that commit and conflict. Do not apply, continue, or drop the stash unless the owner
+explicitly requests it. Contract: [tasks/T13-active-count.md](tasks/T13-active-count.md).
+
+## Release evidence pending
+
+### D19: Sidecar diagnostic maps
+
+Implemented and committed in `1c7a81c` with focused evidence (see
+[STATUS.md](STATUS.md)). The contract's remaining completion items, a fresh
+`cargo xtask check-full` and an independent review, are not yet recorded. Resolve
+the stale `generated-wgpu/pool__classify.*` blocker in [STATUS.md](STATUS.md) first.
+Contract: [tasks/D19-sidecar-diagnostic-maps.md](tasks/D19-sidecar-diagnostic-maps.md).
 
 ## Claimable DX
-
-### D19: Sidecar diagnostic maps — ACTIVE
-
-Owner: GitHub Copilot. Replace kernel-only Slang diagnostic attribution with a generated sidecar map
-that relates Slang line ranges to stable Rust construct labels. Keep direct syn
-AST to Slang emission; do not introduce a custom shader IR. First contract must
-specify the artifact schema, stable labels, failure mapping, fixture coverage,
-and public/private artifact policy. Contract:
-[tasks/D19-sidecar-diagnostic-maps.md](tasks/D19-sidecar-diagnostic-maps.md).
 
 ### D20: Internal ownership splits
 
