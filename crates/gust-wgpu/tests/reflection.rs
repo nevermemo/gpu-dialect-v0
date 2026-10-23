@@ -1,6 +1,6 @@
 use gust::{
     Access, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
-    ResourceLayout, reflect::Error as ReflectionError,
+    ResourceLayout, reflect::Error as ReflectionError, slang::Target,
 };
 use gust_wgpu::{BufferBinding, Error, GpuBufferAccess, HeadlessDevice};
 
@@ -155,6 +155,75 @@ fn cached_pipeline_does_not_authorize_a_changed_contract() {
     assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
     let stats = device.pipeline_cache_stats();
     assert_eq!((stats.entries, stats.misses, stats.hits), (1, 1, 1));
+}
+
+/// A kernel that rustc and the GUST validator accept and only Slang rejects: a
+/// local named `new` (M1.3, the Reflect-tier check that the native helper honours
+/// the compile copy's `#line` directives).
+#[gust::gpu]
+mod rejected_by_slang {
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            let new = id.x;
+            out[id.x] = new; // FAILS: native helper
+        }
+    }
+}
+
+#[test]
+fn the_native_helper_reports_a_slang_failure_at_the_rust_line() {
+    let marker = "// FAILS: native helper";
+    let expected = include_str!("reflection.rs")
+        .lines()
+        .position(|line| line.trim_end().ends_with(marker) && line.contains("out[id.x]"))
+        .map(|index| index + 1)
+        .expect("marker line");
+    let kernel = rejected_by_slang::run::DESCRIPTOR;
+    assert!(kernel.source.file.ends_with("reflection.rs"));
+    for target in [Target::Wgsl, Target::Spirv] {
+        let error = gust::reflect::compile_reflected(&kernel, target).unwrap_err();
+        let gust::reflect::Error::Compiler(gust::slang::Error::CompilationFailed {
+            diagnostics,
+            ..
+        }) = error
+        else {
+            panic!("{target:?}: expected the helper to refuse the source, got {error}");
+        };
+        // The helper's own error location is the Rust file and line ...
+        let location = format!("--> {}:{expected}:", kernel.source.file);
+        assert!(
+            diagnostics.contains(&location),
+            "{target:?}: no `{location}` in:\n{diagnostics}"
+        );
+        // ... and the annotation names the same line, the kernel and the construct.
+        assert!(
+            diagnostics.contains(&format!(
+                "originating Rust source: {}:{expected}\n",
+                kernel.source.file
+            )),
+            "{target:?}: {diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("originating Rust kernel: rejected_by_slang::run"),
+            "{target:?}: {diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("originating Rust construct: assignment #"),
+            "{target:?}: {diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("reflection helper: "),
+            "{target:?}: {diagnostics}"
+        );
+    }
+    // Without a table the helper reads the clean text and reports Slang coordinates.
+    let mut clean = kernel;
+    clean.source = gust::SourceOrigin::UNKNOWN;
+    let error = gust::reflect::compile_reflected(&clean, Target::Wgsl).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("kernel.slang:"), "{text}");
+    assert!(!text.contains("reflection.rs"), "{text}");
 }
 
 #[gust::gpu]

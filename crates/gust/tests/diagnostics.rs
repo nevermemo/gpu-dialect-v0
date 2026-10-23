@@ -13,6 +13,10 @@
 //! stand-in for the native reflection helper that fails with a Slang-shaped error
 //! line, so this file needs only `slangc` on `PATH`, not the helper; the real
 //! helper is exercised by the reflection tests.
+//!
+//! The compile copy carries `#line` directives (M1.3), so the compiler's own
+//! error location is the Rust file and line (`--> <file>:<line>:<column>`); the
+//! tests check that raw text as well as the appended `originating Rust` lines.
 
 use gust::{
     Kernel, KernelDescriptor, SourceOrigin, reflect,
@@ -55,6 +59,33 @@ mod recursive_helper {
     }
 }
 
+/// Valid on every target: a struct, a helper, a loop and a conditional, so the
+/// directives of the compile copy fall in a struct body, a helper and nested blocks.
+#[gust::gpu]
+mod structured {
+    pub struct Pair {
+        pub low: uint,
+        pub high: uint,
+    }
+
+    fn twice(value: uint) -> uint {
+        value + value
+    }
+
+    #[allow(clippy::assign_op_pattern)]
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<Pair>) {
+        if id.x < out.len() {
+            let mut total = 0u32;
+            for step in 0u32..4u32 {
+                total = total + twice(step);
+            }
+            out[id.x].low = total;
+            out[id.x].high = total + 1u32;
+        }
+    }
+}
+
 #[gust::gpu]
 mod else_if_chain {
     #[kernel]
@@ -70,6 +101,119 @@ mod else_if_chain {
             } else {
                 out[id.x] = 3u32;
             }
+        }
+    }
+}
+
+// Seven more Slang-only failures in other positions, so that the line table is
+// exercised in loops, branches, helpers and at the top of a kernel.
+
+#[gust::gpu]
+mod keyword_in_loop {
+    #[allow(clippy::assign_op_pattern)]
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            let mut total = 0u32;
+            for step in 0u32..4u32 {
+                let new = step;
+                total = total + new; // FAILS: keyword in loop
+            }
+            out[id.x] = total;
+        }
+    }
+}
+
+#[gust::gpu]
+mod keyword_in_else {
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            if id.x == 0u32 {
+                out[id.x] = 1u32;
+            } else {
+                let new = id.x;
+                out[id.x] = new; // FAILS: keyword in else
+            }
+        }
+    }
+}
+
+#[gust::gpu]
+mod keyword_at_top {
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        let new = id.x;
+        out[0] = new; // FAILS: keyword at top
+    }
+}
+
+#[gust::gpu]
+mod keyword_in_helper {
+    fn bump(value: uint) -> uint {
+        let new = value;
+        new + 1u32 // FAILS: keyword in helper
+    }
+
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            out[id.x] = bump(id.x);
+        }
+    }
+}
+
+#[gust::gpu]
+mod recursion_with_locals {
+    fn factorial(n: uint) -> uint {
+        let base = n;
+        let next = n - 1u32;
+        if n <= 1u32 {
+            1u32
+        } else {
+            base * factorial(next) // FAILS: recursion with locals
+        }
+    }
+
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            out[id.x] = factorial(id.x);
+        }
+    }
+}
+
+#[gust::gpu]
+mod keyword_in_nested_if {
+    #[allow(clippy::collapsible_if)]
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            if id.x > 1u32 {
+                if id.x > 2u32 {
+                    let new = id.x;
+                    out[id.x] = new + 1u32; // FAILS: keyword in nested if
+                }
+            }
+        }
+    }
+}
+
+#[gust::gpu]
+mod recursion_in_loop {
+    #[allow(clippy::assign_op_pattern)]
+    fn spread(n: uint) -> uint {
+        let mut total = 0u32;
+        for i in 0u32..n {
+            total = total + spread(i); // FAILS: recursion in loop
+        }
+        total
+    }
+
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            out[id.x] = spread(id.x);
         }
     }
 }
@@ -108,6 +252,16 @@ fn rust_source(diagnostics: &str) -> (&str, u32) {
         .unwrap_or_else(|| panic!("no Rust source annotation in:\n{diagnostics}"));
     let (file, number) = line.rsplit_once(':').expect("file:line");
     (file, number.parse().expect("line number"))
+}
+
+/// The compiler's own location is `--> <file>:<line>:<column>` in the Rust file,
+/// where `file` is the one the descriptor recorded.
+fn assert_compiler_location(diagnostics: &str, kernel: &KernelDescriptor, line: u32) {
+    let location = format!("--> {}:{line}:", kernel.source.file);
+    assert!(
+        diagnostics.contains(&location),
+        "no `{location}` in:\n{diagnostics}"
+    );
 }
 
 fn assert_table_is_recorded(kernel: &KernelDescriptor) {
@@ -177,6 +331,7 @@ fn a_slang_only_syntax_error_in_a_kernel_names_the_rust_line() {
             "{target:?}: {diagnostics}"
         );
         assert_eq!(line, expected, "{target:?}: {diagnostics}");
+        assert_compiler_location(&diagnostics, &keyword_local::run::DESCRIPTOR, expected);
         assert!(
             diagnostics.contains("originating Rust kernel: keyword_local::run"),
             "{target:?}: {diagnostics}"
@@ -203,7 +358,114 @@ fn a_slang_only_recursion_error_in_a_helper_names_the_rust_line() {
             "{target:?}: {diagnostics}"
         );
         assert_eq!(line, expected, "{target:?}: {diagnostics}");
+        assert_compiler_location(&diagnostics, &recursive_helper::run::DESCRIPTOR, expected);
     }
+}
+
+/// Ten deliberate Slang-only failures with the Rust line each must name. The
+/// plan's kill rule (M1.3) is that fewer than nine of ten landing on the right
+/// Rust line stops the slice; here every one must, on both targets.
+fn deliberate_failures() -> Vec<(&'static str, KernelDescriptor, u32)> {
+    vec![
+        (
+            "keyword local",
+            keyword_local::run::DESCRIPTOR,
+            marked_line("keyword local"),
+        ),
+        (
+            "recursion",
+            recursive_helper::run::DESCRIPTOR,
+            marked_line("recursion"),
+        ),
+        (
+            "else-if chain",
+            else_if_chain::run::DESCRIPTOR,
+            owner_line("else-if chain"),
+        ),
+        (
+            "keyword in loop",
+            keyword_in_loop::run::DESCRIPTOR,
+            marked_line("keyword in loop"),
+        ),
+        (
+            "keyword in else",
+            keyword_in_else::run::DESCRIPTOR,
+            marked_line("keyword in else"),
+        ),
+        (
+            "keyword at top",
+            keyword_at_top::run::DESCRIPTOR,
+            marked_line("keyword at top"),
+        ),
+        (
+            "keyword in helper",
+            keyword_in_helper::run::DESCRIPTOR,
+            marked_line("keyword in helper"),
+        ),
+        (
+            "recursion with locals",
+            recursion_with_locals::run::DESCRIPTOR,
+            marked_line("recursion with locals"),
+        ),
+        (
+            "keyword in nested if",
+            keyword_in_nested_if::run::DESCRIPTOR,
+            marked_line("keyword in nested if"),
+        ),
+        (
+            "recursion in loop",
+            recursion_in_loop::run::DESCRIPTOR,
+            marked_line("recursion in loop"),
+        ),
+    ]
+}
+
+#[test]
+fn ten_deliberate_failures_land_on_the_right_rust_line_on_each_target() {
+    let failures = deliberate_failures();
+    assert_eq!(failures.len(), 10);
+    let mut right = 0;
+    let mut wrong = Vec::new();
+    for target in [Target::Wgsl, Target::Spirv] {
+        for (name, kernel, expected) in &failures {
+            let diagnostics = failure(kernel, target);
+            let annotated = rust_source(&diagnostics);
+            let compiler = format!("--> {}:{expected}:", kernel.source.file);
+            if annotated.1 == *expected && diagnostics.contains(&compiler) {
+                right += 1;
+            } else {
+                wrong.push(format!(
+                    "{name} on {target:?}: expected line {expected}, got {}\n{diagnostics}",
+                    annotated.1
+                ));
+            }
+        }
+    }
+    println!(
+        "{right} of {} deliberate failures on the right Rust line",
+        failures.len() * 2
+    );
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn directives_change_neither_the_artifacts_nor_the_exported_text() {
+    let kernel = structured::run::DESCRIPTOR;
+    // The table covers the struct, the helper and the nested blocks, so the
+    // compile copy has directives inside a struct body and a helper.
+    assert!(kernel.source.lines.len() >= 6, "{:?}", kernel.source.lines);
+    assert!(!kernel.slang_source.contains("#line"));
+    for target in [Target::Wgsl, Target::Spirv] {
+        let with_directives = slang::compile(&kernel, target).unwrap();
+        let clean = slang::compile_source(kernel.slang_source, kernel.entry_point, target).unwrap();
+        assert!(!clean.is_empty());
+        assert_eq!(with_directives, clean, "{target:?}");
+    }
+    // The exported text is the descriptor's own, byte for byte.
+    let directory = slang::TemporaryDirectory::create().unwrap();
+    let path = directory.path().join("exported.slang");
+    slang::write_source(&kernel, &path).unwrap();
+    assert_eq!(fs::read_to_string(path).unwrap(), kernel.slang_source);
 }
 
 #[test]
@@ -215,6 +477,9 @@ fn a_descriptor_without_a_line_table_reports_no_rust_source() {
         !diagnostics.contains("originating Rust source"),
         "{diagnostics}"
     );
+    // The compiler read the clean text: its location is in the generated Slang.
+    assert!(diagnostics.contains("kernel.slang:"), "{diagnostics}");
+    assert!(!diagnostics.contains("diagnostics.rs"), "{diagnostics}");
     // The kernel and construct attribution of DX19 is unchanged.
     assert!(
         diagnostics.contains("originating Rust kernel: keyword_local::run"),
@@ -256,6 +521,7 @@ fn an_error_in_an_else_if_condition_names_the_line_of_the_owning_if() {
         );
         assert_eq!(line, owner, "{target:?}: {diagnostics}");
         assert_ne!(line, else_if, "{target:?}: {diagnostics}");
+        assert_compiler_location(&diagnostics, &else_if_chain::run::DESCRIPTOR, owner);
         // The reflection path reports the same line.
         let diagnostics = reflect_failure(&else_if_chain::run::DESCRIPTOR, target);
         assert_eq!(

@@ -291,15 +291,17 @@ impl SourceMap {
 
     /// Schema version 2: `rust_file` is the kernel's Rust source path or `null`,
     /// and a segment carries `rust_line` only when `origin` has a record for its
-    /// first Slang line. The key is omitted otherwise.
-    pub(crate) fn json(&self, origin: &SourceOrigin) -> String {
+    /// first Slang line. The key is omitted otherwise. `line_directives` says
+    /// whether the text the compiler read carried `#line` directives and so
+    /// differs from the clean `kernel.export.slang` beside it (M1.3).
+    pub(crate) fn json(&self, origin: &SourceOrigin, line_directives: bool) -> String {
         let rust_file = if origin.file.is_empty() {
             "null".to_owned()
         } else {
             format!("\"{}\"", json_escape(origin.file))
         };
         let mut output = format!(
-            "{{\n  \"schema_version\": 2,\n  \"rust_file\": {rust_file},\n  \"segments\": ["
+            "{{\n  \"schema_version\": 2,\n  \"rust_file\": {rust_file},\n  \"line_directives\": {line_directives},\n  \"segments\": ["
         );
         for (index, segment) in self.segments.iter().enumerate() {
             if index != 0 {
@@ -632,7 +634,7 @@ mod tests {
         // The map would have numbered this construct 2; the emitter called it 7.
         assert_eq!(segment(&map, "match", 6).ordinal, 7);
         assert!(
-            map.json(&SourceOrigin::UNKNOWN)
+            map.json(&SourceOrigin::UNKNOWN, false)
                 .contains("\"construct\":\"match\",\"ordinal\":7")
         );
         // Other constructs keep the per-kernel count, which the marker still advances.
@@ -752,10 +754,10 @@ mod tests {
     #[test]
     fn sidecar_json_has_stable_schema_fields_and_kinds() {
         let map = SourceMap::from_slang(KERNEL);
-        let json = map.json(&SourceOrigin::UNKNOWN);
+        let json = map.json(&SourceOrigin::UNKNOWN, false);
         assert!(
             json.starts_with(
-                "{\n  \"schema_version\": 2,\n  \"rust_file\": null,\n  \"segments\": ["
+                "{\n  \"schema_version\": 2,\n  \"rust_file\": null,\n  \"line_directives\": false,\n  \"segments\": ["
             )
         );
         assert!(json.ends_with("\n  ]\n}\n"));
@@ -784,7 +786,7 @@ mod tests {
         assert!(!json.contains("rust_line"), "unknown origin: {json}");
         assert_eq!(
             json,
-            SourceMap::from_slang(KERNEL).json(&SourceOrigin::UNKNOWN),
+            SourceMap::from_slang(KERNEL).json(&SourceOrigin::UNKNOWN, false),
             "deterministic"
         );
     }
@@ -816,10 +818,10 @@ mod tests {
             file: "crates/demo/src/lib.rs",
             lines: LINES,
         };
-        let json = SourceMap::from_slang(KERNEL).json(&origin);
+        let json = SourceMap::from_slang(KERNEL).json(&origin, true);
         assert!(
             json.starts_with(
-                "{\n  \"schema_version\": 2,\n  \"rust_file\": \"crates/demo/src/lib.rs\",\n  \"segments\": ["
+                "{\n  \"schema_version\": 2,\n  \"rust_file\": \"crates/demo/src/lib.rs\",\n  \"line_directives\": true,\n  \"segments\": ["
             ),
             "{json}"
         );
@@ -861,6 +863,6 @@ mod tests {
             ),
             "{json}"
         );
-        assert_eq!(json, SourceMap::from_slang(KERNEL).json(&origin));
+        assert_eq!(json, SourceMap::from_slang(KERNEL).json(&origin, true));
     }
 }

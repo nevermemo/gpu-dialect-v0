@@ -17,6 +17,12 @@ mod source_map;
 
 static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(1);
 
+/// What the compile-time copy is called, and the name a `#line` directive returns
+/// to for lines with no Rust origin.
+pub(crate) const KERNEL_FILE: &str = "kernel.slang";
+/// The clean text, written beside the copy when the copy carries directives.
+const EXPORT_FILE: &str = "kernel.export.slang";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Spirv,
@@ -154,12 +160,12 @@ fn compile_at(
     origin: &SourceOrigin,
     target: Target,
 ) -> Result<Vec<u8>, Error> {
-    let source_path = directory.join("kernel.slang");
+    let source_path = directory.join(KERNEL_FILE);
     let map_path = directory.join("kernel.map.json");
     let output_path = directory.join(format!("kernel.{}", target.extension()));
     let source_map = SourceMap::from_slang(source);
-    fs::write(&source_path, source)?;
-    fs::write(&map_path, source_map.json(origin))?;
+    let line_directives = write_compile_inputs(directory, source, origin)? != source;
+    fs::write(&map_path, source_map.json(origin, line_directives))?;
 
     let mut command = Command::new("slangc");
     command.arg(&source_path).args([
@@ -200,6 +206,84 @@ fn compile_at(
     Ok(artifact)
 }
 
+/// Characters a `#line` file name may contain: the set `gust-macros` restricts
+/// every recorded path component to, plus the `/` between components. Anything
+/// else (a quote, a backslash, a line break) could end the directive's string or
+/// the directive itself, so a hand-written origin with such a path gets no
+/// directives.
+fn directive_file_is_usable(file: &str) -> bool {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    !file.is_empty()
+        && file
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.+-/".contains(&byte))
+        // A Rust file that looks like the compile copy would make its own
+        // locations indistinguishable from the switch-back ones.
+        && !name.eq_ignore_ascii_case(KERNEL_FILE)
+}
+
+/// The text the compiler reads: `source` with `#line` directives (M1.3).
+///
+/// Every Slang line that `origin` attributes to a Rust line gets
+/// `#line <rust_line> "<file>"` in front of it, so a compiler error there names
+/// the Rust file and line. The directive is repeated for each attributed line
+/// because the lowering of one Rust statement often spans several Slang lines
+/// (a `for` pair, a lowered `match`) that must all keep that statement's line
+/// instead of counting up. A line without an origin that follows an attributed
+/// one gets `#line <slang_line> "kernel.slang"` first, so the compiler returns to
+/// Slang coordinates and the construct lookup of DX19 keeps working for it.
+/// Lines before the first mapping are copied untouched.
+///
+/// With no file, no table, or a file name that cannot sit in a directive, the
+/// copy equals `source` byte for byte (hand-written descriptors, probes). The
+/// copy is a compile-time input only: exports, `KernelDescriptor::slang_source`
+/// and the cache identity never see it.
+pub(crate) fn compile_copy(source: &str, origin: &SourceOrigin) -> String {
+    if origin.lines.is_empty() || !directive_file_is_usable(origin.file) {
+        return source.to_owned();
+    }
+    let mut copy = String::with_capacity(source.len() + source.len() / 4);
+    let mut previous_attributed = false;
+    for (index, text) in source.split_inclusive('\n').enumerate() {
+        let Ok(number) = u32::try_from(index + 1) else {
+            copy.push_str(text);
+            continue;
+        };
+        // A record for Rust line 0 is malformed (lines are 1-based): unattributed.
+        match origin.rust_line_at(number).filter(|line| *line > 0) {
+            Some(rust_line) => {
+                copy.push_str(&format!("#line {rust_line} \"{}\"\n", origin.file));
+                previous_attributed = true;
+            }
+            None => {
+                if previous_attributed {
+                    copy.push_str(&format!("#line {number} \"{KERNEL_FILE}\"\n"));
+                }
+                previous_attributed = false;
+            }
+        }
+        copy.push_str(text);
+    }
+    copy
+}
+
+/// Write what the compiler reads into `directory` as `kernel.slang` and, when
+/// that differs from `source`, the clean text beside it as `kernel.export.slang`,
+/// so the directory still shows the readable artifact. Returns the copy; it
+/// carries `#line` directives exactly when it differs from `source`.
+pub(crate) fn write_compile_inputs(
+    directory: &Path,
+    source: &str,
+    origin: &SourceOrigin,
+) -> Result<String, std::io::Error> {
+    let copy = compile_copy(source, origin);
+    fs::write(directory.join(KERNEL_FILE), &copy)?;
+    if copy != source {
+        fs::write(directory.join(EXPORT_FILE), source)?;
+    }
+    Ok(copy)
+}
+
 /// Append the originating Rust kernel and construct (DX19), and the Rust source
 /// location when the descriptor carries a line table, to a Slang failure.
 /// Shared by every path that compiles a kernel, so none reports less than the
@@ -210,28 +294,81 @@ pub(crate) fn annotate_diagnostics(
     source_map: &SourceMap,
     diagnostics: &str,
 ) -> String {
-    let segment = map_slang_diagnostic(source_map, slang_source, diagnostics);
-    // The Rust line is independent of the kernel segment: a helper or struct above
-    // the first `// @rust kernel:` marker has a line record but no construct.
-    let rust_line = parse_slang_line(diagnostics)
-        .filter(|line| *line <= slang_source.lines().count())
-        .and_then(|line| u32::try_from(line).ok())
-        .and_then(|line| origin.rust_line_at(line))
-        .filter(|_| !origin.file.is_empty());
+    let located = locate(origin, slang_source, source_map, diagnostics);
     let mut annotated = diagnostics.to_owned();
-    if let Some(segment) = segment {
+    if let Some(segment) = located.segment {
         annotated.push_str(&format!(
             "\noriginating Rust kernel: {}\noriginating Rust construct: {} #{}",
             segment.kernel, segment.construct, segment.ordinal
         ));
     }
-    if let Some(rust_line) = rust_line {
+    if let Some(rust_line) = located.rust_line {
         annotated.push_str(&format!(
             "\noriginating Rust source: {}:{rust_line}",
             origin.file
         ));
     }
+    if located.rust_location {
+        annotated.push_str("\n(column is in the generated Slang)");
+    }
     annotated
+}
+
+/// Where a failure came from, as far as the descriptor can tell.
+struct Located {
+    /// The construct segment of the failing Slang line, if it has one.
+    segment: Option<SourceMapSegment>,
+    /// The Rust line, independent of the segment: a helper or struct above the
+    /// first `// @rust kernel:` marker has a line record but no construct.
+    rust_line: Option<u32>,
+    /// The compiler printed the Rust location itself (a `#line` directive took
+    /// effect), so its column is a Slang column.
+    rust_location: bool,
+}
+
+fn locate(
+    origin: &SourceOrigin,
+    slang_source: &str,
+    source_map: &SourceMap,
+    diagnostics: &str,
+) -> Located {
+    let none = Located {
+        segment: None,
+        rust_line: None,
+        rust_location: false,
+    };
+    let line_count = slang_source.lines().count();
+    match parse_diagnostic_location(diagnostics, origin.file) {
+        Some(DiagnosticLocation::Slang(line)) if line <= line_count => Located {
+            segment: source_map.origin_at(line),
+            rust_line: u32::try_from(line)
+                .ok()
+                .and_then(|line| origin.rust_line_at(line))
+                .filter(|_| !origin.file.is_empty()),
+            rust_location: false,
+        },
+        Some(DiagnosticLocation::Rust(rust_line)) => Located {
+            // Many Slang lines can come from one Rust line; the lowest is the
+            // outermost construct that starts on it, deterministically.
+            segment: first_slang_line_of(origin, rust_line)
+                .map(|line| usize::try_from(line).unwrap_or(usize::MAX))
+                .filter(|line| *line <= line_count)
+                .and_then(|line| source_map.origin_at(line)),
+            rust_line: Some(rust_line),
+            rust_location: true,
+        },
+        _ => none,
+    }
+}
+
+/// The lowest Slang line of any record generated from `rust_line`.
+fn first_slang_line_of(origin: &SourceOrigin, rust_line: u32) -> Option<u32> {
+    origin
+        .lines
+        .iter()
+        .filter(|span| span.rust_line == rust_line)
+        .map(|span| span.slang_start)
+        .min()
 }
 
 /// [`annotate_diagnostics`] for a kernel that is compiled without the sidecar
@@ -245,23 +382,47 @@ pub(crate) fn annotate_kernel_diagnostics(kernel: &KernelDescriptor, diagnostics
 /// `kernel.map.json` is written for inspection and is never parsed back; the
 /// in-memory map built from the same source does the lookup. A line outside
 /// every construct segment maps to the nearest preceding kernel marker, so a
-/// missing or unreadable segment degrades to kernel attribution.
+/// missing or unreadable segment degrades to kernel attribution. A location in
+/// the Rust file (a `#line` directive took effect) maps through the lowest Slang
+/// line generated from that Rust line.
+#[cfg(test)]
 fn map_slang_diagnostic(
     source_map: &SourceMap,
+    origin: &SourceOrigin,
     slang_source: &str,
     diagnostic: &str,
 ) -> Option<SourceMapSegment> {
-    let target_line = parse_slang_line(diagnostic)?;
-    if target_line > slang_source.lines().count() {
-        return None;
+    locate(origin, slang_source, source_map, diagnostic).segment
+}
+
+/// Where a compiler error points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiagnosticLocation {
+    /// A line of the generated Slang (`kernel.slang`).
+    Slang(usize),
+    /// A line of the kernel's Rust file, reported through a `#line` directive.
+    Rust(u32),
+}
+
+/// Whether `path` names the compile copy or the kernel's Rust file. The Rust file
+/// must match `rust_file` exactly: the compiler echoes the directive's string
+/// verbatim, and the directive only ever holds `/` separators. Any other file
+/// stays unattributed.
+fn classify_location(path: &str, line: usize, rust_file: &str) -> Option<DiagnosticLocation> {
+    if !rust_file.is_empty() && path == rust_file {
+        u32::try_from(line).ok().map(DiagnosticLocation::Rust)
+    } else if path.rsplit(['/', '\\']).next()? == KERNEL_FILE {
+        Some(DiagnosticLocation::Slang(line))
+    } else {
+        None
     }
-    source_map.origin_at(target_line)
 }
 
 /// Select an error in this compilation unit, not an earlier warning or a filename
 /// that merely ends with `kernel.slang`. Both `(line)` and `(line,column)` occur
-/// in compiler diagnostics. Unrecognized locations remain unmapped.
-fn parse_slang_line(diagnostic: &str) -> Option<usize> {
+/// in compiler diagnostics. A location in `rust_file` (empty for none) is a Rust
+/// location. Unrecognized locations remain unmapped.
+fn parse_diagnostic_location(diagnostic: &str, rust_file: &str) -> Option<DiagnosticLocation> {
     let mut error_header = false;
     diagnostic.lines().find_map(|diagnostic| {
         let diagnostic = diagnostic.trim();
@@ -278,11 +439,8 @@ fn parse_slang_line(diagnostic: &str) -> Option<usize> {
         if error_header && let Some(location) = diagnostic.strip_prefix("--> ") {
             let (path_line, column) = location.rsplit_once(':')?;
             let (path, line) = path_line.rsplit_once(':')?;
-            if path.rsplit(['/', '\\']).next()? != "kernel.slang" {
-                return None;
-            }
             positive_coordinate(column)?;
-            return positive_coordinate(line);
+            return classify_location(path, positive_coordinate(line)?, rust_file);
         }
         let (location, message) = diagnostic.trim().split_once("):")?;
         let message = message.trim_start();
@@ -291,9 +449,6 @@ fn parse_slang_line(diagnostic: &str) -> Option<usize> {
             return None;
         }
         let (path, position) = location.rsplit_once('(')?;
-        if path.rsplit(['/', '\\']).next()? != "kernel.slang" {
-            return None;
-        }
         let mut coordinates = position.split(',');
         let line = positive_coordinate(coordinates.next()?)?;
         if let Some(column) = coordinates.next() {
@@ -302,7 +457,7 @@ fn parse_slang_line(diagnostic: &str) -> Option<usize> {
         if coordinates.next().is_some() {
             return None;
         }
-        Some(line)
+        classify_location(path, line, rust_file)
     })
 }
 
@@ -399,8 +554,13 @@ mod tests {
     use super::*;
 
     fn mapped_kernel(source: &str, diagnostic: &str) -> Option<String> {
-        map_slang_diagnostic(&SourceMap::from_slang(source), source, diagnostic)
-            .map(|origin| origin.kernel)
+        map_slang_diagnostic(
+            &SourceMap::from_slang(source),
+            &SourceOrigin::UNKNOWN,
+            source,
+            diagnostic,
+        )
+        .map(|origin| origin.kernel)
     }
 
     #[test]
@@ -480,8 +640,13 @@ mod tests {
             "}\n",
         );
         let diagnostic = "kernel.slang(6): error: expected an expression\n";
-        let origin = map_slang_diagnostic(&SourceMap::from_slang(source), source, diagnostic)
-            .expect("should map");
+        let origin = map_slang_diagnostic(
+            &SourceMap::from_slang(source),
+            &SourceOrigin::UNKNOWN,
+            source,
+            diagnostic,
+        )
+        .expect("should map");
         assert_eq!(origin.kernel, "vector_add::add");
         assert_eq!(origin.construct, "local");
     }
@@ -556,7 +721,7 @@ mod tests {
             "}\n",
         );
         let expected = concat!(
-            "{\n  \"schema_version\": 2,\n  \"rust_file\": null,\n  \"segments\": [\n",
+            "{\n  \"schema_version\": 2,\n  \"rust_file\": null,\n  \"line_directives\": false,\n  \"segments\": [\n",
             "    {\"slang_start\":3,\"slang_end\":16,\"kernel\":\"example::ok\",\"construct\":\"kernel\",\"ordinal\":0},\n",
             "    {\"slang_start\":8,\"slang_end\":10,\"kernel\":\"example::ok\",\"construct\":\"prologue\",\"ordinal\":0},\n",
             "    {\"slang_start\":11,\"slang_end\":11,\"kernel\":\"example::ok\",\"construct\":\"local\",\"ordinal\":0},\n",
@@ -583,6 +748,8 @@ mod tests {
             fs::read_to_string(directory.path().join("kernel.slang")).unwrap(),
             source
         );
+        // No directives, so there is no second copy of the same text.
+        assert!(!directory.path().join("kernel.export.slang").exists());
 
         let failing = TemporaryDirectory::create().unwrap();
         let broken = match_kernel(VALID_SIGNATURE, "undefined_symbol", "h");
@@ -599,7 +766,7 @@ mod tests {
         let sidecar = fs::read_to_string(failing.path().join("kernel.map.json")).unwrap();
         assert_eq!(
             sidecar,
-            SourceMap::from_slang(&broken).json(&SourceOrigin::UNKNOWN)
+            SourceMap::from_slang(&broken).json(&SourceOrigin::UNKNOWN, false)
         );
         assert!(sidecar.contains("\"construct\":\"match\""), "{sidecar}");
     }
@@ -939,11 +1106,299 @@ mod tests {
         );
     }
 
+    /// `ANNOTATED_SOURCE` with the directives the table asks for: Rust lines 21
+    /// and 22 for Slang lines 6 and 7, then a return to Slang coordinates at 8.
+    const ANNOTATED_COPY: &str = concat!(
+        "// @rust kernel: demo::k\n",
+        "[shader(\"compute\")]\n",
+        "[numthreads(1, 1, 1)]\n",
+        "void k(uint3 id : SV_DispatchThreadID)\n",
+        "{\n",
+        "#line 21 \"crates/demo/src/lib.rs\"\n",
+        "    var a = uint(1);\n",
+        "#line 22 \"crates/demo/src/lib.rs\"\n",
+        "    var b = (a + undefined_symbol);\n",
+        "#line 8 \"kernel.slang\"\n",
+        "    var c = uint(3);\n",
+        "}\n",
+    );
+
+    #[test]
+    fn compile_copy_puts_a_directive_before_each_attributed_line_and_switches_back_once() {
+        assert_eq!(
+            compile_copy(ANNOTATED_SOURCE, &ANNOTATED_ORIGIN),
+            ANNOTATED_COPY
+        );
+        // Without a trailing newline the last line is still copied exactly.
+        let trimmed = ANNOTATED_SOURCE.trim_end_matches('\n');
+        assert_eq!(
+            compile_copy(trimmed, &ANNOTATED_ORIGIN),
+            ANNOTATED_COPY.trim_end_matches('\n')
+        );
+    }
+
+    #[test]
+    fn compile_copy_keeps_every_line_of_a_multi_line_record_on_its_rust_line() {
+        // Slang lines 2 to 5 lower one Rust line 40, and line 4 is a nested record
+        // of Rust line 41. Both outer lines keep 40, so the compiler never counts on.
+        const LINES: &[crate::LineSpan] = &[
+            crate::LineSpan {
+                slang_start: 2,
+                slang_end: 5,
+                rust_line: 40,
+            },
+            crate::LineSpan {
+                slang_start: 4,
+                slang_end: 4,
+                rust_line: 41,
+            },
+            // Past the end of the source: never matched, never fatal.
+            crate::LineSpan {
+                slang_start: 9,
+                slang_end: 12,
+                rust_line: 50,
+            },
+        ];
+        let origin = SourceOrigin {
+            file: "src/lib.rs",
+            lines: LINES,
+        };
+        let source = "a\nb\nc\nd\ne\nf\n";
+        let expected = concat!(
+            "a\n",
+            "#line 40 \"src/lib.rs\"\nb\n",
+            "#line 40 \"src/lib.rs\"\nc\n",
+            "#line 41 \"src/lib.rs\"\nd\n",
+            "#line 40 \"src/lib.rs\"\ne\n",
+            "#line 6 \"kernel.slang\"\nf\n",
+        );
+        assert_eq!(compile_copy(source, &origin), expected);
+    }
+
+    #[test]
+    fn compile_copy_is_the_source_when_the_origin_cannot_be_trusted() {
+        const LINE: &[crate::LineSpan] = &[crate::LineSpan {
+            slang_start: 1,
+            slang_end: 2,
+            rust_line: 7,
+        }];
+        const ZERO: &[crate::LineSpan] = &[crate::LineSpan {
+            slang_start: 1,
+            slang_end: 2,
+            rust_line: 0,
+        }];
+        let source = "x\ny\n";
+        let with = |file: &'static str, lines: &'static [crate::LineSpan]| {
+            compile_copy(source, &SourceOrigin { file, lines })
+        };
+        assert_eq!(compile_copy(source, &SourceOrigin::UNKNOWN), source);
+        assert_eq!(with("", LINE), source, "no file");
+        assert_eq!(with("src/lib.rs", &[]), source, "no table");
+        assert_eq!(with("src/lib.rs", ZERO), source, "Rust lines are 1-based");
+        // A string that could end the directive or the line is never embedded.
+        for file in [
+            "src/\"lib.rs",
+            "src\\lib.rs",
+            "src/lib.rs\n#define X 1",
+            "src/lib rs",
+            "src/lib.rs\r",
+            "C:/src/lib.rs",
+            "src/kernel.slang",
+            "Kernel.Slang",
+        ] {
+            assert_eq!(with(file, LINE), source, "{file:?}");
+        }
+        // Still applied for the whitelisted characters.
+        assert_ne!(with("crates/g-ust+1/src/_a.b.rs", LINE), source);
+    }
+
+    #[test]
+    fn diagnostic_location_reads_the_rust_file_only_when_it_is_the_kernels_own() {
+        let rust = "crates/x/src/k.rs";
+        for (diagnostic, expected) in [
+            (
+                "error[E30015]: bad\n --> crates/x/src/k.rs:42:17\n",
+                Some(DiagnosticLocation::Rust(42)),
+            ),
+            (
+                "crates/x/src/k.rs(42,3): error 30015: bad\n",
+                Some(DiagnosticLocation::Rust(42)),
+            ),
+            (
+                "crates/x/src/k.rs(42): error: bad\n",
+                Some(DiagnosticLocation::Rust(42)),
+            ),
+            (
+                "kernel.slang(6): error: bad\n",
+                Some(DiagnosticLocation::Slang(6)),
+            ),
+            (
+                "error[E1]: bad\n --> C:\\tmp\\kernel.slang:6:3\n",
+                Some(DiagnosticLocation::Slang(6)),
+            ),
+            (
+                "error[E1]: bad\n --> kernel.slang:6:3\n",
+                Some(DiagnosticLocation::Slang(6)),
+            ),
+            // Another Rust file, a prefix or suffix of ours, or a different case.
+            ("error[E1]: bad\n --> other.rs:42:17\n", None),
+            ("error[E1]: bad\n --> src/crates/x/src/k.rs:42:17\n", None),
+            ("error[E1]: bad\n --> crates/x/src/k.rs.bak:42:17\n", None),
+            ("error[E1]: bad\n --> Crates/x/src/k.rs:42:17\n", None),
+            ("error[E1]: bad\n --> .\\crates\\x\\src\\k.rs:42:17\n", None),
+            // Warnings never claim the location; neither do bad coordinates.
+            ("warning[W1]: careful\n --> crates/x/src/k.rs:42:17\n", None),
+            ("error[E1]: bad\n --> crates/x/src/k.rs:0:17\n", None),
+            ("error[E1]: bad\n --> crates/x/src/k.rs:42:0\n", None),
+        ] {
+            assert_eq!(
+                parse_diagnostic_location(diagnostic, rust),
+                expected,
+                "{diagnostic}"
+            );
+        }
+        // With no Rust file recorded, a path that looks like one is just foreign.
+        assert_eq!(
+            parse_diagnostic_location("error[E1]: bad\n --> crates/x/src/k.rs:42:17\n", ""),
+            None
+        );
+    }
+
+    #[test]
+    fn a_rust_location_names_the_construct_of_the_lowest_slang_line_of_that_rust_line() {
+        // Rust line 22 is lowered to Slang lines 7 (the local `b`) and, in this
+        // table, also to line 8: the lowest wins, and line 8 is not looked at.
+        const LINES: &[crate::LineSpan] = &[
+            crate::LineSpan {
+                slang_start: 8,
+                slang_end: 8,
+                rust_line: 22,
+            },
+            crate::LineSpan {
+                slang_start: 7,
+                slang_end: 7,
+                rust_line: 22,
+            },
+        ];
+        let origin = SourceOrigin {
+            file: "crates/demo/src/lib.rs",
+            lines: LINES,
+        };
+        let annotated = annotate(
+            &origin,
+            "error[E30015]: undefined identifier\n --> crates/demo/src/lib.rs:22:17\n",
+        );
+        assert!(
+            annotated.ends_with(concat!(
+                "\noriginating Rust kernel: demo::k",
+                "\noriginating Rust construct: local #1",
+                "\noriginating Rust source: crates/demo/src/lib.rs:22",
+                "\n(column is in the generated Slang)",
+            )),
+            "{annotated}"
+        );
+        // The Rust location is reported even when the table has no record for it.
+        let annotated = annotate(
+            &origin,
+            "error[E1]: bad\n --> crates/demo/src/lib.rs:99:1\n",
+        );
+        assert!(
+            annotated.ends_with(
+                "\noriginating Rust source: crates/demo/src/lib.rs:99\n(column is in the generated Slang)"
+            ) && !annotated.contains("originating Rust kernel"),
+            "{annotated}"
+        );
+        // A Slang location carries no column note.
+        let annotated = annotate(&ANNOTATED_ORIGIN, "kernel.slang(7): error: bad\n");
+        assert!(!annotated.contains("column is in"), "{annotated}");
+    }
+
+    /// A failing compile of `ANNOTATED_COPY`-shaped text: `source` with one Slang
+    /// line replaced, compiled with `ANNOTATED_ORIGIN`'s table.
+    fn compile_failure_with_table(source: &str) -> String {
+        let directory = TemporaryDirectory::create().unwrap();
+        let error = compile_at(
+            directory.path(),
+            source,
+            "k",
+            &ANNOTATED_ORIGIN,
+            Target::Wgsl,
+        )
+        .unwrap_err();
+        let Error::CompilationFailed { diagnostics, .. } = error else {
+            panic!("expected a compiler failure: {error}");
+        };
+        diagnostics
+    }
+
+    #[test]
+    fn a_failure_on_an_attributed_line_is_reported_in_the_rust_file() {
+        let diagnostics = compile_failure_with_table(ANNOTATED_SOURCE);
+        assert!(
+            diagnostics.contains(" --> crates/demo/src/lib.rs:22:"),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("originating Rust source: crates/demo/src/lib.rs:22\n"),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("originating Rust construct: local #1"),
+            "{diagnostics}"
+        );
+    }
+
+    #[test]
+    fn a_failure_on_an_unattributed_line_after_attributed_ones_is_back_in_slang_coordinates() {
+        // Only line 8 (no record) fails; the directive before it must have returned
+        // the compiler to `kernel.slang`, not let it count on from Rust line 22.
+        let source = ANNOTATED_SOURCE
+            .replace("(a + undefined_symbol)", "a")
+            .replace("uint(3)", "missing_value");
+        let diagnostics = compile_failure_with_table(&source);
+        assert!(diagnostics.contains("missing_value"), "{diagnostics}");
+        assert!(diagnostics.contains("kernel.slang:8:"), "{diagnostics}");
+        assert!(
+            !diagnostics.contains("crates/demo/src/lib.rs"),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("originating Rust construct: local #2"),
+            "{diagnostics}"
+        );
+        assert!(
+            !diagnostics.contains("originating Rust source"),
+            "{diagnostics}"
+        );
+    }
+
+    #[test]
+    fn the_clean_text_stays_beside_the_copy_only_when_the_copy_differs() {
+        let clean = TemporaryDirectory::create().unwrap();
+        let copy =
+            write_compile_inputs(clean.path(), ANNOTATED_SOURCE, &SourceOrigin::UNKNOWN).unwrap();
+        assert_eq!(copy, ANNOTATED_SOURCE);
+        assert!(!clean.path().join("kernel.export.slang").exists());
+        let annotated = TemporaryDirectory::create().unwrap();
+        let copy =
+            write_compile_inputs(annotated.path(), ANNOTATED_SOURCE, &ANNOTATED_ORIGIN).unwrap();
+        assert_eq!(copy, ANNOTATED_COPY);
+        assert_eq!(
+            fs::read_to_string(annotated.path().join("kernel.slang")).unwrap(),
+            ANNOTATED_COPY
+        );
+        assert_eq!(
+            fs::read_to_string(annotated.path().join("kernel.export.slang")).unwrap(),
+            ANNOTATED_SOURCE
+        );
+    }
+
     #[test]
     fn annotation_does_not_attribute_a_warning_or_a_foreign_file() {
         for diagnostic in [
             "warning[W1]: careful\n --> C:\\tmp\\kernel.slang:7:17\n",
-            "error[E1]: bad\n --> crates/demo/src/lib.rs:7:17\n",
+            // The kernel's own Rust file is attributed (M1.3); any other is not.
+            "error[E1]: bad\n --> crates/other/src/lib.rs:7:17\n",
             "no location at all\n",
         ] {
             assert_eq!(annotate(&ANNOTATED_ORIGIN, diagnostic), diagnostic);
@@ -988,7 +1443,7 @@ mod tests {
         let sidecar = fs::read_to_string(directory.path().join("kernel.map.json")).unwrap();
         assert!(
             sidecar.starts_with(
-                "{\n  \"schema_version\": 2,\n  \"rust_file\": \"src/kernels.rs\",\n  \"segments\": ["
+                "{\n  \"schema_version\": 2,\n  \"rust_file\": \"src/kernels.rs\",\n  \"line_directives\": true,\n  \"segments\": ["
             ),
             "{sidecar}"
         );
@@ -1005,9 +1460,14 @@ mod tests {
             sidecar.contains("\"construct\":\"prologue\",\"ordinal\":0}"),
             "{sidecar}"
         );
-        // Compiling with a table does not change the text the compiler reads.
+        // The compiler reads the copy with directives; the clean text stays beside it.
         assert_eq!(
             fs::read_to_string(directory.path().join("kernel.slang")).unwrap(),
+            compile_copy(source, &origin)
+        );
+        assert_ne!(compile_copy(source, &origin), source);
+        assert_eq!(
+            fs::read_to_string(directory.path().join("kernel.export.slang")).unwrap(),
             source
         );
     }

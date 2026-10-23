@@ -212,8 +212,16 @@ Slang diagnostics point to generated `.slang` lines. The bridge recognizes curre
 multiline and legacy locations, writes a temporary `kernel.map.json` beside its
 owned `kernel.slang`, and appends the mapped kernel plus a stable generated construct
 label when an error line is covered. Warnings, unrelated filenames, and out-of-range
-locations do not establish attribution. Exact Rust file/line spans remain future
-work because stable proc-macro spans do not expose portable source locations.
+locations do not establish attribution.
+
+When the descriptor carries a line table (M1.1), the text handed to the compiler is a
+compile-time copy with `#line <rust_line> "<file>"` directives (M1.3), so the
+compiler's own error location is the Rust file and line, and the bridge appends
+`originating Rust source: <file>:<line>`. The column stays a column of the generated
+Slang. Lines without a Rust origin return to `kernel.slang` coordinates. The copy is
+used by `slang::compile*` and by both reflection paths; the exported `.slang`
+(`write_source`, `KernelDescriptor::slang_source`) never contains a directive. A
+descriptor without a table compiles the clean text as before.
 
 ## Deliberate non-goals for this slice
 

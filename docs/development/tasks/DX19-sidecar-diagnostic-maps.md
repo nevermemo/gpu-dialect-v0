@@ -83,8 +83,35 @@ and use it to enrich Slang errors with a stable generated construct label.
   table. A descriptor without a table (`SourceOrigin::UNKNOWN`) gets exactly the
   old text on both paths: on the reflection path that is the compiler output, then
   `originating Rust kernel: <module>::<kernel>` as the last line, with no construct
-  and no source line. Compiler output still names `kernel.slang` coordinates;
-  `#line` markers are a later slice.
+  and no source line.
+- `#line` injection (M1.3). The text the compiler reads is a compile-time copy of
+  the Slang source, never the exported text. For each Slang line the descriptor's
+  table attributes to a Rust line (the innermost record, rule above) the copy has
+  `#line <rust_line> "<file>"` on the line before it, repeated for every such line
+  so a multi-line lowering keeps its statement's line instead of counting up; the
+  first line without a record after an attributed one is preceded by
+  `#line <slang_line> "kernel.slang"`, which returns the compiler to Slang
+  coordinates. Lines before the first record are untouched. The file string is the
+  descriptor's `rust_file` (`/` separators, whitelisted characters). With no file, no
+  table, a record for Rust line 0, or a file string that is not
+  `[A-Za-z0-9_.+/-]` or is named `kernel.slang`, the copy equals the source byte
+  for byte. Slangc and the native reflection helper both honour the directives
+  (their errors read `--> <file>:<line>:<column>`, the column being a Slang column);
+  the helper's `sourceHash` is the hash of the copy it read. WGSL and SPIR-V output
+  is identical with and without the directives (tested).
+- The error parser accepts a Rust location only when its path text equals the
+  descriptor's `rust_file` exactly, in the `-->` and the legacy `file(line[,col])`
+  shapes; any other file stays unattributed. For a Rust location the construct label
+  comes from the lowest Slang start line of any record with that Rust line, through
+  the same segment lookup (many Slang lines can come from one Rust line, so the
+  choice is documented and deterministic), and the annotation ends with
+  `(column is in the generated Slang)`. A Slang location (`kernel.slang`, an
+  unattributed line) is handled as before, including the record lookup of the M1.1
+  contract above.
+- The sidecar gains a top-level `"line_directives": true|false` (after
+  `"rust_file"`; `schema_version` stays 2, the key is additive): whether the compiled
+  copy differs from the clean text. When it does, the temporary directory has
+  `kernel.slang` (what the compiler read) and `kernel.export.slang` (the clean text).
 - The sidecar is written for inspection and is never parsed back; the lookup
   uses the same map held in memory. "Malformed or missing map" therefore means
   a line with no containing segment, which falls back to kernel attribution.

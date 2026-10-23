@@ -150,7 +150,10 @@ pub fn compile_reflected_with_helper(
     let source = directory.path().join("kernel.slang");
     let artifact = directory.path().join("kernel.artifact");
     let json = directory.path().join("reflection.json");
-    fs::write(&source, kernel.slang_source)?;
+    // The helper reads the compile copy (`#line` directives, M1.3); its source
+    // hash is of that text, which `from_output` checks against the same copy.
+    let compiled_source =
+        slang::write_compile_inputs(directory.path(), kernel.slang_source, &kernel.source)?;
     let output = Command::new(helper.as_ref())
         .arg(&source)
         .arg(kernel.entry_point)
@@ -179,6 +182,7 @@ pub fn compile_reflected_with_helper(
     }
     CompiledReflection::from_output(
         kernel,
+        &compiled_source,
         target,
         fs::read(artifact)?,
         &fs::read_to_string(json)?,
@@ -225,8 +229,12 @@ fn fingerprint(bytes: &[u8]) -> String {
 }
 
 impl CompiledReflection {
+    /// `compiled_source` is the text the helper compiled: the kernel's Slang with
+    /// the `#line` directives of [`slang::compile_copy`], whose hash the helper
+    /// reports as `sourceHash`.
     fn from_output(
         kernel: &KernelDescriptor,
+        compiled_source: &str,
         target: Target,
         artifact: Vec<u8>,
         json: &str,
@@ -241,7 +249,7 @@ impl CompiledReflection {
         }
         if root.get("target")?.string()? != target_name(target)
             || root.get("entryPoint")?.string()? != kernel.entry_point
-            || root.get("sourceHash")?.string()? != fingerprint(kernel.slang_source.as_bytes())
+            || root.get("sourceHash")?.string()? != fingerprint(compiled_source.as_bytes())
             || root.get("artifactHash")?.string()? != fingerprint(&artifact)
         {
             return Err(invalid(
@@ -292,7 +300,7 @@ pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, 
         Target::Wgsl => ("wgsl", "wgsl"),
         Target::Spirv => ("spirv", "spv"),
     };
-    fs::write(&source, kernel.slang_source)?;
+    slang::write_compile_inputs(directory.path(), kernel.slang_source, &kernel.source)?;
     let mut command = Command::new("slangc");
     command.arg(source).args([
         "-target",
