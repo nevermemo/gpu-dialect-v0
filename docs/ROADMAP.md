@@ -1,58 +1,99 @@
 # Roadmap
 
-This is a dependency-ordered direction, not a schedule or a claim of completed v1.
-Runnable next-task acceptance criteria live in [NEXT_TASKS](development/NEXT_TASKS.md).
+This is the ordered plan the project follows. It was agreed with the owner on
+2026-10-23. Milestones run in order; work inside a milestone may run in parallel
+lanes. Decisions behind it are D21–D27 in [DECISIONS](DECISIONS.md). Claimable task
+detail lives in [NEXT_TASKS](development/NEXT_TASKS.md) and task contracts in
+[tasks/](development/tasks/README.md). Current state and evidence live in
+[STATUS](development/STATUS.md).
 
-## S0 — Preserve and re-anchor (completed 2026-09-07)
+## How to use this file
 
-Verify baseline; retain all five examples and GPU features; document actual GUST
-scope, portability, execution domains, engine destination, and agent workflow.
-Deliver status, handoff, baseline hashes, a repeatable full verification command,
-and reviewed generated artifacts. No engine implementation claimed.
+- Read **Now and next** first, including after a context compaction.
+- Status words are facts: `planned`, `ready`, `in progress`, `done (<tier>, <commit>)`.
+  A status never moves to `done` without a run record at the stated evidence tier
+  (see [VALIDATION](development/VALIDATION.md)).
+- Change the order or content of milestones only with an owner decision recorded in
+  DECISIONS.
+- No kill rules are attached for now (owner, 2026-10-23); scope is reviewed at
+  milestone boundaries instead.
 
-## S1 — Translation/runtime stability (active priority)
+## Direction
 
-- Golden translation plus GPU semantics regression coverage: first fixture implemented.
-- Fix reproduced silent translation errors; reject unsupported constructs with spans.
-- Entrypoint cache identity and compiler process/artifact lifecycle: hardened.
-- Close signature/attribute/receiver validation gaps; explicit typed locals before
-  richer inference: initial diagnostic slice and typed locals implemented. Further
-  inference/effect semantics remain open. Preserve short-circuit and evaluation-order contracts.
-- Add negative compile tests and mapped diagnostic evidence; do not auto-bless goldens.
+GUST is a published, compute-only crate for writing GPU code in Rust: "Slang with Rust
+syntax and rustc checking". It covers as much Rust syntax as can be lowered with a
+written contract, and brings GPU concepts (vector types, SIMT dispatch, workgroup
+memory, capability-specific code) into Rust. The target hardware and platform are
+chosen at build time; GPU and CPU builds follow one semantics contract (D21, D22).
+GUST is the foundation for two later projects: Breeze, a rendering and interaction
+framework, and Hurricane, the game engine (today's
+[ENGINE_NORTH_STAR](ENGINE_NORTH_STAR.md)). Their scope is defined when GUST is ready.
 
-## S2 — Portable contract and language breadth (partially implemented)
+## Now and next
 
-Target probes, kernel-level diagnostic attribution, bounded field-aware struct
-creation, local/helper `Option<T>` lowering, and exclusive-range loops are implemented
-(T04–T06, T09–T11). Reflection gates every StorageV1 pipeline through the native
-helper (D17, T06). Still pending: fine-grained source maps and small vector/math
-families. The
-broad uniforms/textures/samplers, parameter groups, and specialized layouts must
-extend that reflected evidence before entering the runtime contract. Any artifact
-disk cache needs source, compiler identity, options, and dependencies in its key.
-Additional native targets need their own compilation and execution evidence.
+**Now: M0, close-out and housekeeping.**
 
-## S3 — Explicit execution model (first proof implemented)
+| Item | Work | Status |
+| --- | --- | --- |
+| M0.1 | DX19 close-out: `cargo xtask check-full` and an independent review | ready |
+| M0.2 | Replace the six PowerShell skill scripts with xtask commands (`slangc`, `spirv-val`, `doctor --smoke`, `test-exact`; `--locked` on existing checks); delete `Test-VerticalSlice.ps1`; fix the stale `.ps1` reference in `crates/gust/src/reflect/mod.rs` | ready |
+| M0.3 | Lint that fails when a `.ps1`, `.bat`, `.cmd` or `.sh` file is tracked (D27) | ready |
+| M0.4 | `cargo xtask doctor` exits non-zero when a required tool is missing | ready |
+| M0.5 | Artifact check compares expected file names, not a count | ready |
+| M0.6 | `cargo xtask docs-check`: relative links, conflict markers, decision ids | ready |
+| M0.7 | Machine-path lint for tracked files | ready |
+| M0.8 | Explicit `BLESS_GOLDEN=1` for reviewed goldens, never automatic | ready |
+| M0.9 | `cargo xtask check-arch`: no custom shader IR (dependency allowlist, no IR modules outside a `future/` path) | ready |
+| M0.10 | Suites named by evidence tier: `cargo xtask test --suite Unit\|Slangc\|Spirv\|Reflect\|Gpu\|Full` over existing commands | ready |
+| M0.11 | Thin `CLAUDE.md`: read AGENTS.md first, role mapping, compaction instructions, skills list | ready |
+| M0.12 | Skill fixes: GUST does not use trybuild; "host reference" instead of "CPU oracle"; vertical-slice skill points at `check-artifacts`/`check-full` | ready |
+| M0.13 | DECISIONS tidy: header with next id, trailing prose moved under a heading | ready |
+| M0.14 | Independent review of the 2026-10-23 `xtask` redaction and CI changes | ready |
+| M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | planned |
 
-T07 supplies `StagedGraph` and `examples/staged-graph`: host settings upload, two
-ordered GPU stages, summary readback, checked explicit dependencies and transfer/
-residency reports. T08 adds validated indirect-dispatch resources. These are explicit
-host APIs, not compiler-inferred graphs or CPU execution nodes. Still pending:
-continuations, transfer planning, automatic dependency/effect inference and rustc
-semantic integration. Slang still owns shader codegen.
+**Next: M1, diagnostics.**
 
-## S4 — Engine-shaped proofs (pool and indirect compute implemented)
+## Milestones
 
-T08 supplies a typed vector-like component pool with GPU-copy growth, logical length
-versus capacity, retirement, and GPU-derived indirect compute arguments. The count
-starts from a host-mirrored length; this is not yet GPU compaction or an ECS.
-Still pending: atomic GPU count generation, culling/compaction, indirect rendering,
-entity IDs/generations and native capability alternatives. Choose ECS storage based
-on measured workloads rather than treating this pool as the final engine layout.
+| Milestone | Content | Status |
+| --- | --- | --- |
+| M0 Close-out and housekeeping | See Now and next | in progress |
+| M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | planned |
+| M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | planned |
+| M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[gpu(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26) | planned |
+| M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run | planned |
+| M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; known-mismatch file; scalar `coretests` cases on the GPU | planned |
+| M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`) | planned |
+| M7 GPU concepts in Rust | `par_for!` SIMT dispatch on both pipelines; workgroup shared memory and barriers, including a CPU strategy; reduce, scan and compaction primitives (T13 lands here) | planned |
+| M8 Capability variants | Capability-keyed variants with platform aliases; exhaustiveness checked against the crate's declared target list, with CPU as a target; one rustc-checked signature; subgroup operations first (D23) | planned |
+| M9 Language breadth II | Methods in `impl` blocks; user enums with `match`; tuples; fixed-size arrays; non-capturing closures; then traits mapped to Slang interfaces and generics | planned |
+| M10 Publication | Benchmarks against rayon, hand-written WGSL with wgpu, CubeCL and rust-gpu; a "Rust program to GPU" example gallery; docs and a book; API stability pass; crate naming (D25); crates.io release | planned |
 
-## Long term — ECS game engine (aspiration)
+A first public release may be cut after M7 so that publishing does not wait for M8
+and M9; that cut is an owner decision when M7 is done.
 
-GPU-resident physics/animation/hierarchy/visibility/geometry/material systems,
-intentional CPU input/gameplay/assets, and portable plus native-optimized rendering.
-No claim of a complete game engine until an actual user can run an agreed game or
-scene without developer help.
+## Parking lot
+
+- GPU builds with a CPU fallback (D21 leaves this open as a future option).
+- WebGL2 (out of scope for GUST compute, D24; revisit for Breeze).
+- Slang automatic differentiation.
+- An optional nightly-pinned THIR checker behind a cargo subcommand.
+- Per-API SPIR-V, MSL and DXIL builds for native-only capabilities.
+- Breeze and Hurricane scope.
+
+## Completed foundation (before 2026-10-23)
+
+- **S0, preserve and re-anchor (2026-09-07):** baseline verified, scope documented,
+  repeatable full verification.
+- **S1, translation and runtime stability:** golden translation and GPU semantics
+  fixtures; silent translation errors fixed; entrypoint cache identity and compiler
+  process lifecycle hardened.
+- **S2, portable contract and language breadth (partial):** target probes,
+  kernel-level diagnostics, bounded struct construction, `Option`/`Result`, bounded
+  loops, atomics; reflection gates every StorageV1 pipeline (D17).
+- **S3, explicit execution model (first proof):** `StagedGraph` with checked explicit
+  dependencies and transfer reports; validated indirect dispatch.
+- **S4, engine-shaped proofs:** `GpuPool<T>` with GPU-copy growth and GPU-derived
+  indirect arguments.
+
+Details are in [history/COMPLETED_TASKS](development/history/COMPLETED_TASKS.md).

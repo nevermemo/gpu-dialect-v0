@@ -1,6 +1,10 @@
 # Current status
 
-## Active: none claimed (2026-10-22)
+## Active: roadmap M0 (2026-10-23)
+
+The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md) (decisions
+D21–D27). M0 is in progress; its items and their status are in the roadmap's "Now and
+next" table.
 
 The DX context reduction, DX19 sidecar diagnostic maps, and the `slang/source_map.rs`
 ownership split are committed (`63769fb`). DX19 still needs the full validation and

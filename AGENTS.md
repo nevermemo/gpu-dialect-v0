@@ -101,9 +101,14 @@ Do not wait for Codex during normal local swarm work.
   real GPU tests, typed buffers, pipeline caching, ordered batches, and async jobs.
 - No new custom shader instruction IR or handwritten SPIR-V backend. An eventual
   execution graph is a high-level CPU/GPU scheduling model, not a replacement for Slang.
-- Shadow signatures exist for Rust checking; their bodies are not a CPU execution
-  contract. No `.cpu()` wrappers or CPU fallback. Independent host test references
-  and intentional future CPU nodes are different things and remain allowed.
+- Targets are chosen at build time (D21). A production build contains one target, a
+  GPU target or the CPU target, never both, so there is no runtime CPU fallback.
+  Test builds may contain both pipelines through `cfg(test)` or `--cfg gust_dual`,
+  never through a Cargo feature (D26). Shadow bodies execute only under the
+  semantics contract (D22); until roadmap M3 lands they are type-checking shadows
+  only. Independent host references stay required for semantics fixtures.
+- Workflow commands live in `cargo xtask`; do not add shell or PowerShell scripts
+  (D27). The ordered plan is `docs/ROADMAP.md`; read its "Now and next" first.
 - Do not claim compiler reflection in the macro: bindings and restricted POD layouts
   are assigned by the macro. The runtime verifies them against Slang's reflection
   through the native helper before creating a pipeline (D17); that check is a gate,

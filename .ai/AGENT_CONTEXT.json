@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "purpose": "Machine-readable entry points for GUST agents. Human narrative remains under docs/development.",
+  "roadmap": "docs/ROADMAP.md",
   "current_status": "docs/development/STATUS.md",
   "active_queue": "docs/development/NEXT_TASKS.md",
   "task_contracts": "docs/development/tasks/README.md",

@@ -7,6 +7,10 @@ contracts live in [tasks/](tasks/README.md).
 Claim one bounded task in [STATUS.md](STATUS.md) before editing. A task is not
 active until its owner, scope, and focused check appear there.
 
+The ordered plan is [ROADMAP.md](../ROADMAP.md). Its "Now and next" table lists the
+claimable M0 items (M0.1 to M0.15); this file keeps deferred work and task detail
+that does not fit there.
+
 ## Deferred
 
 ### T13: GPU active count to indirect dispatch
