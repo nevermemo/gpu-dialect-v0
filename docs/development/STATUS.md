@@ -4,8 +4,22 @@
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done except M0.15,
-which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) starts with
-slice m1.0. T13 remains deferred by owner; its work in progress is the git stash
+which waits for a week of green CI (from 2026-10-30). M1 (diagnostics): M1.0 to M1.4
+are done (per-item evidence in the roadmap); M1.5, stable diagnostic codes, is next.
+
+- M1.3: the compile-time copy carries `#line` directives on `slang::compile*` and both
+  reflection paths; exported `.slang` never does. The native helper honours them, and
+  the sidecar records `line_directives`. 10 of 10 deliberate failures land on the right
+  Rust line on WGSL and SPIR-V; WGSL/SPIR-V bytes are identical with and without
+  directives for three fixtures. Columns stay Slang columns; only the first error is
+  attributed (`8fcf944`, `7007827`).
+- M1.4: a rejected `#[gpu]` module is returned beside `compile_error!` with `#[kernel]`
+  removed, kernel fns renamed and private as on the success path, and the prelude
+  imported; `mod m;` gets the error alone. Measured on `vector-add` with one rejection
+  inside the referenced kernel (rustc 1.98): one error before and after, the same
+  message; the editor benefit is not measured (`e01b82c`, `f507ab4`).
+
+T13 remains deferred by owner; its work in progress is the git stash
 `WIP T13 active count deferred`, not the working tree. Do not apply, continue,
 validate, commit, or drop it without explicit direction.
 

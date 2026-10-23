@@ -39,8 +39,8 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M1.0 | Minimum Rust 1.90 (D29, D30) plus an `msrv` CI job; validation records stamped with the commit and dirty state; `check-arch` reads dependencies through `cargo metadata`; structured Full-step test | done (Unit: CI unit + msrv on Rust 1.90.0 green at 0e5df0a; Codex review keep after fixes) |
 | M1.1 | Rust line table: statement-level source lines recorded by the emitter; sidecar schema v2 with Rust lines; one shared diagnostic annotation for both compile paths (CLI and reflection helper) | done (Slangc + Reflect: diagnostics 9, reflection 4 on RTX 5090; Codex reviews of 5cd2c85, adbd050, a4dabb1, 2197e6c, last verdict keep) |
 | M1.2 | `#[diagnostic::on_unimplemented]` on the shadow-type traits; `cargo xtask check-ui` over a fixture workspace | done (Unit: check-ui, 122 xtask tests; Codex keep) |
-| M1.3 | `#line` markers injected into the compile-time Slang copy only, so errors name the Rust file and line; exported `.slang` stays clean | planned |
-| M1.4 | Original tokens kept beside `compile_error!` so IDEs keep context | planned |
+| M1.3 | `#line` markers injected into the compile-time Slang copy only, so errors name the Rust file and line; exported `.slang` stays clean | done (Slangc + Reflect: 10 of 10 failures on the right Rust line; Codex keep; `8fcf944`, `7007827`) |
+| M1.4 | Original tokens kept beside `compile_error!` so IDEs keep context | done (Unit; Fable keep after fixes, fixed; `e01b82c`, `f507ab4`) |
 | M1.5 | Stable diagnostic codes (`[GUST-E0401]`), `docs/DIAGNOSTICS.md`, tests assert codes | planned |
 
 **Done: M0, close-out and housekeeping** (closed 2026-10-23, D28; M0.15 waits for 2026-10-30).
