@@ -19,6 +19,6 @@ Use a typed emission function per node family returning an error for unsupported
 
 Keep a source-span association for diagnostics using the project's existing mapping or emitted comments; generated line numbers must not be presented as original Rust locations without a mapping. Keep helper ordering and bindings stable.
 
-For numeric changes test integer boundaries, division/shift edge cases and floats with an explicit NaN/infinity/rounding policy. CPU oracle arithmetic can differ from GPU arithmetic; do not use tolerance to conceal a semantic error. Layout comes from the host/shader ABI, not Rust field spelling.
+For numeric changes test integer boundaries, division/shift edge cases and floats with an explicit NaN/infinity/rounding policy. Independent host reference arithmetic can differ from GPU arithmetic; do not use tolerance to conceal a semantic error. Layout comes from the host/shader ABI, not Rust field spelling.
 
 Source guidance checked 2026-09-07: [Rust expressions](https://doc.rust-lang.org/reference/expressions.html), [Slang compilation](https://github.com/shader-slang/slang/blob/master/docs/user-guide/08-compiling.md). Project-specific mapping rules above must be confirmed against existing tests.

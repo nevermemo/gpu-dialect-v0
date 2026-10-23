@@ -1,4 +1,8 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 pub(crate) const EXAMPLES: &[&str] = &[
     "atomic-counter",
@@ -22,6 +26,25 @@ pub(crate) const WORKSPACE_EXCLUDES: &[&str] = &[
     "typed-pipeline",
     "staged-graph",
     "component-pool",
+];
+
+/// SPIR-V files the examples export to `generated-wgpu/`, one `<module>__<kernel>.spv` per
+/// kernel (the examples build each stem from `descriptor.module` and `descriptor.name`).
+/// Sorted; `verify` compares the directory against this list by name.
+pub(crate) const EXPECTED_SPIRV: &[&str] = &[
+    "atomic_counter__increment.spv",
+    "particles__snapshot.spv",
+    "particles__step.spv",
+    "polynomial__evaluate.spv",
+    "pool__integrate.spv",
+    "pool__prepare_dispatch.spv",
+    "sensor_pipeline__calibrate.spv",
+    "sensor_pipeline__classify.spv",
+    "sensor_pipeline__finalize.spv",
+    "signal_pipeline__transform.spv",
+    "staged__summarize.spv",
+    "staged__transform.spv",
+    "vector_add__add.spv",
 ];
 
 pub(crate) const FEATURE_AREAS: &[&str] = &[
@@ -51,8 +74,17 @@ pub(crate) fn workspace_root() -> Result<PathBuf, String> {
     }
 }
 
+/// Where cargo puts build output: `CARGO_TARGET_DIR` when set, else `<root>/target`.
+pub(crate) fn cargo_target_dir(root: &Path) -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from)
+}
+
 pub(crate) fn workspace_test_args() -> Vec<String> {
-    let mut args = vec!["test".to_owned(), "--workspace".to_owned()];
+    let mut args = vec![
+        "test".to_owned(),
+        "--locked".to_owned(),
+        "--workspace".to_owned(),
+    ];
     for package in WORKSPACE_EXCLUDES {
         args.push("--exclude".to_owned());
         args.push((*package).to_owned());

@@ -1,8 +1,11 @@
 use std::{env, process::ExitCode};
 
 mod checks;
+mod lint;
 mod process;
 mod reflect;
+mod shader;
+mod test_exact;
 mod time;
 mod validation;
 mod verify;
@@ -14,8 +17,10 @@ use checks::{
     self_test, status,
 };
 use reflect::{BuildOptions, build_slang_reflect};
+use shader::{SlangcOptions, SpirvValOptions, slangc, spirv_val};
+use test_exact::{TestExactOptions, test_exact};
 use verify::{VerifyCommand, VerifyMode, verify};
-use workspace::FEATURE_AREAS;
+use workspace::{FEATURE_AREAS, workspace_root};
 
 fn main() -> ExitCode {
     match run() {
@@ -55,7 +60,16 @@ fn run() -> Result<(), String> {
             }
             status()?;
         }
-        "doctor" => doctor()?,
+        "doctor" => doctor(&args)?,
+        "lint" => {
+            if !args.is_empty() {
+                return Err("lint takes no arguments".into());
+            }
+            lint::lint(&workspace_root()?, &mut Vec::new())?;
+        }
+        "slangc" => slangc(&SlangcOptions::parse(&args)?)?,
+        "spirv-val" => spirv_val(&SpirvValOptions::parse(&args)?)?,
+        "test-exact" => test_exact(&TestExactOptions::parse(&args)?)?,
         "list-tests" => list_tests()?,
         "explain-check" => explain_check(args.first().map(String::as_str))?,
         "export-artifacts" => export_artifacts()?,
@@ -70,7 +84,7 @@ fn run() -> Result<(), String> {
 
 fn usage() {
     eprintln!(
-        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  status | doctor | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
+        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  lint\n  slangc <file.slang> --entry NAME --target wgsl|spirv --out PATH [-- SLANGC_ARGS]\n  spirv-val <file.spv> --target-env ENV\n  test-exact -p PACKAGE --test TARGET [--features LIST] NAME\n  status | doctor [--smoke] | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
         FEATURE_AREAS.join("|")
     );
 }

@@ -12,4 +12,4 @@ Preserve restricted Rust GPU module -> validated syn AST -> direct Slang emissio
 3. Compile each requested target independently. Success for SPIR-V does not establish WGSL compatibility or runtime correctness.
 4. Return the smallest shader/emitter fix, exact command and target-specific result.
 
-Read [target and ABI notes](references/targets-and-abi.md) only for language/target decisions. Run [Compile-Slang.ps1](scripts/Compile-Slang.ps1) for repeatable compilation. The [smoke shader](assets/vector-add.slang) tests tool installation, not Rust lowering.
+Read [target and ABI notes](references/targets-and-abi.md) only for language/target decisions. Run `cargo xtask slangc <file.slang> --entry <name> --target wgsl|spirv --out <path>` for repeatable compilation: it refuses an existing output path, fails on a missing or empty artifact, and writes `<out>.command.json` (slangc version, arguments, output SHA-256) and `<out>.compile.log` beside the output. Extra slangc arguments go after `--`. The [smoke shader](assets/vector-add.slang) tests tool installation, not Rust lowering; `cargo xtask doctor --smoke` compiles it to both targets.

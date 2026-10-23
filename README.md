@@ -93,7 +93,7 @@ It writes `.ai/VALIDATION.json` with command exit codes, stdout, artifact hashes
 and explicit untested targets. This is local debug validation, not release benchmark
 evidence or cross-platform certification.
 
-Purpose-built check scripts keep the inner loop honest:
+Purpose-built check commands keep the inner loop honest:
 
 | Command | Purpose | Runs |
 | --- | --- | --- |
@@ -105,14 +105,19 @@ Purpose-built check scripts keep the inner loop honest:
 | `cargo xtask check-feature gpu-runtime` | Runtime/reflection gate work | wgpu reflection integration tests |
 | `cargo xtask check-changed` | Dirty-tree routing | chooses a focused check from changed paths |
 | `cargo xtask check-format` | Formatting only | `cargo fmt --all -- --check` |
-| `cargo xtask check-lints` | Strict lints | workspace Clippy with warnings denied |
-| `cargo xtask check-fast` | Fast routine confidence | helper version check, fmt check, macro tests, core lib tests, wgpu tests |
-| `cargo xtask check-workspace` | Default workspace confidence | workspace tests with example packages excluded entirely |
+| `cargo xtask check-lints` | Strict lints | workspace Clippy with warnings denied (`--locked`) |
+| `cargo xtask lint` | Policy lint | no tracked shell or PowerShell scripts (D27) and no machine-specific paths in tracked text |
+| `cargo xtask check-fast` | Fast routine confidence | policy lint, helper version check, fmt check, macro tests, core lib tests, wgpu tests |
+| `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | ignored example tests plus example binaries |
 | `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation |
 | `cargo xtask check-full` | Release confidence | full staged verification |
 | `cargo xtask status` | Resume context | git status, active claim, validation summary, suggested check |
-| `cargo xtask doctor` | Environment readiness | required tools and reflection helper status |
+| `cargo xtask doctor` | Environment readiness | required tools and reflection helper status; exits non-zero when cargo, rustc, slangc or the helper is missing |
+| `cargo xtask doctor --smoke` | Toolchain smoke test | doctor, then a hand-written Slang kernel compiled to WGSL and SPIR-V in a fresh target directory and the SPIR-V validated; the Rust frontend and GPU execution are not run |
+| `cargo xtask slangc <file.slang> --entry <name> --target wgsl\|spirv --out <path>` | One reproducible slangc compile | refuses an existing output, fails on a missing or empty artifact, records version, arguments and SHA-256 in `<path>.command.json` |
+| `cargo xtask spirv-val <file.spv> --target-env <env>` | One SPIR-V validation | length and magic check, then `spirv-val`; prints the SHA-256 and validator version |
+| `cargo xtask test-exact -p <package> --test <target> <name>` | One exact test, ignored or not | lists the tests, requires the name exactly once, runs it with `--include-ignored`, fails unless one test executed and passed |
 | `cargo xtask list-tests` | Test inventory | summarizes test categories from Cargo's test list |
 | `cargo xtask explain-check <area>` | Command intent | prints why/when to use a check |
 | `cargo xtask measure-tests --json target/test-times.json` | Profiling before pruning | timed default test commands or one custom command |

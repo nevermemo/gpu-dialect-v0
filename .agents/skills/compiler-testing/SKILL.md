@@ -1,15 +1,15 @@
 ---
 name: compiler-testing
-description: "Add or diagnose compiler regression tests, trybuild compile-pass/compile-fail fixtures, span diagnostics, emitted Slang assertions, or CPU/GPU differential tests. Use when validating compiler changes; not as a mandatory full test sweep for documentation edits."
+description: "Add or diagnose compiler regression tests, compile_fail doctests, span diagnostics, emitted Slang assertions, or independent host-reference/GPU differential tests. Use when validating compiler changes; not as a mandatory full test sweep for documentation edits."
 ---
 
 # Compiler testing
 
 Choose the smallest test that can disprove the change, then expand only across affected compiler boundaries. Keep the locked toolchain and dependency versions.
 
-1. Validator: accepted fixture plus single-cause compile-fail fixture with a meaningful source span.
-2. Emitter: source -> expected Slang semantics, then actual slangc compilation for supported targets.
-3. Runtime: independent CPU expected values against GPU readback, including partial workgroups.
-4. Run focused tests before workspace checks. Never regenerate expected diagnostics automatically to make a test pass.
+1. Validator: accepted fixture plus single-cause rejection test with a meaningful diagnostic, in `crates/gust-macros/src/tests`. A `compile_fail` doctest in `crates/gust/src/lib.rs` covers source that rustc itself must still reject.
+2. Emitter: source -> expected Slang semantics against the reviewed goldens in `tests/fixtures/`, then actual slangc compilation for supported targets.
+3. Runtime: expected values from an independent host reference against GPU readback, including partial workgroups.
+4. Run focused tests before workspace checks. Never regenerate expected diagnostics or goldens automatically to make a test pass.
 
-Read [test layers](references/test-layers.md) for trybuild and regression selection. Run [Test-Compiler.ps1](scripts/Test-Compiler.ps1) for locked formatting, Clippy and workspace tests. It reports Cargo checks only; it does not certify a GPU run or that every intended fixture exists.
+Read [test layers](references/test-layers.md) for regression selection. Pick the check with `cargo xtask check-feature <area>` or `cargo xtask check-changed`; `cargo xtask check-format`, `cargo xtask check-lints` (Clippy, warnings denied) and `cargo xtask check-workspace` run locked formatting, lint and workspace tests. They report cargo checks only; they do not certify a GPU run or that every intended fixture exists. Evidence tiers are defined in `docs/development/VALIDATION.md`.

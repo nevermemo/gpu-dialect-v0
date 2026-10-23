@@ -1,6 +1,6 @@
 # Slang target and ABI notes
 
-Use the repository's pinned slangc first; record `slangc -version`. This bundle's scripts specify `-entry`, `-stage compute`, `-target` and `-o` explicitly. Extra profile/capability/include arguments are caller supplied, not guessed. Compile WGSL and SPIR-V separately to expose target restrictions.
+Use the repository's pinned slangc first; record `slangc -version`. `cargo xtask slangc` specifies `-entry`, `-stage compute`, `-target` and `-o` explicitly and records them in `<out>.command.json`. Extra profile/capability/include arguments are caller supplied after `--`, not guessed; SPIR-V that must keep the descriptor's entry point name needs `-fvk-use-entrypoint-name`, as the Slang bridge passes. Compile WGSL and SPIR-V separately to expose target restrictions.
 
 Project design guidance:
 - Use an explicit `(set, binding, access, element layout)` contract shared by emitter and runtime. Slang `[[vk::binding(binding, set)]]` uses binding first; wgpu uses group=set.

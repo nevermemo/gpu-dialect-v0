@@ -11,6 +11,7 @@ use crate::{
         command_exists, print_command, require_command, run_checked, run_direct, run_direct_args,
     },
     reflect::{BuildOptions, build_slang_reflect},
+    shader::doctor_smoke,
     validation::{compact_validation_summary, json_string},
     verify::{VerifyMode, verify},
     workspace::{EXAMPLES, changed_paths, workspace_root, workspace_test_args},
@@ -101,6 +102,7 @@ pub(crate) fn check_lints() -> Result<(), String> {
         "cargo",
         &[
             "clippy",
+            "--locked",
             "--workspace",
             "--all-targets",
             "--",
@@ -232,13 +234,22 @@ pub(crate) fn status() -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn doctor() -> Result<(), String> {
+/// Reports tool readiness and fails when a required tool is missing. `--smoke` also compiles
+/// a hand-written Slang kernel to WGSL and SPIR-V and validates the SPIR-V.
+pub(crate) fn doctor(args: &[String]) -> Result<(), String> {
+    let smoke = match args {
+        [] => false,
+        [flag] if flag == "--smoke" => true,
+        _ => return Err("doctor takes only `--smoke`".into()),
+    };
+    let mut missing = Vec::new();
     println!("Toolchain doctor:");
     for command in ["cargo", "rustc", "slangc"] {
         if command_exists(command) {
             println!("  {command}: found");
         } else {
             println!("  {command}: missing");
+            missing.push(command);
         }
     }
     println!(
@@ -251,11 +262,25 @@ pub(crate) fn doctor() -> Result<(), String> {
     );
     match build_slang_reflect(BuildOptions::default()) {
         Ok(()) => println!("  gust-slang-reflect: ready"),
-        Err(error) => println!("  gust-slang-reflect: not ready ({error})"),
+        Err(error) => {
+            println!("  gust-slang-reflect: not ready ({error})");
+            missing.push("gust-slang-reflect");
+        }
     }
     println!(
         "  Vulkan/wgpu adapter: run `cargo xtask check-feature gpu-smoke` for a cheap runtime check"
     );
+    if !missing.is_empty() {
+        return Err(format!(
+            "required tools missing or not ready: {}",
+            missing.join(", ")
+        ));
+    }
+    if smoke {
+        doctor_smoke(&workspace_root()?)?;
+    } else {
+        println!("  Slang compile smoke: run `cargo xtask doctor --smoke`");
+    }
     Ok(())
 }
 
@@ -326,8 +351,11 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         }
         "format" => "format: rustfmt only",
         "lints" => "lints: strict Clippy over workspace/all targets",
+        "lint" => {
+            "lint: no tracked shell scripts (D27) and no machine-specific paths in tracked text; also part of check-fast"
+        }
         "all" => {
-            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints"
+            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints, lint"
         }
         _ => return Err(format!("unknown check area `{area}`")),
     };

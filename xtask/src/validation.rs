@@ -15,11 +15,25 @@ pub(crate) fn write_validation(
     checks: &[CheckRecord],
     artifacts: &[ArtifactRecord],
 ) -> Result<(), String> {
-    let path = root.join(".ai/VALIDATION.json");
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
-    let prefixes = redaction_prefixes(&root.display().to_string(), &home);
+    write_validation_with_home(root, &home, mode, started, failure, checks, artifacts)
+}
+
+/// `write_validation` with the home directory passed in, so tests need not touch the
+/// process environment.
+fn write_validation_with_home(
+    root: &Path,
+    home: &str,
+    mode: VerifyMode,
+    started: &str,
+    failure: Option<&String>,
+    checks: &[CheckRecord],
+    artifacts: &[ArtifactRecord],
+) -> Result<(), String> {
+    let path = root.join(".ai/VALIDATION.json");
+    let prefixes = redaction_prefixes(&root.display().to_string(), home);
     let redacted = |text: &str| redact(text, &prefixes);
     let mut json = String::new();
     json.push_str("{\n");
@@ -48,7 +62,7 @@ pub(crate) fn write_validation(
         json.push_str("    {\n");
         json.push_str(&format!(
             "      \"program\": {},\n",
-            json_string(&check.program)
+            json_string(&redacted(&check.program))
         ));
         json.push_str("      \"arguments\": [");
         for (arg_index, arg) in check.arguments.iter().enumerate() {
@@ -96,20 +110,30 @@ pub(crate) fn write_validation(
 }
 
 /// Machine-specific path prefixes and their placeholders, longest first. Command output
-/// spells the workspace root with backslashes, forward slashes, the `\\?\` verbatim
-/// prefix, and doubled backslashes, so each spelling gets its own entry.
+/// spells the workspace root with backslashes, forward slashes, the `\\?\` and `\\?\UNC\`
+/// verbatim prefixes, and doubled backslashes, so each spelling gets its own entry. Trailing
+/// separators are dropped so a home spelled with one redacts like a home spelled without.
 fn redaction_prefixes(root: &str, home: &str) -> Vec<(String, &'static str)> {
     let mut prefixes = Vec::new();
     for (path, placeholder) in [(root, "<workspace>"), (home, "~")] {
-        let path = path.strip_prefix(r"\\?\").unwrap_or(path);
-        if path.is_empty() {
+        // `\\?\UNC\server\share` is `\\server\share`; any other verbatim path drops `\\?\`.
+        let plain = match path.strip_prefix(r"\\?\UNC\") {
+            Some(unc) => format!(r"\\{unc}"),
+            None => path.strip_prefix(r"\\?\").unwrap_or(path).to_owned(),
+        };
+        let backslash = plain.replace('/', r"\");
+        let backslash = backslash.trim_end_matches('\\');
+        if backslash.is_empty() {
             continue;
         }
-        let backslash = path.replace('/', r"\");
+        let verbatim = match backslash.strip_prefix(r"\\") {
+            Some(unc) => format!(r"\\?\UNC\{unc}"),
+            None => format!(r"\\?\{backslash}"),
+        };
         for spelling in [
-            format!(r"\\?\{backslash}"),
+            verbatim,
             backslash.replace('\\', r"\\"),
-            backslash.clone(),
+            backslash.to_owned(),
             backslash.replace('\\', "/"),
         ] {
             prefixes.push((spelling, placeholder));
@@ -120,17 +144,51 @@ fn redaction_prefixes(root: &str, home: &str) -> Vec<(String, &'static str)> {
     prefixes
 }
 
+/// Replaces every prefix spelling with its placeholder. Windows paths ignore case, and the
+/// workspace root comes from the current directory while examples print the on-disk
+/// spelling, so the match ignores case there.
 fn redact(text: &str, prefixes: &[(String, &str)]) -> String {
+    redact_with(text, prefixes, cfg!(windows))
+}
+
+fn redact_with(text: &str, prefixes: &[(String, &str)], ignore_case: bool) -> String {
     let mut out = text.to_owned();
     for (spelling, placeholder) in prefixes {
-        out = out.replace(spelling.as_str(), placeholder);
+        out = replace_spelling(&out, spelling, placeholder, ignore_case);
     }
+    out
+}
+
+fn replace_spelling(text: &str, spelling: &str, placeholder: &str, ignore_case: bool) -> String {
+    if spelling.is_empty() {
+        return text.to_owned();
+    }
+    if !ignore_case {
+        return text.replace(spelling, placeholder);
+    }
+    // ASCII lowercasing keeps every byte offset, so matches found in the lowercased copy
+    // splice into the original text.
+    let haystack = text.to_ascii_lowercase();
+    let needle = spelling.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut from = 0;
+    while let Some(found) = haystack[from..].find(&needle) {
+        let start = from + found;
+        out.push_str(&text[from..start]);
+        out.push_str(placeholder);
+        from = start + needle.len();
+    }
+    out.push_str(&text[from..]);
     out
 }
 
 #[cfg(test)]
 #[path = "tests/validation_redaction.rs"]
 mod validation_redaction_tests;
+
+#[cfg(test)]
+#[path = "tests/validation_write.rs"]
+mod validation_write_tests;
 
 pub(crate) fn compact_validation_summary(text: &str) -> String {
     let field = |name: &str| -> Option<String> {

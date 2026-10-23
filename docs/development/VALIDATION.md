@@ -25,9 +25,9 @@ Gpu the device).
 
 | Tier | Claim | Typical command |
 | --- | --- | --- |
-| Unit | Macro validation, translation, and xtask logic pass without external tools | `cargo test -p gust-macros`, `cargo test -p xtask` (CI) |
+| Unit | Macro validation, translation, and xtask logic pass without external tools | `cargo test -p gust-macros`, `cargo test -p xtask`, `cargo xtask lint` (CI) |
 | Slangc | The generated Slang compiles to the target | WGSL compile smoke tests, `cargo xtask check-fast` |
-| Spirv | Exported SPIR-V passes `spirv-val --target-env vulkan1.2` | `cargo xtask check-artifacts` |
+| Spirv | Exported SPIR-V passes `spirv-val --target-env vulkan1.2` | `cargo xtask check-artifacts`, `cargo xtask spirv-val <file.spv> --target-env vulkan1.2` |
 | Reflect | The D17 layout gate matches the descriptor | `cargo xtask check-feature reflection` |
 | Gpu | Readback on a device equals an independent host reference | GPU tests, `cargo xtask check-full` |
 
@@ -35,6 +35,21 @@ Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.13.1, <co
 A software Vulkan driver such as lavapipe counts as `Gpu (software)`, never as
 hardware evidence. Expected values come from an independent host reference, never from
 the shadow bodies (D04). A missing tool or adapter is a failure for its tier, not a skip.
+
+## Single-stage commands
+
+Workflow commands live in `cargo xtask` (D27); no shell or PowerShell scripts are tracked.
+
+| Command | Use |
+| --- | --- |
+| `cargo xtask lint` | No tracked `.ps1`, `.psm1`, `.psd1`, `.bat`, `.cmd` or `.sh` file, and no machine-specific path in tracked text. Also runs in `check-fast`, `check-full` and CI. |
+| `cargo xtask doctor` | Tool readiness. Exits non-zero when cargo, rustc, slangc or the reflection helper is missing; `spirv-val` is reported and required only for artifact and full modes. |
+| `cargo xtask doctor --smoke` | Doctor, then the hand-written `vector-add.slang` toolchain fixture compiled to WGSL and SPIR-V in a fresh directory under the cargo target directory, and the SPIR-V validated. It says that the Rust frontend and GPU execution were not run; it is not Slangc or Spirv evidence for generated Slang. |
+| `cargo xtask slangc <file.slang> --entry <name> --target wgsl\|spirv --out <path> [-- <slangc args>]` | One slangc compile. Refuses an existing output, fails on a missing or empty artifact, writes `<path>.command.json` (version, arguments, exit code, output SHA-256) and `<path>.compile.log`. |
+| `cargo xtask spirv-val <file.spv> --target-env <env>` | SPIR-V length and magic check, then `spirv-val`; prints the SHA-256 and validator version. |
+| `cargo xtask test-exact -p <package> --test <target> <name>` | Lists the tests, requires `<name>` exactly once, runs it with `--exact --include-ignored`, and fails unless libtest reports one executed, passing test. Certifies execution only. |
+
+`check-lints`, `check-workspace` and the Clippy and workspace-test steps of the verify modes pass `--locked` to cargo, as does `test-exact`.
 
 ## Record policy
 

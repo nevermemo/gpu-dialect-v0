@@ -1,11 +1,12 @@
 use std::{fs, path::Path};
 
 use crate::{
+    lint::lint,
     process::{CheckRecord, require_command, run_checked, run_checked_owned},
     reflect::{BuildOptions, build_slang_reflect},
     time::now_utc,
     validation::{ArtifactRecord, sha256_hex, write_validation},
-    workspace::{EXAMPLES, SMOKE_EXAMPLES, workspace_root, workspace_test_args},
+    workspace::{EXAMPLES, EXPECTED_SPIRV, SMOKE_EXAMPLES, workspace_root, workspace_test_args},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +104,13 @@ fn verify_inner(
     checks: &mut Vec<CheckRecord>,
     artifacts: &mut Vec<ArtifactRecord>,
 ) -> Result<(), String> {
+    // Cheapest check first; it needs only git.
+    if matches!(
+        mode,
+        VerifyMode::Smoke | VerifyMode::Fast | VerifyMode::Full
+    ) {
+        lint(root, checks)?;
+    }
     require_command("cargo")?;
     require_command("rustc")?;
     require_command("slangc")?;
@@ -126,6 +134,7 @@ fn verify_inner(
             "cargo",
             &[
                 "clippy",
+                "--locked",
                 "--workspace",
                 "--all-targets",
                 "--",
@@ -173,12 +182,12 @@ fn verify_inner(
             .filter(|path| path.extension().is_some_and(|extension| extension == "spv"))
             .collect::<Vec<_>>();
         spv.sort();
-        if spv.len() != 13 {
-            return Err(format!(
-                "Expected 13 exported kernels, found {}; update this check deliberately for new examples.",
-                spv.len()
-            ));
-        }
+        let found = spv
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        compare_artifact_names(EXPECTED_SPIRV, &found)?;
         for artifact in spv {
             let path = artifact.to_string_lossy().into_owned();
             run_checked(
@@ -202,3 +211,42 @@ fn verify_inner(
     }
     Ok(())
 }
+
+/// Compares the exported SPIR-V file names with the expected kernels and names the
+/// differences separately: a renamed kernel is one missing and one unexpected file.
+fn compare_artifact_names(expected: &[&str], found: &[String]) -> Result<(), String> {
+    let mut missing = expected
+        .iter()
+        .copied()
+        .filter(|name| !found.iter().any(|found| found == name))
+        .collect::<Vec<_>>();
+    let mut unexpected = found
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !expected.contains(name))
+        .collect::<Vec<_>>();
+    if missing.is_empty() && unexpected.is_empty() {
+        return Ok(());
+    }
+    missing.sort_unstable();
+    unexpected.sort_unstable();
+    let mut message = format!(
+        "Exported SPIR-V kernels differ from the {} expected ({} found).",
+        expected.len(),
+        found.len()
+    );
+    if !missing.is_empty() {
+        message.push_str(&format!(" Missing: {}.", missing.join(", ")));
+    }
+    if !unexpected.is_empty() {
+        message.push_str(&format!(" Unexpected: {}.", unexpected.join(", ")));
+    }
+    message.push_str(
+        " Update EXPECTED_SPIRV in xtask/src/workspace.rs deliberately for new examples.",
+    );
+    Err(message)
+}
+
+#[cfg(test)]
+#[path = "tests/artifact_names.rs"]
+mod artifact_names_tests;

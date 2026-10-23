@@ -69,4 +69,4 @@ that should be reviewed live under `tests/fixtures/`.
 
 ## Tooling
 
-Use `cargo xtask ...` for cross-platform workflow commands. Keep shell/PowerShell scripts out of the primary command surface. Native probe source files belong under `scripts/probes/` until a later dedicated move to `tools/slang-reflect/`.
+Use `cargo xtask ...` for cross-platform workflow commands. No shell or PowerShell scripts are tracked; see D27, which `cargo xtask lint` enforces. Native probe source files (C++, not scripts) belong under `scripts/probes/` until a later dedicated move to `tools/slang-reflect/`.

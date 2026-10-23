@@ -32,7 +32,7 @@ impl fmt::Display for Error {
             Self::Compiler(e) => e.fmt(f),
             Self::HelperUnavailable { helper, source } => write!(
                 f,
-                "could not launch Slang reflection compiler {}: {source}; run pwsh -File scripts/build-slang-reflect.ps1 or set GUST_SLANG_REFLECT to the helper executable",
+                "could not launch Slang reflection compiler {}: {source}; run `cargo xtask build-slang-reflect` or set GUST_SLANG_REFLECT to the helper executable",
                 helper.display()
             ),
             Self::Invalid(s) => write!(f, "invalid Slang reflection: {s}"),
