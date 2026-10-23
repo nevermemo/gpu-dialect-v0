@@ -96,22 +96,85 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
 }
 
 /// The `source:` field of a kernel descriptor: the Rust file the kernel was
-/// written in plus the line table recorded by the emitter. `file` is taken from
-/// the kernel's span with `/` separators (a later `#line` directive would embed
-/// it in a Slang string literal, where `\` is an escape). When the compiler gave no real file (a span from a
-/// synthesized token stream, as in unit tests), the origin is unknown and the
-/// table is dropped, because lines without a file cannot be reported.
+/// written in plus the line table recorded by the emitter. `file` is the kernel's
+/// span file passed through [`recorded_path`], so it is never absolute (the
+/// descriptor is compiled into public binaries and a path would leak the build
+/// machine's layout) and uses `/` only (a later `#line` directive would embed it
+/// in a Slang string literal, where `\` is an escape). When the compiler gave no
+/// real file (a span from a synthesized token stream, as in unit tests), the
+/// origin is unknown and the table is dropped, because lines without a file
+/// cannot be reported.
 fn source_origin(kernel: &syn::ItemFn, lines: &[crate::slang::LineRecord]) -> TokenStream {
-    let file = kernel.sig.ident.span().file().replace('\\', "/");
-    if file.is_empty() || file.starts_with('<') || lines.is_empty() {
+    let reported = kernel.sig.ident.span().file();
+    if reported.is_empty() || reported.starts_with('<') || lines.is_empty() {
         return quote!(::gust::SourceOrigin::UNKNOWN);
     }
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
+    let file = recorded_path(&reported, manifest_dir.as_deref());
     let lines = lines.iter().map(|line| {
         let (slang_start, slang_end, rust_line) =
             (line.slang_start, line.slang_end, line.rust_line);
         quote!(::gust::LineSpan { slang_start: #slang_start, slang_end: #slang_end, rust_line: #rust_line })
     });
     quote!(::gust::SourceOrigin { file: #file, lines: &[#(#lines),*] })
+}
+
+/// The path stored in a descriptor, never absolute and always with `/`:
+/// - a relative path is kept as given;
+/// - an absolute path under `manifest_dir` (the expanding crate's
+///   `CARGO_MANIFEST_DIR`) is stored relative to it;
+/// - any other absolute path (Unix root, drive, UNC or `\\?\` verbatim) is stored
+///   as its file name only.
+fn recorded_path(reported: &str, manifest_dir: Option<&str>) -> String {
+    let path = normalized(reported);
+    if !is_absolute(&path) {
+        return path;
+    }
+    if let Some(manifest_dir) = manifest_dir {
+        let root = normalized(manifest_dir);
+        let root = root.trim_end_matches('/');
+        // Windows paths compare case-insensitively; a false match on another
+        // platform could only shorten a path that is already under the root.
+        let windows = path.as_bytes().get(1) == Some(&b':') || path.starts_with("//");
+        let under_root = path.len() > root.len() + 1
+            && path.as_bytes()[root.len()] == b'/'
+            && path.is_char_boundary(root.len())
+            && if windows {
+                path[..root.len()].eq_ignore_ascii_case(root)
+            } else {
+                path.starts_with(root)
+            };
+        if !root.is_empty() && under_root {
+            return path[root.len() + 1..].to_owned();
+        }
+    }
+    let name = path.rsplit('/').next().unwrap_or_default();
+    // A drive-relative `C:name.rs` has no separator, so drop its drive.
+    match name.as_bytes() {
+        [drive, b':', ..] if drive.is_ascii_alphabetic() => name[2..].to_owned(),
+        _ => name.to_owned(),
+    }
+}
+
+/// `\` to `/`, with a `\\?\` verbatim prefix removed (`\\?\UNC\host\share`
+/// becomes the UNC path `//host/share`).
+fn normalized(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = path.strip_prefix("//?/") {
+        rest.to_owned()
+    } else {
+        path
+    }
+}
+
+/// A rooted path, a UNC path, or a drive path (`C:/x`, and the drive-relative
+/// `C:x`, which is not a usable relative path either). Expects `/` separators.
+fn is_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
 }
 
 fn find_function<'a>(module: &'a syn::ItemMod, name: &str) -> &'a syn::ItemFn {
@@ -340,5 +403,95 @@ mod tests {
         let output = expand(module).unwrap().to_string();
         assert!(output.contains("source : :: gust :: SourceOrigin :: UNKNOWN"));
         assert!(!output.contains("LineSpan"));
+    }
+
+    const UNIX_ROOT: Option<&str> = Some("/srv/build/gust/crates/demo");
+    const DRIVE_ROOT: Option<&str> = Some(r"C:\build_gust\crates\demo");
+
+    #[test]
+    fn recorded_path_keeps_relative_paths_and_normalises_separators() {
+        assert_eq!(
+            recorded_path("crates/demo/src/lib.rs", UNIX_ROOT),
+            "crates/demo/src/lib.rs"
+        );
+        assert_eq!(
+            recorded_path(r"crates\demo\src\lib.rs", DRIVE_ROOT),
+            "crates/demo/src/lib.rs"
+        );
+        assert_eq!(recorded_path("src/lib.rs", None), "src/lib.rs");
+        assert_eq!(recorded_path("./src/lib.rs", None), "./src/lib.rs");
+    }
+
+    #[test]
+    fn recorded_path_makes_absolute_paths_under_the_manifest_dir_relative() {
+        assert_eq!(
+            recorded_path("/srv/build/gust/crates/demo/src/lib.rs", UNIX_ROOT),
+            "src/lib.rs"
+        );
+        assert_eq!(
+            recorded_path(r"C:\build_gust\crates\demo\src\kernels\a.rs", DRIVE_ROOT),
+            "src/kernels/a.rs"
+        );
+        // Drive letter case and a verbatim prefix do not defeat the match, and a
+        // trailing separator on the manifest dir is harmless.
+        assert_eq!(
+            recorded_path(
+                r"\\?\c:\build_gust\crates\demo\src\lib.rs",
+                Some(r"C:\build_gust\crates\demo\")
+            ),
+            "src/lib.rs"
+        );
+        assert_eq!(
+            recorded_path(
+                r"\\?\UNC\build\share\crates\demo\src\lib.rs",
+                Some(r"\\build\share\crates\demo")
+            ),
+            "src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn recorded_path_keeps_only_the_file_name_of_absolute_paths_outside_the_manifest_dir() {
+        for (reported, manifest_dir) in [
+            ("/opt/other/crate/src/lib.rs", UNIX_ROOT),
+            // A sibling that merely shares the manifest dir as a string prefix.
+            ("/srv/build/gust/crates/demo-two/src/lib.rs", UNIX_ROOT),
+            (r"D:\elsewhere\src\lib.rs", DRIVE_ROOT),
+            (r"\\server\share\src\lib.rs", DRIVE_ROOT),
+            (r"\\?\C:\Windows\src\lib.rs", DRIVE_ROOT),
+            (r"\\?\UNC\server\share\src\lib.rs", DRIVE_ROOT),
+            ("/opt/other/crate/src/lib.rs", None),
+            (r"C:\build_gust\crates\demo\src\lib.rs", None),
+            // The manifest dir itself is not a file inside it.
+            ("/srv/build/gust/crates/demo", UNIX_ROOT),
+        ] {
+            let stored = recorded_path(reported, manifest_dir);
+            let expected = reported.rsplit(['/', '\\']).next().unwrap().to_owned();
+            assert_eq!(stored, expected, "{reported}");
+            assert!(
+                !stored.contains('/') && !stored.contains('\\'),
+                "{reported}"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_path_is_never_absolute() {
+        for reported in [
+            "/a/b.rs",
+            r"C:\a\b.rs",
+            "C:b.rs",
+            r"\\h\s\b.rs",
+            r"\\?\C:\a\b.rs",
+            r"\\?\UNC\h\s\b.rs",
+            "relative/b.rs",
+        ] {
+            for manifest_dir in [None, UNIX_ROOT, DRIVE_ROOT, Some("/a"), Some(r"C:\a")] {
+                let stored = recorded_path(reported, manifest_dir);
+                assert!(!is_absolute(&stored), "{reported} -> {stored}");
+                assert!(!stored.contains('\\'), "{reported} -> {stored}");
+                assert!(!stored.contains(':'), "{reported} -> {stored}");
+            }
+        }
     }
 }

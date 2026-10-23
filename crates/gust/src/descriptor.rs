@@ -25,6 +25,11 @@ pub struct KernelDescriptor {
     /// Where the kernel's Rust source lives and which Slang lines came from
     /// which Rust line. Diagnostic metadata only: it never affects the emitted
     /// Slang, the pipeline cache identity or the runtime ABI.
+    ///
+    /// API change (M1.1): this field is new. A hand-written
+    /// `KernelDescriptor { .. }` literal must add `source: SourceOrigin::UNKNOWN`,
+    /// and the derived `PartialEq`/`Eq` now compare it too, so two descriptors that
+    /// differ only in source metadata are no longer equal.
     pub source: SourceOrigin,
 }
 
@@ -34,8 +39,10 @@ pub struct KernelDescriptor {
 /// The table is a line index over the generated text, not an IR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceOrigin {
-    /// Rust source path as rustc reports it, with `/` separators. Empty when
-    /// no location is known.
+    /// Rust source path with `/` separators, never absolute: a relative path as
+    /// rustc reports it, an absolute one under the expanding crate's manifest
+    /// directory made relative to it, any other absolute one reduced to its file
+    /// name. Empty when no location is known.
     pub file: &'static str,
     /// In emission order, outer construct first, so the innermost record
     /// containing a Slang line is the last match.
