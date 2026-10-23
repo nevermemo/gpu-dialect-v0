@@ -1,0 +1,5 @@
+# Fixture workspace for `cargo xtask check-ui`. It is a workspace root of its own, so the
+# root workspace does not contain it and `cargo test --workspace` never builds it.
+[workspace]
+members = ["gpupod-missing", "gpupod-present", "kernel-missing"]
+resolver = "2"

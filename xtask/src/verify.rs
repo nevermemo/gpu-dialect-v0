@@ -7,6 +7,7 @@ use crate::{
     process::{CheckRecord, require_command, run_checked, run_checked_owned},
     reflect::{BuildOptions, build_slang_reflect},
     time::now_utc,
+    ui::check_ui,
     validation::{ArtifactRecord, GitStamp, RunInfo, sha256_hex, write_validation},
     workspace::{EXAMPLES, EXPECTED_SPIRV, SMOKE_EXAMPLES, workspace_root, workspace_test_args},
 };
@@ -106,7 +107,7 @@ fn verify_inner(
     checks: &mut Vec<CheckRecord>,
     artifacts: &mut Vec<ArtifactRecord>,
 ) -> Result<(), String> {
-    // Cheapest checks first; they need only git.
+    // Cheapest checks first; they need only git, and check-ui needs cargo (no slangc, no GPU).
     if matches!(
         mode,
         VerifyMode::Smoke | VerifyMode::Fast | VerifyMode::Full
@@ -114,6 +115,7 @@ fn verify_inner(
         lint(root, checks)?;
         docs_check(root, checks)?;
         check_arch(root, checks)?;
+        check_ui(root, checks)?;
     }
     require_command("cargo")?;
     require_command("rustc")?;

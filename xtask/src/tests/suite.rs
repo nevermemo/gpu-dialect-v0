@@ -5,12 +5,13 @@ use crate::{
     workspace::EXAMPLES,
 };
 
-const UNIT: [Step; 5] = [
+const UNIT: [Step; 6] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
     Step::DocsCheck,
     Step::CheckArch,
+    Step::CheckUi,
 ];
 
 #[test]
@@ -93,6 +94,8 @@ fn cargo_calls(step: Step) -> Vec<Vec<String>> {
         | Step::Lint
         | Step::DocsCheck
         | Step::CheckArch => Vec::new(),
+        // Its cargo call is built by `ui::cargo_args`, whose test checks `--locked`.
+        Step::CheckUi => Vec::new(),
         other => panic!("{other:?}: list the cargo calls of this step in cargo_calls"),
     }
 }

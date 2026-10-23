@@ -17,8 +17,8 @@ pub(crate) struct ArtifactRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitStamp {
     pub(crate) commit: Option<String>,
-    /// True when `git status --porcelain` lists anything: modified, staged or untracked
-    /// (not ignored) files. A run on a dirty tree is evidence about that tree, not the commit.
+    /// True when `git status --porcelain --untracked-files=all` lists anything: modified,
+    /// staged or untracked (not ignored) files, whatever `status.showUntrackedFiles` says. A run on a dirty tree is evidence about that tree, not the commit.
     pub(crate) dirty: Option<bool>,
 }
 
@@ -54,7 +54,10 @@ impl GitStamp {
             .filter(|text| {
                 matches!(text.len(), 40 | 64) && text.chars().all(|c| c.is_ascii_hexdigit())
             });
-        let dirty = run(&["status", "--porcelain"]).map(|text| !text.trim().is_empty());
+        // `--untracked-files=all` overrides a `status.showUntrackedFiles=no` setting, which
+        // would otherwise report a tree with new files as clean.
+        let dirty = run(&["status", "--porcelain", "--untracked-files=all"])
+            .map(|text| !text.trim().is_empty());
         Self { commit, dirty }
     }
 

@@ -219,3 +219,26 @@ fn the_stamp_of_a_real_repository_follows_head_and_the_working_tree() {
     assert_ne!(second.commit.as_deref(), Some(head.as_str()));
     assert_eq!(second.dirty, Some(false));
 }
+
+#[test]
+fn an_untracked_file_makes_the_tree_dirty_even_when_git_is_told_to_hide_untracked_files() {
+    // `status.showUntrackedFiles=no` makes a plain `git status --porcelain` blind to new
+    // files; the stamp must still say dirty.
+    let root = temp_root();
+    git(&root, &["init", "--quiet"]);
+    fs::write(root.join("tracked.txt"), "one\n").unwrap();
+    git(&root, &["add", "tracked.txt"]);
+    git(&root, &["commit", "--quiet", "-m", "first"]);
+    git(&root, &["config", "status.showUntrackedFiles", "no"]);
+    assert_eq!(GitStamp::read(&root).dirty, Some(false));
+
+    fs::write(root.join("untracked.txt"), "x\n").unwrap();
+    // The premise of the test: with the setting in force, plain status shows nothing.
+    assert_eq!(git(&root, &["status", "--porcelain"]), "");
+    // An untracked file in a new directory is listed per file, not as a directory entry.
+    fs::create_dir(root.join("nested")).unwrap();
+    fs::write(root.join("nested/inner.txt"), "y\n").unwrap();
+    let dirty = GitStamp::read(&root).dirty;
+    let _ = fs::remove_dir_all(&root);
+    assert_eq!(dirty, Some(true));
+}

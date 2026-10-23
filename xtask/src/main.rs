@@ -12,6 +12,7 @@ mod shader;
 mod suite;
 mod test_exact;
 mod time;
+mod ui;
 mod validation;
 mod verify;
 mod workspace;
@@ -84,6 +85,12 @@ fn run() -> Result<(), String> {
             }
             arch::check_arch(&workspace_root()?, &mut Vec::new())?;
         }
+        "check-ui" => {
+            if !args.is_empty() {
+                return Err("check-ui takes no arguments".into());
+            }
+            ui::check_ui(&workspace_root()?, &mut Vec::new())?;
+        }
         "bless" => {
             if !args.is_empty() {
                 return Err("bless takes no arguments (it sets BLESS_GOLDEN=1 itself)".into());
@@ -108,7 +115,7 @@ fn run() -> Result<(), String> {
 
 fn usage() {
     eprintln!(
-        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  lint   no tracked shell scripts, no machine-specific paths; scans tracked files only\n  docs-check   relative Markdown links resolve to project files, no conflict markers, DECISIONS ids; scans tracked and untracked non-ignored files (anchors and external links are not checked)\n  check-arch   dependency allow-list per crate read from `cargo metadata` (D02), no IR module outside future/, no SPIR-V library; scans tracked and untracked non-ignored files\n  bless   rewrite reviewed Slang goldens (BLESS_GOLDEN=1); exits non-zero when a fixture changed\n  test --suite <{}>   evidence tier as one command\n  slangc <file.slang> --entry NAME --target wgsl|spirv --out PATH [-- SLANGC_ARGS]\n  spirv-val <file.spv> --target-env ENV\n  test-exact -p PACKAGE --test TARGET [--features LIST] NAME\n  status | doctor [--smoke] | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
+        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  lint   no tracked shell scripts, no machine-specific paths; scans tracked files only\n  docs-check   relative Markdown links resolve to project files, no conflict markers, DECISIONS ids; scans tracked and untracked non-ignored files (anchors and external links are not checked)\n  check-arch   dependency allow-list per crate read from `cargo metadata` (D02), no IR module outside future/, no SPIR-V library; and every allow-listed package in Cargo.lock resolves from crates.io or crates/ (a [patch] or [replace] redirect fails); scans tracked and untracked non-ignored files\n  check-ui   `cargo check --locked` of each tests/ui fixture crate: one with an expected.txt must fail with every listed substring (diagnostic::on_unimplemented wording, file:line), one without must compile; needs cargo only\n  bless   rewrite reviewed Slang goldens (BLESS_GOLDEN=1); exits non-zero when a fixture changed\n  test --suite <{}>   evidence tier as one command\n  slangc <file.slang> --entry NAME --target wgsl|spirv --out PATH [-- SLANGC_ARGS]\n  spirv-val <file.spv> --target-env ENV\n  test-exact -p PACKAGE --test TARGET [--features LIST] NAME\n  status | doctor [--smoke] | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
         FEATURE_AREAS.join("|"),
         suite::Suite::names().join("|")
     );

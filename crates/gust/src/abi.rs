@@ -116,6 +116,11 @@ impl ResourceLayout {
 /// Implementors must be `repr(C)` or `repr(transparent)`, contain no padding or
 /// invalid bit patterns, have a non-zero size, and make `LAYOUT` exactly match
 /// Rust's size, alignment, field order, and offsets.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a GUST GPU POD type",
+    label = "GPU buffers and struct fields need `u32`, `i32`, `f32`, or a plain struct declared inside the same `#[gpu]` module",
+    note = "declare the struct inside the `#[gpu]` module so that the macro implements `GpuPod` for it"
+)]
 pub unsafe trait GpuPod: Copy + 'static {
     const LAYOUT: TypeLayout;
 }

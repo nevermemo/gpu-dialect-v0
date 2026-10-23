@@ -68,6 +68,16 @@ fn check_project(root: &Path) -> Result<String, Vec<String>> {
         Ok(packages) => problems.extend(package_problems(&root.display().to_string(), &packages)),
         Err(error) => problems.push(error),
     }
+    match read_text(&root.join("Cargo.lock")) {
+        Ok(Some(text)) => match parse_lock(&text) {
+            Ok(locked) => problems.extend(lock_problems(&locked)),
+            Err(error) => problems.push(error),
+        },
+        Ok(None) => problems.push("Cargo.lock: is not UTF-8 text".to_owned()),
+        Err(error) => problems.push(format!(
+            "Cargo.lock: could not be read ({error}); the resolved sources of allow-listed dependencies cannot be checked without it"
+        )),
+    }
     problems.extend(unlisted_crate_problems(&files));
     let mut rust_files = 0usize;
     for relative in files.iter().filter(|path| path.starts_with("crates/")) {
@@ -85,7 +95,7 @@ fn check_project(root: &Path) -> Result<String, Vec<String>> {
         return Err(problems);
     }
     Ok(format!(
-        "Architecture check passed: {} crate manifests match the dependency allow-list, read from `cargo metadata` so that `workspace = true` entries, `package` renames and sources are the ones cargo resolved (example packages are not checked); no IR module or file under crates/ outside future/ ({rust_files} Rust files scanned); no SPIR-V library in {}.\n",
+        "Architecture check passed: {} crate manifests match the dependency allow-list, read from `cargo metadata` so that `workspace = true` entries, `package` renames and declared sources are the ones cargo resolved (example packages are not checked), and every allow-listed package in Cargo.lock resolves from crates.io or crates/ (so a root `[patch]` or `[replace]` redirect fails); no IR module or file under crates/ outside future/ ({rust_files} Rust files scanned); no SPIR-V library in {}.\n",
         CRATE_RULES.len(),
         COMPILER_CRATES.join(" or ")
     ))
@@ -332,6 +342,106 @@ fn source_problems(rule_crate: &CrateRule, dependency: &Dependency, root: &str) 
         problems.push(format!(
             "{at} is a path dependency on `{path}`; it must come from crates.io ({CHANGE_RULE})"
         ));
+    }
+    problems
+}
+
+/// One `[[package]]` of `Cargo.lock`: what cargo resolved, after any root `[patch]` or
+/// `[replace]` redirect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LockedPackage {
+    pub(crate) name: String,
+    pub(crate) version: String,
+    /// `registry+...`, `sparse+...`, `git+...`; `None` for a path package (a workspace member
+    /// or a path redirect).
+    pub(crate) source: Option<String>,
+}
+
+/// The fields of the `[[package]]` table being read.
+type PackageFields = (Option<String>, Option<String>, Option<String>);
+
+/// The `[[package]]` tables of a `Cargo.lock`. Cargo writes the file in one fixed shape (one
+/// `key = "value"` per line, no escapes in these three keys), so a line reader suffices; any
+/// other table, such as `[metadata]` or `[[patch.unused]]`, ends the current package.
+pub(crate) fn parse_lock(text: &str) -> Result<Vec<LockedPackage>, String> {
+    fn finish(
+        fields: Option<PackageFields>,
+        packages: &mut Vec<LockedPackage>,
+    ) -> Result<(), String> {
+        if let Some((name, version, source)) = fields {
+            let name = name.ok_or("Cargo.lock: a [[package]] has no `name`")?;
+            let version =
+                version.ok_or_else(|| format!("Cargo.lock: package `{name}` has no `version`"))?;
+            packages.push(LockedPackage {
+                name,
+                version,
+                source,
+            });
+        }
+        Ok(())
+    }
+    let mut packages = Vec::new();
+    let mut current: Option<PackageFields> = None;
+    for line in text.lines() {
+        if line.starts_with('[') {
+            finish(current.take(), &mut packages)?;
+            if line.trim_end() == "[[package]]" {
+                current = Some((None, None, None));
+            }
+            continue;
+        }
+        let Some((name, version, source)) = current.as_mut() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once(" = ") else {
+            continue;
+        };
+        let slot = match key {
+            "name" => name,
+            "version" => version,
+            "source" => source,
+            _ => continue,
+        };
+        let value = value
+            .trim()
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .filter(|text| !text.contains(['"', '\\']))
+            .ok_or_else(|| format!("Cargo.lock: cannot read the value of `{key}`: {value}"))?;
+        *slot = Some(value.to_owned());
+    }
+    finish(current, &mut packages)?;
+    if packages.is_empty() {
+        return Err("Cargo.lock lists no [[package]]; is it a lockfile?".to_owned());
+    }
+    Ok(packages)
+}
+
+/// Resolved-source problems: an allow-listed external package must resolve from crates.io, and
+/// a workspace crate must be a path package. `cargo metadata --no-deps` shows only declared
+/// sources, so a root `[patch.crates-io]` or `[replace]` entry that points `syn` at a git
+/// repository or a local directory is invisible there but changes the lockfile's source.
+/// Trusting the lockfile is safe enough because the suites' cargo calls pass `--locked`, which
+/// fails when the lockfile no longer matches the manifests.
+pub(crate) fn lock_problems(locked: &[LockedPackage]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for package in locked {
+        let name = package.name.as_str();
+        let workspace_crate = CRATE_RULES.iter().any(|rule| rule.name == name);
+        let external = !workspace_crate && is_allowed_somewhere(name);
+        let source = package.source.as_deref();
+        let at = format!("Cargo.lock: package `{name}` {}", package.version);
+        if external && !source.is_some_and(|source| CRATES_IO_SOURCES.contains(&source)) {
+            problems.push(format!(
+                "{at} resolves from {}, not from crates.io; an allow-listed dependency must not be redirected, for example by a [patch] or [replace] section ({CHANGE_RULE})",
+                source.map_or("a local path".to_owned(), |source| format!("`{source}`"))
+            ));
+        }
+        if workspace_crate && let Some(source) = source {
+            problems.push(format!(
+                "{at} resolves from `{source}`, not from its crates/ directory; a workspace crate must be a path package ({CHANGE_RULE})"
+            ));
+        }
     }
     problems
 }

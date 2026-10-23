@@ -1,0 +1,7 @@
+# Substrings of the `cargo check` output (backslashes read as slashes). Only the wording of
+# `#[diagnostic::on_unimplemented]` on `GpuPod` and the user's file and line are compared,
+# not the whole rustc output, which changes between toolchains.
+error[E0277]
+`Outside` is not a GUST GPU POD type
+plain struct declared inside the same `#[gpu]` module
+gpupod-missing/src/main.rs:13:
