@@ -44,9 +44,11 @@ pub struct KernelDescriptor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceOrigin {
     /// Rust source path with `/` separators, never absolute: a relative path as
-    /// rustc reports it, an absolute one under the expanding crate's manifest
-    /// directory made relative to it, any other absolute one reduced to its file
-    /// name. Empty when no location is known.
+    /// rustc reports it but normalised (`./src/lib.rs` becomes `src/lib.rs`), an
+    /// absolute one under the expanding crate's manifest directory made relative
+    /// to it, any other absolute one reduced to its file name. Every component is
+    /// restricted to letters, digits and `_ . + -`; a path that cannot be made to
+    /// fit has no origin. Empty when no location is known.
     pub file: &'static str,
     /// In emission order, outer construct first, so the innermost record
     /// containing a Slang line is the last match.

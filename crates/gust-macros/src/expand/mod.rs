@@ -101,16 +101,28 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
 /// descriptor is compiled into public binaries and a path would leak the build
 /// machine's layout) and uses `/` only (a later `#line` directive would embed it
 /// in a Slang string literal, where `\` is an escape). When the compiler gave no
-/// real file (a span from a synthesized token stream, as in unit tests), the
-/// origin is unknown and the table is dropped, because lines without a file
-/// cannot be reported.
+/// real file (a span from a synthesized token stream, as in unit tests), or
+/// [`recorded_path`] could not produce a safe one, the origin is unknown and the
+/// table is dropped, because lines without a file cannot be reported.
 fn source_origin(kernel: &syn::ItemFn, lines: &[crate::slang::LineRecord]) -> TokenStream {
     let reported = kernel.sig.ident.span().file();
-    if reported.is_empty() || reported.starts_with('<') || lines.is_empty() {
+    if reported.is_empty() || reported.starts_with('<') {
         return quote!(::gust::SourceOrigin::UNKNOWN);
     }
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-    let file = recorded_path(&reported, manifest_dir.as_deref());
+    origin_tokens(&reported, manifest_dir.as_deref(), lines)
+}
+
+/// [`source_origin`] once the span file and the manifest dir are known.
+fn origin_tokens(
+    reported: &str,
+    manifest_dir: Option<&str>,
+    lines: &[crate::slang::LineRecord],
+) -> TokenStream {
+    let file = recorded_path(reported, manifest_dir);
+    if file.is_empty() || lines.is_empty() {
+        return quote!(::gust::SourceOrigin::UNKNOWN);
+    }
     let lines = lines.iter().map(|line| {
         let (slang_start, slang_end, rust_line) =
             (line.slang_start, line.slang_end, line.rust_line);
@@ -119,8 +131,12 @@ fn source_origin(kernel: &syn::ItemFn, lines: &[crate::slang::LineRecord]) -> To
     quote!(::gust::SourceOrigin { file: #file, lines: &[#(#lines),*] })
 }
 
-/// The path stored in a descriptor, never absolute, never containing `..`, and
-/// always with `/`. Both paths are first normalised lexically (see
+/// The path stored in a descriptor, or `""` when no safe path can be derived. The
+/// result is a whitelist, not a best effort: it is accepted only if it is relative
+/// and every `/`-separated component is valid (see [`is_valid_record`]: non-empty,
+/// not `.` or `..`, only ASCII letters and digits, `_ . + -` and non-ASCII
+/// letters), so it can neither leak a build machine's layout nor break out of a
+/// Slang string literal. Both paths are first normalised lexically (see
 /// [`NormalizedPath`]: repeated separators collapsed, `.` dropped, `..` resolved),
 /// then:
 /// - a relative path is kept as its normalised components, unless it climbs out
@@ -131,20 +147,24 @@ fn source_origin(kernel: &syn::ItemFn, lines: &[crate::slang::LineRecord]) -> To
 ///   one that leaves the manifest dir by way of `..`, is stored as its file
 ///   name only.
 ///
-/// A final guard replaces any result that is still absolute, has a drive prefix or
-/// contains `..` with the file name.
+/// A result that fails the whitelist is replaced by the file name, and by `""` if
+/// that fails it too; [`origin_tokens`] turns `""` into an unknown origin.
 fn recorded_path(reported: &str, manifest_dir: Option<&str>) -> String {
-    let record = contained_record(reported, manifest_dir);
-    if is_safe_record(&record) {
-        record
+    let path = NormalizedPath::new(reported);
+    let record = contained_record(&path, manifest_dir);
+    if is_valid_record(&record) {
+        return record;
+    }
+    let name = file_name(path.parts.iter().map(String::as_str));
+    if is_valid_record(&name) {
+        name
     } else {
-        file_name(record.split('/'))
+        String::new()
     }
 }
 
-/// [`recorded_path`] before the final guard.
-fn contained_record(reported: &str, manifest_dir: Option<&str>) -> String {
-    let path = NormalizedPath::new(reported);
+/// [`recorded_path`] before the whitelist check.
+fn contained_record(path: &NormalizedPath, manifest_dir: Option<&str>) -> String {
     if path.root.is_empty() {
         return if path.parts.first().is_some_and(|part| part == "..") {
             file_name(path.parts.iter().map(String::as_str))
@@ -152,7 +172,7 @@ fn contained_record(reported: &str, manifest_dir: Option<&str>) -> String {
             path.parts.join("/")
         };
     }
-    if let Some(manifest_dir) = manifest_dir {
+    if let Some(manifest_dir) = manifest_dir.filter(|_| path.root != OPAQUE_ROOT) {
         let dir = NormalizedPath::new(manifest_dir);
         // Windows paths compare case-insensitively; a false match on another
         // platform could only shorten a path that is already under the root.
@@ -165,6 +185,7 @@ fn contained_record(reported: &str, manifest_dir: Option<&str>) -> String {
             }
         };
         if !dir.root.is_empty()
+            && dir.root != OPAQUE_ROOT
             && same(&path.root, &dir.root)
             && path.parts.len() > dir.parts.len()
             && dir.parts.iter().zip(&path.parts).all(|(a, b)| same(a, b))
@@ -175,30 +196,48 @@ fn contained_record(reported: &str, manifest_dir: Option<&str>) -> String {
     file_name(path.parts.iter().map(String::as_str))
 }
 
-/// What may be stored: relative, no drive prefix, no `..` component.
-fn is_safe_record(record: &str) -> bool {
-    !is_absolute(record) && !record.split('/').any(|part| part == "..")
+/// What may be stored: a non-empty relative path whose every `/`-separated
+/// component is valid. This also excludes a drive (`:`), a backslash and control
+/// characters, which are not in the component alphabet.
+fn is_valid_record(record: &str) -> bool {
+    !record.is_empty() && record.split('/').all(is_valid_component)
 }
 
-/// The last component that is not `..`, without a drive prefix (a drive-relative
-/// `C:name.rs` has no separator, so its drive is dropped).
+/// A non-empty name of ASCII letters and digits, `_`, `.`, `+`, `-` and non-ASCII
+/// letters; never `.` or `..` (nor any other name made of dots only, which
+/// Windows does not keep as a distinct name).
+fn is_valid_component(part: &str) -> bool {
+    !part.is_empty()
+        && !part.chars().all(|c| c == '.')
+        && part.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '_' | '.' | '+' | '-')
+                || (!c.is_ascii() && c.is_alphabetic())
+        })
+}
+
+/// The last component that is not `..`.
 fn file_name<'a>(parts: impl Iterator<Item = &'a str>) -> String {
-    let name = parts
+    parts
         .filter(|part| *part != "..")
         .last()
-        .unwrap_or_default();
-    match name.as_bytes() {
-        [drive, b':', ..] if drive.is_ascii_alphabetic() => name[2..].to_owned(),
-        _ => name.to_owned(),
-    }
+        .unwrap_or_default()
+        .to_owned()
 }
 
+/// The `root` of a `\\?\` verbatim path that is neither `\\?\X:\` nor
+/// `\\?\UNC\`: GLOBALROOT, `Volume{GUID}`, device and drive-relative forms. It is
+/// absolute and opaque, so it never counts as lying under a manifest dir.
+const OPAQUE_ROOT: &str = "//?/";
+
 /// A path split into a root and lexically normalised components. `root` is `""`
-/// (relative), `/` (Unix), `X:/` (drive), `X:` (drive-relative), or `//host/share`
-/// (UNC; a `\\?\` verbatim prefix is removed first, `\\?\UNC\host\share` being the
-/// same UNC path). Separators are `/` or `\`. In `parts` repeated separators are
-/// collapsed, `.` is dropped and `..` pops its parent; a `..` with no parent is
-/// dropped under a root and kept at the head of a relative path.
+/// (relative), `/` (Unix), `X:/` (drive), `X:` (drive-relative), `//host/share`
+/// (UNC) or [`OPAQUE_ROOT`]. Of the `\\?\` verbatim forms only `\\?\X:\...` and
+/// `\\?\UNC\host\share\...` (any case of `UNC`) are recognised, as the drive and
+/// UNC paths they name; every other one is opaque. Separators are `/` or `\`. In
+/// `parts` repeated separators are collapsed, `.` is dropped and `..` pops its
+/// parent; a `..` with no parent is dropped under a root and kept at the head of a
+/// relative path.
 struct NormalizedPath {
     root: String,
     parts: Vec<String>,
@@ -207,15 +246,31 @@ struct NormalizedPath {
 impl NormalizedPath {
     fn new(path: &str) -> Self {
         let path = path.replace('\\', "/");
-        let path = if let Some(rest) = path.strip_prefix("//?/UNC/") {
-            format!("//{rest}")
-        } else if let Some(rest) = path.strip_prefix("//?/") {
-            rest.to_owned()
+        let mut opaque = false;
+        let path = if let Some(rest) = path.strip_prefix("//?/") {
+            let bytes = rest.as_bytes();
+            if rest
+                .get(..4)
+                .is_some_and(|p| p.eq_ignore_ascii_case("UNC/"))
+            {
+                format!("//{}", &rest[4..])
+            } else if bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'/'
+            {
+                rest.to_owned()
+            } else {
+                opaque = true;
+                rest.to_owned()
+            }
         } else {
             path
         };
         let bytes = path.as_bytes();
-        let (root, rest) = if path.starts_with("//") {
+        let (root, rest) = if opaque {
+            (OPAQUE_ROOT.to_owned(), path.clone())
+        } else if path.starts_with("//") {
             // The host and share are the root, not components that `..` can pop.
             let names: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
             let split = names.len().min(2);
@@ -248,14 +303,6 @@ impl NormalizedPath {
         }
         NormalizedPath { root, parts }
     }
-}
-
-/// A rooted path, a UNC path, or a drive path (`C:/x`, and the drive-relative
-/// `C:x`, which is not a usable relative path either). Expects `/` separators.
-fn is_absolute(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    path.starts_with('/')
-        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
 }
 
 fn find_function<'a>(module: &'a syn::ItemMod, name: &str) -> &'a syn::ItemFn {
@@ -585,9 +632,9 @@ mod tests {
                 expected,
                 "{reported}"
             );
-            // The final guard never has to fire for these.
+            // The whitelist never has to replace these.
             assert!(
-                is_safe_record(&contained_record(reported, manifest_dir)),
+                is_valid_record(&contained(reported, manifest_dir)),
                 "{reported}"
             );
         }
@@ -613,23 +660,141 @@ mod tests {
                 expected,
                 "{reported}"
             );
-            assert!(
-                is_safe_record(&contained_record(reported, manifest_dir)),
+            let stored = recorded_path(reported, manifest_dir);
+            assert!(stored.is_empty() || is_valid_record(&stored), "{reported}");
+        }
+    }
+
+    #[test]
+    fn recorded_path_whitelist_replaces_a_relative_result_that_looks_absolute() {
+        // `c:` as the first component of a relative path is a drive on Windows.
+        assert_eq!(contained("./c:/x.rs", None), "c:/x.rs");
+        assert!(!is_valid_record("c:/x.rs"));
+        assert_eq!(recorded_path("./c:/x.rs", None), "x.rs");
+    }
+
+    #[test]
+    fn recorded_path_rejects_drive_like_components_even_in_the_file_name() {
+        // A colon inside a component can never be stored, so when the file name
+        // has one too there is nothing safe left and the origin becomes unknown.
+        for (reported, manifest_dir) in [
+            ("/repo/C:..", REPO),
+            ("/repo/C:D:x.rs", REPO),
+            ("/repo/C:x.rs", REPO),
+            ("C:D:x.rs", None),
+            ("a/C:x.rs", None),
+            (r"\\?\C:", None),
+            (r"\\?\C:lib.rs", None),
+            ("C:", None),
+        ] {
+            assert_eq!(recorded_path(reported, manifest_dir), "", "{reported}");
+        }
+    }
+
+    #[test]
+    fn recorded_path_treats_unrecognised_verbatim_forms_as_opaque_roots() {
+        // Only `\\?\X:\` and `\\?\UNC\` name a drive or UNC path. GLOBALROOT,
+        // Volume{GUID} and device forms used to lose the prefix and be kept as a
+        // relative path, leaking `Users/someone`.
+        for (reported, manifest_dir, expected) in [
+            (
+                r"\\?\GLOBALROOT\Device\HarddiskVolume1\Users\someone\kernel.rs",
+                None,
+                "kernel.rs",
+            ),
+            (
+                r"\\?\GLOBALROOT\Device\HarddiskVolume1\Users\someone\kernel.rs",
+                Some(r"\\?\GLOBALROOT\Device\HarddiskVolume1\Users\someone"),
+                "kernel.rs",
+            ),
+            (
+                r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\src\lib.rs",
+                Some(r"C:\build_gust\crates\demo"),
+                "lib.rs",
+            ),
+            (r"\\?\pipe\kernel.rs", UNIX_ROOT, "kernel.rs"),
+            (r"//?/GLOBALROOT/x/kernel.rs", None, "kernel.rs"),
+            // The recognised forms still resolve against the manifest dir.
+            (
+                r"\\?\unc\build\share\crates\demo\src\lib.rs",
+                Some(r"\\build\share\crates\demo"),
+                "src/lib.rs",
+            ),
+            (
+                r"\\?\C:\build_gust\crates\demo\src\lib.rs",
+                DRIVE_ROOT,
+                "src/lib.rs",
+            ),
+        ] {
+            assert_eq!(
+                recorded_path(reported, manifest_dir),
+                expected,
                 "{reported}"
             );
         }
     }
 
     #[test]
-    fn recorded_path_guard_replaces_a_relative_result_that_looks_absolute() {
-        // `c:` as the first component of a relative path is a drive on Windows.
-        assert_eq!(contained_record("./c:/x.rs", None), "c:/x.rs");
-        assert!(!is_safe_record("c:/x.rs"));
-        assert_eq!(recorded_path("./c:/x.rs", None), "x.rs");
+    fn recorded_path_has_no_origin_for_empty_and_dot_only_inputs() {
+        for reported in [
+            "", ".", "..", "./", "../..", "/", r"\", "//", "./.", "src/..",
+        ] {
+            for manifest_dir in [None, REPO, DRIVE_ROOT] {
+                assert_eq!(recorded_path(reported, manifest_dir), "", "{reported:?}");
+            }
+        }
     }
 
     #[test]
-    fn recorded_path_is_never_absolute() {
+    fn recorded_path_keeps_unicode_letters_and_rejects_everything_else() {
+        for (reported, expected) in [
+            ("src/ünï/kernel_é.rs", "src/ünï/kernel_é.rs"),
+            ("日本語/ファイル.rs", "日本語/ファイル.rs"),
+            ("src/a.b/lib-1+2.rs", "src/a.b/lib-1+2.rs"),
+            // A component outside the alphabet falls back to the file name.
+            ("src/my kernels/lib.rs", "lib.rs"),
+            ("src/.../lib.rs", "lib.rs"),
+            ("src/a\u{ff1a}b/lib.rs", "lib.rs"),
+            ("src/a\u{202e}b/lib.rs", "lib.rs"),
+            ("src/a\nb/lib.rs", "lib.rs"),
+            ("src/a\"b/lib.rs", "lib.rs"),
+            ("src/a?b/lib.rs", "lib.rs"),
+            // ... and when the file name is outside it too there is no origin.
+            ("src/my kernel.rs", ""),
+            ("src/kernel\u{0}.rs", ""),
+            ("src/k\u{ff1a}.rs", ""),
+            ("src/\u{1f600}.rs", ""),
+            ("/opt/other/\"quoted\".rs", ""),
+        ] {
+            assert_eq!(recorded_path(reported, None), expected, "{reported:?}");
+        }
+    }
+
+    #[test]
+    fn recorded_path_handles_genuinely_mixed_separators() {
+        for (reported, manifest_dir, expected) in [
+            (r"src\a/b\lib.rs", None, "src/a/b/lib.rs"),
+            (r"C:/repo\src/lib.rs", Some(r"C:\repo"), "src/lib.rs"),
+            (r"/repo\src\..\lib.rs", REPO, "lib.rs"),
+            (r"\repo/src\lib.rs", REPO, "src/lib.rs"),
+            (
+                r"\\build/share\crates/demo\src/lib.rs",
+                Some(r"\\build\share\crates\demo"),
+                "src/lib.rs",
+            ),
+            (r"//?/C:\repo/src\lib.rs", Some(r"C:\repo"), "src/lib.rs"),
+            (r"src\/\a//b\\lib.rs", None, "src/a/b/lib.rs"),
+        ] {
+            assert_eq!(
+                recorded_path(reported, manifest_dir),
+                expected,
+                "{reported}"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_path_is_always_empty_or_a_safe_relative_path() {
         for reported in [
             "/a/b.rs",
             r"C:\a\b.rs",
@@ -645,13 +810,73 @@ mod tests {
             r"C:\a\..\..\b.rs",
             "C:..\\b.rs",
             r"\\h\s\..\..\b.rs",
+            "/repo/C:..",
+            "/repo/C:D:x.rs",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\Users\someone\kernel.rs",
+            r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\src\lib.rs",
+            r"\\.\pipe\kernel.rs",
+            "",
+            ".",
+            "..",
+            "src/ünï/kernel_é.rs",
+            "src/a b/c\td.rs",
+            "src/a\u{0}b.rs",
+            "a/\u{ff1a}/b.rs",
         ] {
-            for manifest_dir in [None, UNIX_ROOT, DRIVE_ROOT, Some("/a"), Some(r"C:\a")] {
+            for manifest_dir in [
+                None,
+                UNIX_ROOT,
+                DRIVE_ROOT,
+                REPO,
+                Some("/a"),
+                Some(r"C:\a"),
+                Some(r"\\?\GLOBALROOT\Device\HarddiskVolume1"),
+                Some(""),
+            ] {
                 let stored = recorded_path(reported, manifest_dir);
-                assert!(!is_absolute(&stored), "{reported} -> {stored}");
-                assert!(!stored.contains('\\'), "{reported} -> {stored}");
-                assert!(!stored.contains(':'), "{reported} -> {stored}");
+                let context = format!("{reported:?} in {manifest_dir:?} -> {stored:?}");
+                assert!(!stored.starts_with('/'), "{context}");
+                assert!(!stored.contains('\\'), "{context}");
+                assert!(!stored.contains(':'), "{context}");
+                assert!(!stored.contains('?'), "{context}");
+                assert!(!stored.split('/').any(|part| part == ".."), "{context}");
+                assert!(
+                    stored.chars().all(|c| c.is_ascii_alphanumeric()
+                        || "_.+-/".contains(c)
+                        || (!c.is_ascii() && c.is_alphabetic())),
+                    "{context}"
+                );
+                assert!(stored.is_empty() || is_valid_record(&stored), "{context}");
             }
         }
+    }
+
+    #[test]
+    fn an_empty_recorded_path_drops_the_whole_line_table() {
+        use crate::slang::LineRecord;
+        let lines = [LineRecord {
+            slang_start: 3,
+            slang_end: 4,
+            rust_line: 12,
+        }];
+        let unknown = "SourceOrigin :: UNKNOWN";
+        // No safe file: no origin, never `LineSpan`s with an empty file.
+        for reported in [".", "..", r"\\?\C:", "/repo/C:..", "src/my kernel.rs"] {
+            let output = origin_tokens(reported, REPO, &lines).to_string();
+            assert!(output.ends_with(unknown), "{reported}: {output}");
+            assert!(!output.contains("LineSpan"), "{reported}: {output}");
+        }
+        // A safe file keeps its table.
+        let output = origin_tokens("/repo/src/lib.rs", REPO, &lines).to_string();
+        assert!(output.contains("\"src/lib.rs\""), "{output}");
+        assert!(output.contains("rust_line : 12u32"), "{output}");
+        // ... and no lines is still unknown.
+        let output = origin_tokens("/repo/src/lib.rs", REPO, &[]).to_string();
+        assert!(output.ends_with(unknown), "{output}");
+    }
+
+    /// [`contained_record`] from the reported string.
+    fn contained(reported: &str, manifest_dir: Option<&str>) -> String {
+        contained_record(&NormalizedPath::new(reported), manifest_dir)
     }
 }

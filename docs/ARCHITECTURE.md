@@ -100,7 +100,13 @@ path: both paths are first normalised lexically (repeated separators collapsed, 
 dropped, `..` resolved), then a relative path is kept as its normalised components, an
 absolute path under the expanding crate's `CARGO_MANIFEST_DIR` is stored relative to
 it, and any other absolute path, or a relative path that climbs out of its root with
-`..`, is reduced to its file name, always with `/` separators. Adding the field is a
+`..`, is reduced to its file name, always with `/` separators. The result is checked
+against a whitelist: every component must be non-empty, not `.` or `..`, and made of
+ASCII letters and digits, `_ . + -` and non-ASCII letters. A result that fails is
+replaced by the file name, and if that fails too the origin is unknown (empty file,
+no line table). Of the `\\?\` forms only `\\?\X:\` and `\\?\UNC\` are read as drive
+and UNC paths; any other (GLOBALROOT, `Volume{GUID}`, device) is an absolute path
+that is reduced to its file name. Adding the field is a
 public API change: hand-written `KernelDescriptor` literals add
 `source: SourceOrigin::UNKNOWN`, and the derived equality now includes the source
 metadata.

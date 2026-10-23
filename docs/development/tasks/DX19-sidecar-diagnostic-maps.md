@@ -53,7 +53,14 @@ and use it to enrich Slang errors with a stable generated construct label.
   stored relative to it (for example `src/kernels/a.rs`); any other absolute path
   (Unix root, drive, UNC, `\\?\`, including one that leaves the manifest dir through
   `..`) and any relative path that starts with `..` after normalisation is reduced
-  to its file name (for example `lib.rs`). The result never contains `..`. A segment
+  to its file name (for example `lib.rs`). The result is a whitelist: relative, every
+  component non-empty, not `.` or `..`, and made of ASCII letters and digits, `_ . + -`
+  and non-ASCII letters (so no `:`, `\`, spaces or control characters). A result that
+  fails is replaced by the file name; if that fails too (for example `C:..`) the
+  origin is unknown, `rust_file` is `null` and the line table is dropped. Of the
+  `\\?\` forms only `\\?\X:\` and `\\?\UNC\` count as drive and UNC paths; any other
+  (GLOBALROOT, `Volume{GUID}`, device) is an absolute path reduced to its file
+  name. The result never contains `..`. A segment
   carries `"rust_line"` (after `"ordinal"`) when the innermost line record containing the
   segment's first Slang line exists; the key is omitted otherwise, so the
   kernel and prologue segments never have it.
