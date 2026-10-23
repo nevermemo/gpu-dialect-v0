@@ -31,11 +31,6 @@ full_check_needed_before_commit: no
 - Latest routine check: `cargo xtask check-fast` exited 0 ("GUST verification
   passed") on 2026-10-22 at `63769fb` with no tracked changes (untracked `.kilo/`
   only). Routine modes write no `.ai/VALIDATION.json` record.
-- Known full-check blocker: ignored `generated-wgpu/` still holds `pool__classify.*`
-  exports produced by the T13 work, so it has 14 `.spv` files and
-  `cargo xtask check-artifacts` / `check-full` will fail their exact-13 count. Those
-  four derived files must be removed with owner approval, or T13 must land with a
-  deliberate count update, before full validation can pass.
 - Open task queue: select and claim a bounded task from
   [NEXT_TASKS.md](NEXT_TASKS.md)
 
