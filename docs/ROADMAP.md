@@ -31,7 +31,19 @@ framework, and Hurricane, the game engine (today's
 
 ## Now and next
 
-**Now: M0, close-out and housekeeping.**
+**Now: M1, diagnostics.** Plan adopted 2026-10-23 (owner-delegated); slice details are in the
+coordinator's plan file, and each landed slice is recorded in STATUS.
+
+| Item | Work | Status |
+| --- | --- | --- |
+| M1.0 | Minimum Rust 1.88 (D29) plus an `msrv` CI job; validation records stamped with the commit and dirty state; `check-arch` reads dependencies through `cargo metadata`; structured Full-step test | ready |
+| M1.1 | Rust line table: statement-level source lines recorded by the emitter; sidecar schema v2 with Rust lines; one shared diagnostic annotation for both compile paths (CLI and reflection helper) | planned |
+| M1.2 | `#[diagnostic::on_unimplemented]` on the shadow-type traits; `cargo xtask check-ui` over a fixture workspace | planned |
+| M1.3 | `#line` markers injected into the compile-time Slang copy only, so errors name the Rust file and line; exported `.slang` stays clean | planned |
+| M1.4 | Original tokens kept beside `compile_error!` so IDEs keep context | planned |
+| M1.5 | Stable diagnostic codes (`[GUST-E0401]`), `docs/DIAGNOSTICS.md`, tests assert codes | planned |
+
+**Done: M0, close-out and housekeeping** (closed 2026-10-23, D28; M0.15 waits for 2026-10-30).
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -56,9 +68,7 @@ framework, and Hurricane, the game engine (today's
 | M0.20 | check-arch: quoted TOML keys and basic-string escapes (Codex review of M0.18) | done (Gpu: check-full RTX 5090 2026-10-23T13:24Z at 8200431; Codex review keep) |
 | M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | planned |
 
-**Next: M1, diagnostics** (plan adopted 2026-10-23; slices m1.0, then m1.a1 and m1.c,
-then m1.a2, m1.d, m1.b). M0 closed with a two-reviewer sanity check (D28); only M0.15
-remains, gated to 2026-10-30.
+**Next: M2, typed host API.**
 
 Parking lot addition (M0 sanity check): replace the hand-written TOML reading in
 `xtask/src/arch.rs` with `cargo metadata` (planned inside m1.0).
@@ -67,8 +77,8 @@ Parking lot addition (M0 sanity check): replace the hand-written TOML reading in
 
 | Milestone | Content | Status |
 | --- | --- | --- |
-| M0 Close-out and housekeeping | See Now and next | in progress |
-| M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | planned |
+| M0 Close-out and housekeeping | See Now and next | done (D28; M0.15 waits for 2026-10-30) |
+| M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | in progress |
 | M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | planned |
 | M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[gpu(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26) | planned |
 | M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run | planned |
