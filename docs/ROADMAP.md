@@ -31,7 +31,10 @@ framework, and Hurricane, the game engine (today's
 
 ## Now and next
 
-**Now: M1, diagnostics.** Plan adopted 2026-10-23 (owner-delegated); slice details are in the
+**Now: M2, typed host API.** The plan is being revised after its Codex review (adopt with
+changes); slices start after the re-review, m2.a (after spike S0) and m2.b in parallel lanes.
+
+**Done: M1, diagnostics** (closed 2026-10-23, D33). Plan adopted 2026-10-23 (owner-delegated); slice details are in the
 coordinator's plan file, and each landed slice is recorded in STATUS.
 
 | Item | Work | Status |
@@ -42,6 +45,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M1.3 | `#line` markers injected into the compile-time Slang copy only, so errors name the Rust file and line; exported `.slang` stays clean | done (Slangc + Reflect: 10 of 10 failures on the right Rust line; Codex keep; `8fcf944`, `7007827`) |
 | M1.4 | Original tokens kept beside `compile_error!` so IDEs keep context | done (Unit; Fable keep after fixes, fixed; `e01b82c`, `f507ab4`) |
 | M1.5 | Stable diagnostic codes (`[GUST-E0401]`), `docs/DIAGNOSTICS.md`, tests assert codes | done (Unit: 111 codes, every code tested or listed unreachable, three guards; Fable keep, fixes `f20d313`; `df07122`, `6e195bc`) |
+| M1.6 | Sanity-check fixes (Opus and Fable, D33): clippy `disallowed-methods` replaces the uncoded-error scanner; the code guard counts assertions, not mentions; `resolver = "3"`; one `#line` path rule for macro and compiler; docs | done (Unit + Slangc + Reflect on the merged tree; Opus keep after two fix rounds; `1f961fc`) |
 
 **Done: M0, close-out and housekeeping** (closed 2026-10-23, D28; M0.15 waits for 2026-10-30).
 
@@ -68,17 +72,12 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M0.20 | check-arch: quoted TOML keys and basic-string escapes (Codex review of M0.18) | done (Gpu: check-full RTX 5090 2026-10-23T13:24Z at 8200431; Codex review keep) |
 | M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | planned |
 
-**Next: M2, typed host API.**
-
-Parking lot addition (M0 sanity check): replace the hand-written TOML reading in
-`xtask/src/arch.rs` with `cargo metadata` (planned inside m1.0).
-
 ## Milestones
 
 | Milestone | Content | Status |
 | --- | --- | --- |
 | M0 Close-out and housekeeping | See Now and next | done (D28; M0.15 waits for 2026-10-30) |
-| M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | done pending the M1 sanity check (M1.0 to M1.5) |
+| M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | done (D33; M1.0 to M1.6) |
 | M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | planned |
 | M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[gpu(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26) | planned |
 | M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run | planned |

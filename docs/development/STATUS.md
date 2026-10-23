@@ -1,12 +1,20 @@
 # Current status
 
-## Active: roadmap M1 (2026-10-23)
+## Active: roadmap M2 (2026-10-23)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done except M0.15,
-which waits for a week of green CI (from 2026-10-30). M1 (diagnostics):
-M1.0 to M1.5 are done (per-item evidence in the roadmap); the M1 sanity check is
-next, then M2 (typed host API).
+which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
+2026-10-23 (D33): M1.0 to M1.6 are done (per-item evidence in the roadmap), after a
+sanity check by Fable and Opus (both "proceed with fixes") and the full validation
+below. M2 (typed host API) is being planned; its plan is under review.
+
+- M1.6: sanity-check fixes. Clippy `disallowed-methods`/`disallowed-macros` replace the
+  hand-written uncoded-error scanner, and the exception is confined to `diagnostics.rs`
+  by a test; a code counts as tested only when an assertion passed for it; `#line`
+  paths follow the macro's path rule, including Unicode letters (slangc echoes UTF-8
+  names); `resolver = "3"` with unchanged lockfiles. Unit, Slangc and Reflect passed on
+  the merged tree (`1f961fc`).
 
 - M1.3: the compile-time copy carries `#line` directives on `slang::compile*` and both
   reflection paths; exported `.slang` never does. The native helper honours them, and
@@ -37,7 +45,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M1, slice by slice (see the roadmap's Now and next)
+claim: roadmap M2, slice by slice (see the roadmap's Now and next)
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```
@@ -46,15 +54,16 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed at 2026-10-23T13:24:07Z on
-  NVIDIA GeForce RTX 5090 / Vulkan at `8200431`, through the shared cargo slot
-  wrapper: workspace tests, release-mode slang tests, all 8 examples, and 13 SPIR-V
-  artifacts through `spirv-val`. The local `.ai/VALIDATION.json` record contains no
-  machine paths; it does not yet record the commit (fixed in M1 slice m1.0).
+- Last full validation: `cargo xtask check-full` passed at 2026-10-23T22:45:51Z on
+  NVIDIA GeForce RTX 5090 / Vulkan at `a6cbb8f` (clean tree, slangc 2026.13.1), through
+  the shared cargo slot wrapper: workspace tests, release-mode slang tests, all 8
+  examples (debug builds), and 13 SPIR-V artifacts through `spirv-val`. The Slangc and
+  Reflect suites passed at the same commit. The local `.ai/VALIDATION.json` record
+  stamps the commit and dirty state and contains no machine paths.
 - DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,
   `08a4843`, `3296885`).
-- CI (`unit` job: fmt, clippy, Unit suite) has passed on every push to main on
-  2026-10-23.
+- CI (`unit` job: fmt, clippy, Unit suite; `msrv` job on Rust 1.90) passes on main;
+  one push on 2026-10-23 (`10b2e06`) was red and was fixed in `3cdc607`.
 
 ## Current contracts
 
