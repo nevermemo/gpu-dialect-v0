@@ -1485,3 +1485,182 @@ fn line_tables_of_the_reviewed_fixtures_are_well_formed() {
         }
     }
 }
+
+/// The items of a macro output, parsed back as a file so assertions look at structure,
+/// not at token spacing.
+fn output_items(output: proc_macro2::TokenStream) -> Vec<syn::Item> {
+    syn::parse2::<syn::File>(output)
+        .expect("recovery output must parse as items")
+        .items
+}
+
+/// Asserts the first item is a `compile_error!` whose message contains `message`.
+fn assert_leading_compile_error(items: &[syn::Item], message: &str) {
+    let syn::Item::Macro(item) = &items[0] else {
+        panic!("first item must be compile_error!, got {:?}", items[0]);
+    };
+    let name = item.mac.path.segments.last().unwrap();
+    assert_eq!(name.ident, "compile_error");
+    let text = item.mac.tokens.to_string();
+    assert!(text.contains(message), "{text}");
+}
+
+fn recovered_module(items: &[syn::Item]) -> &syn::ItemMod {
+    assert_eq!(items.len(), 2, "error plus the module only");
+    let syn::Item::Mod(module) = &items[1] else {
+        panic!("second item must be the module, got {:?}", items[1]);
+    };
+    module
+}
+
+const REJECTED_MODULE: &str = "mod demo { \
+    #[kernel] pub fn run(id: SV_DispatchThreadID) { \
+        let value: Result<uint, uint> = Ok(1u32); let x = value.unwrap(); \
+    } \
+    pub fn helper(x: uint) -> uint { x } \
+}";
+
+#[test]
+fn rejected_module_is_returned_beside_the_error_without_kernel_attributes() {
+    let item: proc_macro2::TokenStream = REJECTED_MODULE.parse().unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_leading_compile_error(&items, "unwrap");
+    let module = recovered_module(&items);
+    assert_eq!(module.ident, "demo");
+    let content = &module.content.as_ref().unwrap().1;
+
+    // The prelude import comes first, exactly as in a successful expansion.
+    let expected: syn::Item = syn::parse_quote!(
+        use ::gust::prelude::*;
+    );
+    assert_eq!(content[0], expected);
+    // The user's functions are all still there, and none keeps #[kernel].
+    let functions: Vec<&syn::ItemFn> = content
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function) => Some(function),
+            _ => None,
+        })
+        .collect();
+    let names: Vec<String> = functions.iter().map(|f| f.sig.ident.to_string()).collect();
+    // The kernel gets the success path's private shadow name; other functions are untouched.
+    assert_eq!(names, ["__gpu_typecheck_run", "helper"]);
+    assert!(matches!(functions[0].vis, syn::Visibility::Inherited));
+    assert!(matches!(functions[1].vis, syn::Visibility::Public(_)));
+    for function in functions {
+        assert!(
+            function
+                .attrs
+                .iter()
+                .all(|attribute| !attribute.path().is_ident("kernel")),
+            "{:?}",
+            function.attrs
+        );
+    }
+    // Warning noise from the unfinished module is silenced.
+    let allow: syn::Attribute = syn::parse_quote! {
+        #[allow(dead_code, unused_variables, unused_mut, unused_imports)]
+    };
+    assert_eq!(module.attrs, [allow]);
+}
+
+#[test]
+fn recovery_strips_kernel_attributes_from_nested_modules_and_impls() {
+    let item: proc_macro2::TokenStream = "mod demo { \
+        mod inner { #[kernel] fn deep() {} } \
+        struct S; impl S { #[kernel] fn method(&self) {} } \
+        #[kernel] struct Marked { x: uint } #[kernel] const LIMIT: uint = 1; \
+        #[kernel(workgroup_size(8, 1, 1))] fn run(id: SV_DispatchThreadID) { loop {} } \
+    }"
+    .parse()
+    .unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_leading_compile_error(&items, "");
+    let text = quote::ToTokens::to_token_stream(recovered_module(&items)).to_string();
+    assert!(!text.contains("kernel"), "{text}");
+    for name in ["deep", "method", "__gpu_typecheck_run"] {
+        assert!(text.contains(&format!("fn {name}")), "{name}: {text}");
+    }
+    assert!(text.contains("struct Marked"), "{text}");
+    assert!(text.contains("const LIMIT"), "{text}");
+}
+
+#[test]
+fn recovery_keeps_the_users_module_attributes_and_visibility() {
+    let item: proc_macro2::TokenStream = "#[doc = \"mine\"] pub(crate) mod demo { \
+        #[kernel] fn run(id: SV_DispatchThreadID) { let value: u64 = 1; } \
+    }"
+    .parse()
+    .unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_leading_compile_error(&items, "");
+    let module = recovered_module(&items);
+    let doc: syn::Attribute = syn::parse_quote!(#[doc = "mine"]);
+    let allow: syn::Attribute = syn::parse_quote! {
+        #[allow(dead_code, unused_variables, unused_mut, unused_imports)]
+    };
+    assert_eq!(module.attrs, [doc, allow]);
+    let visibility: syn::Visibility = syn::parse_quote!(pub(crate));
+    assert_eq!(module.vis, visibility);
+}
+
+#[test]
+fn module_without_inline_content_gets_the_error_alone() {
+    // `mod m;` would make rustc look for a file; nothing may be re-emitted.
+    for attribute in ["", "x"] {
+        let item: proc_macro2::TokenStream = "mod m;".parse().unwrap();
+        let items = output_items(crate::gpu_impl(attribute.parse().unwrap(), item));
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_leading_compile_error(&items, "");
+    }
+}
+
+#[test]
+fn attribute_arguments_error_keeps_the_module() {
+    let item: proc_macro2::TokenStream = "mod m {}".parse().unwrap();
+    let items = output_items(crate::gpu_impl("x".parse().unwrap(), item));
+    assert_leading_compile_error(&items, "does not accept arguments");
+    let module = recovered_module(&items);
+    assert_eq!(module.ident, "m");
+    let expected: syn::Item = syn::parse_quote!(
+        use ::gust::prelude::*;
+    );
+    assert_eq!(module.content.as_ref().unwrap().1, [expected]);
+}
+
+#[test]
+fn non_module_item_is_returned_unchanged_beside_the_error() {
+    let item: proc_macro2::TokenStream = "fn f() {}".parse().unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_eq!(items.len(), 2);
+    assert_leading_compile_error(&items, "");
+    let expected: syn::Item = syn::parse_quote!(
+        fn f() {}
+    );
+    assert_eq!(items[1], expected);
+}
+
+#[test]
+fn unparsable_item_tokens_are_returned_verbatim_after_the_error() {
+    // Valid tokens, but not an item: the raw tokens must follow the error untouched.
+    let item: proc_macro2::TokenStream = "mod m { fn ( ) } #[kernel] 7".parse().unwrap();
+    let output = crate::gpu_impl(proc_macro2::TokenStream::new(), item.clone()).to_string();
+    let item = item.to_string();
+    assert!(output.starts_with(":: core :: compile_error !"), "{output}");
+    assert!(output.ends_with(&item), "{output}");
+}
+
+#[test]
+fn accepted_module_is_identical_to_the_expansion_and_has_no_error() {
+    let source = "mod demo { \
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { \
+            out[id.x] = id.x; \
+        } \
+    }";
+    let item: proc_macro2::TokenStream = source.parse().unwrap();
+    let module: syn::ItemMod = syn::parse_str(source).unwrap();
+    let expected = crate::expand::expand(module).unwrap().to_string();
+    let actual = crate::gpu_impl(proc_macro2::TokenStream::new(), item).to_string();
+    assert!(!actual.contains("compile_error"), "{actual}");
+    assert_eq!(actual, expected);
+}
