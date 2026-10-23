@@ -1,7 +1,10 @@
 # Decisions and boundaries
 
-Recorded 2026-09-07 from the owner's GUST handoff, earlier reflection deferral,
-and independent inspection. Chat research is design input, not proof of code state.
+Append-only log. Next id: **D28**. Add a row for every owner decision or durable
+technical decision, with its date and source; supersede an old row with a new one
+instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
+earlier reflection deferral, and independent inspection. Chat research is design
+input, not proof of code state.
 
 | ID | Decision | Rationale / revisit condition |
 | --- | --- | --- |
@@ -32,6 +35,8 @@ and independent inspection. Chat research is design input, not proof of code sta
 | D25 | Crate naming waits until publication (owner, 2026-10-23) | `gust`, `breeze` and `hurricane` are taken on crates.io. A package can publish under another name (for example `gust-gpu`) while its library stays `gust`. Decide in M10 |
 | D26 | Test builds may contain both pipelines (owner, 2026-10-23) | CPU twins are emitted under `cfg(test)`, which the expanding crate evaluates, and under `--cfg gust_dual` for cross-crate tests and benchmarks; never through a Cargo feature, because features unify across the dependency graph and would leak both pipelines into production builds (D21). A kernel that uses a construct without CPU semantics must opt out explicitly. Same-source CPU-versus-GPU comparisons supplement, and do not replace, independent host references for semantics fixtures |
 | D27 | Workflow commands live in `cargo xtask`; no shell or PowerShell scripts are tracked (owner, 2026-10-23) | One cross-platform command surface. A lint enforces it. Native toolchain calls inside xtask (for example MSVC's environment setup on Windows) are allowed in their platform branch |
+
+## Notes
 
 The original takeover excluded crate renaming; the subsequent naming pass is
 recorded in D01. Still rejected: rebuilding the shader backend, automatic

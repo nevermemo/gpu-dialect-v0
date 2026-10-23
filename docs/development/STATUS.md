@@ -23,9 +23,11 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed at 2026-09-09T12:10:13Z
-  on NVIDIA GeForce RTX 5090 / Vulkan; 13 SPIR-V artifacts passed `spirv-val`.
-  It predates `63769fb`.
+- Last full validation: `cargo xtask check-full` passed at 2026-10-23T02:39:12Z on
+  NVIDIA GeForce RTX 5090 / Vulkan at `71f8d71`, through the shared cargo slot
+  wrapper; all 8 examples ran and 13 SPIR-V artifacts passed `spirv-val`. The local
+  `.ai/VALIDATION.json` record contains no machine paths. This closes DX19's
+  full-validation item; its independent review is still pending.
 - Latest routine check: `cargo xtask check-fast` exited 0 ("GUST verification
   passed") on 2026-10-22 at `63769fb` with no tracked changes (untracked `.kilo/`
   only). Routine modes write no `.ai/VALIDATION.json` record.
