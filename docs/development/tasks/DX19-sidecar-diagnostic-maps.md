@@ -30,7 +30,15 @@ and use it to enrich Slang errors with a stable generated construct label.
 - A `match` segment's ordinal is the number in its `// @gust construct: match #N`
   marker, which is the emitter's own statement index; every other construct
   uses the per-kernel map ordinal, and the diagnostic label prints the segment
-  ordinal either way.
+  ordinal either way. The emitter's statement index is block-local: it counts
+  statements within one emitted lexical block, so two matches in different
+  blocks of one kernel can both be `match #0` (also in `__gust_match_N`, which
+  stays unique within its block). `match` ordinals are therefore not unique per
+  kernel; the segment's Slang line range disambiguates, and a diagnostic label
+  such as `match #0` is read together with the reported Slang line. Numbering
+  matches per kernel in the sidecar is deliberately not done.
+- A marker whose number does not parse is an emitter bug: tests fail on it
+  (debug assertion), and a release build falls back to the map ordinal.
 - The compiler bridge writes `kernel.map.json` into its exclusively owned
   temporary directory before invoking `slangc`.
 - Error mapping selects the innermost segment containing the reported Slang

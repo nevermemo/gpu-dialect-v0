@@ -113,8 +113,12 @@ impl SourceMap {
                 .get(index + 1)
                 .is_some_and(|next| is_else(next.split("//").next().unwrap_or("").trim()));
             // Only a closing brace can end a segment; a line such as `else` between
-            // two blocks must not close the conditional it continues.
-            while let Some(top) = kernel.open.last().filter(|_| code.contains('}')) {
+            // two blocks must not close the conditional it continues. Like an `if` or
+            // `for` header, an `else if` header whose condition holds an array literal
+            // contains `}` without closing anything, unless the whole line ends with it.
+            let else_header = is_else(code) && !code.ends_with('}');
+            let closes = code.contains('}') && !else_header;
+            while let Some(top) = kernel.open.last().filter(|_| closes) {
                 let construct = map.segments[top.index].construct;
                 let continues_with_else =
                     next_is_else && matches!(construct, "conditional" | "match");
@@ -188,7 +192,14 @@ impl SourceMap {
             }
             kernel.open = kept;
             // The label is the marker's own statement index, as the emitter wrote it.
-            self.open_block(kernel, number, "match", depth, marker.trim().parse().ok());
+            let label = marker.trim().parse().ok();
+            // The emitter always writes a number; anything else is an emitter bug. Tests
+            // fail on it, while a release build still maps the block by its map ordinal.
+            debug_assert!(
+                label.is_some(),
+                "unparsable match marker number in `{trimmed}`"
+            );
+            self.open_block(kernel, number, "match", depth, label);
             return;
         }
         if is_prologue(code) {
@@ -608,6 +619,114 @@ mod tests {
         assert_eq!(segment(&map, "assignment", 10).ordinal, 3);
         assert_eq!(segment(&map, "local", 16).ordinal, 5);
         assert_eq!(segment(&map, "return", 17).end_line, 17);
+    }
+
+    #[test]
+    fn else_if_header_with_an_array_literal_does_not_close_the_conditional() {
+        let source = concat!(
+            "// @rust kernel: m::a\n",                                       // 1
+            "void a(uint3 id : SV_DispatchThreadID)\n",                      // 2
+            "{\n",                                                           // 3
+            "    if ((flag > uint(5)))\n",                                   // 4
+            "    {\n",                                                       // 5
+            "        flag = uint(1);\n",                                     // 6
+            "    }\n",                                                       // 7
+            "    else if ((sum({ 1, 2 }) > uint(0)))\n",                     // 8
+            "    {\n",                                                       // 9
+            "        flag = uint(2);\n",                                     // 10
+            "    }\n",                                                       // 11
+            "    else if ((len({ 3, 4 }) > uint(1))) { flag = uint(5); }\n", // 12
+            "    else\n",                                                    // 13
+            "    {\n",                                                       // 14
+            "        flag = uint(3);\n",                                     // 15
+            "    }\n",                                                       // 16
+            "    flag = uint(4);\n",                                         // 17
+            "}\n",                                                           // 18
+        );
+        let map = SourceMap::from_slang(source);
+        // One conditional from the `if` through the last `else`.
+        assert_eq!(segment(&map, "conditional", 4).end_line, 16);
+        for line in [8, 9, 11, 13, 14, 16] {
+            assert_eq!(
+                map.origin_at(line).unwrap().construct,
+                "conditional",
+                "line {line}"
+            );
+        }
+        assert_eq!(map.origin_at(10).unwrap().construct, "assignment");
+        let after = segment(&map, "assignment", 17);
+        assert_eq!((after.start_line, after.end_line), (17, 17));
+        assert_eq!(map.origin_at(17).unwrap().construct, "assignment");
+    }
+
+    #[test]
+    fn match_ordinals_are_block_local_and_the_line_range_disambiguates() {
+        // Two matches in different blocks of one kernel are both `match #0`.
+        let source = concat!(
+            "// @rust kernel: m::a\n",                  // 1
+            "void a(uint3 id : SV_DispatchThreadID)\n", // 2
+            "{\n",                                      // 3
+            "    // @gust construct: match #0\n",       // 4
+            "    var __gust_match_0 = pick();\n",       // 5
+            "    if (__gust_match_0.isOk)\n",           // 6
+            "    {\n",                                  // 7
+            "        // @gust construct: match #0\n",   // 8
+            "        var __gust_match_0 = pick();\n",   // 9
+            "        if (__gust_match_0.isOk)\n",       // 10
+            "        {\n",                              // 11
+            "            x = uint(1);\n",               // 12
+            "        }\n",                              // 13
+            "        else\n",                           // 14
+            "        {\n",                              // 15
+            "            x = uint(2);\n",               // 16
+            "        }\n",                              // 17
+            "    }\n",                                  // 18
+            "    else\n",                               // 19
+            "    {\n",                                  // 20
+            "        x = uint(3);\n",                   // 21
+            "    }\n",                                  // 22
+            "}\n",                                      // 23
+        );
+        let map = SourceMap::from_slang(source);
+        let outer = segment(&map, "match", 4);
+        let inner = segment(&map, "match", 8);
+        assert_eq!((outer.ordinal, inner.ordinal), (0, 0));
+        assert_eq!((outer.start_line, outer.end_line), (4, 22));
+        assert_eq!((inner.start_line, inner.end_line), (8, 17));
+        // Same label, different range: the reported line picks the right one.
+        assert_eq!(map.origin_at(19).unwrap().start_line, 4);
+        assert_eq!(map.origin_at(14).unwrap().start_line, 8);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "unparsable match marker number")]
+    fn unparsable_match_marker_number_is_an_internal_error_in_debug() {
+        let source = concat!(
+            "// @rust kernel: m::a\n",
+            "void a()\n",
+            "{\n",
+            "    // @gust construct: match #x\n",
+            "    var y = uint(1);\n",
+            "}\n",
+        );
+        let _ = SourceMap::from_slang(source);
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn unparsable_match_marker_number_falls_back_to_the_map_ordinal_in_release() {
+        let source = concat!(
+            "// @rust kernel: m::a\n",
+            "void a()\n",
+            "{\n",
+            "    var x = uint(0);\n",
+            "    // @gust construct: match #x\n",
+            "    var y = uint(1);\n",
+            "}\n",
+        );
+        let map = SourceMap::from_slang(source);
+        assert_eq!(segment(&map, "match", 5).ordinal, 1);
     }
 
     #[test]

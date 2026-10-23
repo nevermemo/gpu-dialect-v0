@@ -327,8 +327,9 @@ mod tests {
     fn headless_gpu_matches_cpu_reference() {
         let device = match HeadlessDevice::new() {
             Ok(device) => device,
-            Err(gust_wgpu::Error::NoAdapter(_)) => return,
-            Err(error) => panic!("could not initialize headless wgpu: {error}"),
+            Err(error) => panic!(
+                "Vulkan adapter required; this test must not silently skip: could not initialize headless wgpu: {error}"
+            ),
         };
         let input = [-1.0, -0.25, 0.0, 0.5, 1.0, 1.5];
         let mut cpu_output = [0.0; 6];

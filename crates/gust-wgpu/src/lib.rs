@@ -419,14 +419,18 @@ const ADAPTER_BACKOFF: [Duration; 2] = [Duration::from_millis(100), Duration::fr
 
 /// Run `request` up to `attempts` times, pausing `backoff[n]` through `pause` after the
 /// `n`th failure. Only `Error::NoAdapter` is retried; any other result returns at once.
-/// The final `NoAdapter` keeps its message and gains the attempt count.
+/// The final `NoAdapter` keeps its message and gains the attempt count. When a request
+/// succeeds after at least one failed attempt, one line goes to `log`, so the transient
+/// failure stays visible instead of being absorbed by the retry.
 fn retry_no_adapter<T>(
     attempts: u32,
     backoff: &[Duration],
     mut pause: impl FnMut(Duration),
+    mut log: impl FnMut(&str),
     mut request: impl FnMut() -> Result<T, Error>,
 ) -> Result<T, Error> {
     let mut attempt = 1;
+    let mut first_failure: Option<String> = None;
     loop {
         match request() {
             Err(Error::NoAdapter(message)) if attempt >= attempts => {
@@ -434,13 +438,21 @@ fn retry_no_adapter<T>(
                     "{message} (after {attempt} attempts)"
                 )));
             }
-            Err(Error::NoAdapter(_)) => {
+            Err(Error::NoAdapter(message)) => {
+                first_failure.get_or_insert(message);
                 if let Some(delay) = backoff.get(attempt as usize - 1) {
                     pause(*delay);
                 }
                 attempt += 1;
             }
-            other => return other,
+            other => {
+                if let (Ok(_), Some(message)) = (&other, &first_failure) {
+                    log(&format!(
+                        "gust-wgpu: adapter request succeeded on attempt {attempt} of {attempts} after a transient NoAdapter failure: {message}"
+                    ));
+                }
+                return other;
+            }
         }
     }
 }
@@ -467,6 +479,7 @@ impl HeadlessDevice {
             ADAPTER_ATTEMPTS,
             &ADAPTER_BACKOFF,
             std::thread::sleep,
+            |line| eprintln!("{line}"),
             || pollster::block_on(Self::request_adapter()),
         )?;
         pollster::block_on(Self::open(adapter))
@@ -1661,10 +1674,12 @@ mod tests {
     fn adapter_retry_succeeds_on_first_attempt_without_pausing() {
         let mut calls = 0;
         let mut pauses = Vec::new();
+        let mut logs = Vec::new();
         let result = retry_no_adapter(
-            3,
+            ADAPTER_ATTEMPTS,
             &ADAPTER_BACKOFF,
             |delay| pauses.push(delay),
+            |line| logs.push(line.to_string()),
             || {
                 calls += 1;
                 Ok(7)
@@ -1673,46 +1688,78 @@ mod tests {
         assert!(matches!(result, Ok(7)));
         assert_eq!(calls, 1);
         assert!(pauses.is_empty());
+        assert!(logs.is_empty(), "no retry happened, so nothing is logged");
+    }
+
+    #[test]
+    fn adapter_backoff_has_one_pause_between_each_pair_of_attempts() {
+        assert_eq!(ADAPTER_BACKOFF.len() as u32, ADAPTER_ATTEMPTS - 1);
     }
 
     #[test]
     fn adapter_retry_succeeds_on_a_later_attempt() {
         let mut calls = 0;
         let mut pauses = Vec::new();
+        let mut logs = Vec::new();
         let result = retry_no_adapter(
-            3,
+            ADAPTER_ATTEMPTS,
             &ADAPTER_BACKOFF,
             |delay| pauses.push(delay),
+            |line| logs.push(line.to_string()),
             || {
                 calls += 1;
-                if calls < 3 {
+                if calls < ADAPTER_ATTEMPTS {
                     Err(no_adapter())
                 } else {
                     Ok(calls)
                 }
             },
         );
-        assert!(matches!(result, Ok(3)));
-        assert_eq!(calls, 3);
+        assert!(matches!(result, Ok(n) if n == ADAPTER_ATTEMPTS));
+        assert_eq!(calls, ADAPTER_ATTEMPTS);
         assert_eq!(pauses, ADAPTER_BACKOFF);
+        assert_eq!(
+            pauses.iter().sum::<Duration>(),
+            ADAPTER_BACKOFF.iter().sum::<Duration>()
+        );
+        // The transient failure stays visible: exactly one line, naming the attempt
+        // that succeeded and the loader message of the failed one.
+        assert_eq!(
+            logs,
+            [format!(
+                "gust-wgpu: adapter request succeeded on attempt {ADAPTER_ATTEMPTS} of {ADAPTER_ATTEMPTS} after a transient NoAdapter failure: loader failed"
+            )]
+        );
     }
 
     #[test]
     fn adapter_retry_fails_after_the_limit_with_the_attempt_count() {
         let mut calls = 0;
+        let mut pauses = Vec::new();
+        let mut logs = Vec::new();
         let result: Result<(), Error> = retry_no_adapter(
-            3,
+            ADAPTER_ATTEMPTS,
             &ADAPTER_BACKOFF,
-            |_| {},
+            |delay| pauses.push(delay),
+            |line| logs.push(line.to_string()),
             || {
                 calls += 1;
                 Err(no_adapter())
             },
         );
-        assert_eq!(calls, 3);
+        assert_eq!(calls, ADAPTER_ATTEMPTS);
+        assert_eq!(
+            pauses.iter().sum::<Duration>(),
+            ADAPTER_BACKOFF.iter().sum::<Duration>()
+        );
+        // A final failure is reported by the error itself, not by the retry log.
+        assert!(logs.is_empty());
         match result {
             Err(Error::NoAdapter(message)) => {
-                assert_eq!(message, "loader failed (after 3 attempts)");
+                assert_eq!(
+                    message,
+                    format!("loader failed (after {ADAPTER_ATTEMPTS} attempts)")
+                );
             }
             other => panic!("expected NoAdapter after the limit, got {other:?}"),
         }
@@ -1723,9 +1770,10 @@ mod tests {
         let mut calls = 0;
         let mut pauses = 0;
         let result: Result<(), Error> = retry_no_adapter(
-            3,
+            ADAPTER_ATTEMPTS,
             &ADAPTER_BACKOFF,
             |_| pauses += 1,
+            |_| panic!("an immediate non-adapter error is not a retry"),
             || {
                 calls += 1;
                 Err(Error::RequestDevice("lost".to_string()))

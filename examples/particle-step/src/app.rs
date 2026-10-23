@@ -261,12 +261,12 @@ mod tests {
     use super::*;
     use gust::TypeLayoutKind;
 
-    fn device() -> Option<HeadlessDevice> {
-        match HeadlessDevice::new() {
-            Ok(device) => Some(device),
-            Err(gust_wgpu::Error::NoAdapter(_)) => None,
-            Err(error) => panic!("could not initialize headless wgpu: {error}"),
-        }
+    fn device() -> HeadlessDevice {
+        HeadlessDevice::new().unwrap_or_else(|error| {
+            panic!(
+                "Vulkan adapter required; this test must not silently skip: could not initialize headless wgpu: {error}"
+            )
+        })
     }
 
     #[test]
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn scalar_read_after_write() {
-        let Some(device) = device() else { return };
+        let device = device();
         let result = device
             .dispatch_f32(
                 &particles::scalar_order::DESCRIPTOR,
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn field_read_after_write() {
-        let Some(device) = device() else { return };
+        let device = device();
         let out = device.create_typed_buffer("particle", &data(1).0, GpuBufferAccess::ReadWrite);
         let input = device.create_typed_buffer("input", &data(1).0, GpuBufferAccess::ReadOnly);
         let echo = device.create_f32_buffer("echo", &[0.0], GpuBufferAccess::ReadWrite);
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn gpu_nested_structs_and_dependent_batches_match_cpu() {
-        let Some(device) = device() else { return };
+        let device = device();
         for count in [0, 1, 63, 64, 65, 129] {
             let (input, acceleration) = data(count);
             let (expected, expected_energy) = cpu_step(&input, &acceleration);
