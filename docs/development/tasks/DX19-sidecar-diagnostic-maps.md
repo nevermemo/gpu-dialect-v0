@@ -98,7 +98,14 @@ and use it to enrich Slang errors with a stable generated construct label.
   for byte. Slangc and the native reflection helper both honour the directives
   (their errors read `--> <file>:<line>:<column>`, the column being a Slang column);
   the helper's `sourceHash` is the hash of the copy it read. WGSL and SPIR-V output
-  is identical with and without the directives (tested).
+  is identical with and without the directives (tested for a struct body, a helper,
+  a loop, a lowered `match` and struct literals). Directives also land inside struct
+  and helper bodies, since those lines are attributed to their struct or helper. The
+  no-semantic-change claim covers emitter-produced source only: a hand-written
+  `slang_source` paired with a table gets directives wherever the table says.
+- The compile-copy eligibility guard is shared: a recorded file that injection refuses
+  (see above) never classifies a location as Rust, so a file recorded as `kernel.slang`
+  leaves `kernel.slang(6)` a Slang line.
 - The error parser accepts a Rust location only when its path text equals the
   descriptor's `rust_file` exactly, in the `-->` and the legacy `file(line[,col])`
   shapes; any other file stays unattributed. For a Rust location the construct label

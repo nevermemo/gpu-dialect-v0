@@ -86,6 +86,75 @@ mod structured {
     }
 }
 
+/// Valid: a `Result` helper and a lowered `match` (scaffolding lines, nested arm
+/// statements), so directives fall inside the `match` lowering.
+#[gust::gpu]
+mod lowered_match {
+    fn half_if_even(value: uint) -> Result<uint, uint> {
+        if value & 1u32 == 0u32 {
+            Ok(value / 2u32)
+        } else {
+            Err(value)
+        }
+    }
+
+    #[allow(clippy::assign_op_pattern)]
+    #[kernel]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        input: StructuredBuffer<uint>,
+        mut values: RWStructuredBuffer<uint>,
+    ) {
+        let i = id.x;
+        if i < input.len() {
+            let result = half_if_even(input[i]);
+            let mut total = 0u32;
+            match result {
+                Err(error) => {
+                    total = total + error;
+                }
+                Ok(half) => {
+                    total = total + half;
+                }
+            };
+            values[i] = total;
+        }
+    }
+}
+
+/// Valid: struct literals in a local initializer and as a helper result.
+#[gust::gpu]
+mod struct_literal {
+    pub struct Summary {
+        pub total: uint,
+        pub count: uint,
+    }
+
+    #[allow(clippy::let_and_return)]
+    fn fold(acc: Summary, value: uint) -> Summary {
+        let next = Summary {
+            total: acc.total + value,
+            count: acc.count + 1u32,
+        };
+        next
+    }
+
+    #[kernel]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        input: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<Summary>,
+    ) {
+        if id.x < out.len() {
+            let start = Summary {
+                total: 0u32,
+                count: 0u32,
+            };
+            out[id.x] = fold(start, input[id.x]);
+        }
+    }
+}
+
 #[gust::gpu]
 mod else_if_chain {
     #[kernel]
@@ -450,22 +519,51 @@ fn ten_deliberate_failures_land_on_the_right_rust_line_on_each_target() {
 
 #[test]
 fn directives_change_neither_the_artifacts_nor_the_exported_text() {
-    let kernel = structured::run::DESCRIPTOR;
-    // The table covers the struct, the helper and the nested blocks, so the
-    // compile copy has directives inside a struct body and a helper.
-    assert!(kernel.source.lines.len() >= 6, "{:?}", kernel.source.lines);
-    assert!(!kernel.slang_source.contains("#line"));
-    for target in [Target::Wgsl, Target::Spirv] {
-        let with_directives = slang::compile(&kernel, target).unwrap();
-        let clean = slang::compile_source(kernel.slang_source, kernel.entry_point, target).unwrap();
-        assert!(!clean.is_empty());
-        assert_eq!(with_directives, clean, "{target:?}");
-    }
-    // The exported text is the descriptor's own, byte for byte.
+    // `structured`: a struct body, a helper and nested blocks. `lowered_match`: the
+    // multi-line `match` lowering. `struct_literal`: struct values built in place.
+    let kernels = [
+        ("structured", structured::run::DESCRIPTOR, "struct Pair"),
+        (
+            "lowered_match",
+            lowered_match::run::DESCRIPTOR,
+            "__gust_match_",
+        ),
+        (
+            "struct_literal",
+            struct_literal::run::DESCRIPTOR,
+            "struct Summary",
+        ),
+    ];
     let directory = slang::TemporaryDirectory::create().unwrap();
-    let path = directory.path().join("exported.slang");
-    slang::write_source(&kernel, &path).unwrap();
-    assert_eq!(fs::read_to_string(path).unwrap(), kernel.slang_source);
+    for (name, kernel, shape) in kernels {
+        // The shape under test is really in the emitted text, and has records.
+        assert!(
+            kernel.slang_source.contains(shape),
+            "{name}: no `{shape}` in:\n{}",
+            kernel.slang_source
+        );
+        assert!(
+            kernel.source.lines.len() >= 6,
+            "{name}: {:?}",
+            kernel.source.lines
+        );
+        assert!(!kernel.slang_source.contains("#line"));
+        for target in [Target::Wgsl, Target::Spirv] {
+            let with_directives = slang::compile(&kernel, target).unwrap();
+            let clean =
+                slang::compile_source(kernel.slang_source, kernel.entry_point, target).unwrap();
+            assert!(!clean.is_empty());
+            assert_eq!(with_directives, clean, "{name} {target:?}");
+        }
+        // The exported text is the descriptor's own, byte for byte.
+        let path = directory.path().join(format!("{name}.slang"));
+        slang::write_source(&kernel, &path).unwrap();
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            kernel.slang_source,
+            "{name}"
+        );
+    }
 }
 
 #[test]

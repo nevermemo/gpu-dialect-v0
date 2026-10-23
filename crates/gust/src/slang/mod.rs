@@ -234,6 +234,15 @@ fn directive_file_is_usable(file: &str) -> bool {
 /// Slang coordinates and the construct lookup of DX19 keeps working for it.
 /// Lines before the first mapping are copied untouched.
 ///
+/// Directives also land inside struct and helper bodies, because those lines are
+/// attributed too (a field line carries its struct's line). A directive is not a
+/// token, so this changes no meaning for the source the emitter produces
+/// (tested: identical WGSL and SPIR-V, including a struct body, a helper, a lowered
+/// `match` and struct literals). The claim covers emitter-produced source only; a
+/// hand-written `slang_source` with a table gets directives wherever its table
+/// says, such as inside a multi-line comment or a macro continuation, where they
+/// could change meaning.
+///
 /// With no file, no table, or a file name that cannot sit in a directive, the
 /// copy equals `source` byte for byte (hand-written descriptors, probes). The
 /// copy is a compile-time input only: exports, `KernelDescriptor::slang_source`
@@ -407,9 +416,12 @@ enum DiagnosticLocation {
 /// Whether `path` names the compile copy or the kernel's Rust file. The Rust file
 /// must match `rust_file` exactly: the compiler echoes the directive's string
 /// verbatim, and the directive only ever holds `/` separators. Any other file
-/// stays unattributed.
+/// stays unattributed. The same eligibility guard as injection applies
+/// ([`directive_file_is_usable`]): a recorded file that gets no directives, such as
+/// one named `kernel.slang`, can never be the origin of a location, so its name
+/// cannot turn a Slang location into a Rust one.
 fn classify_location(path: &str, line: usize, rust_file: &str) -> Option<DiagnosticLocation> {
-    if !rust_file.is_empty() && path == rust_file {
+    if directive_file_is_usable(rust_file) && path == rust_file {
         u32::try_from(line).ok().map(DiagnosticLocation::Rust)
     } else if path.rsplit(['/', '\\']).next()? == KERNEL_FILE {
         Some(DiagnosticLocation::Slang(line))
@@ -1257,6 +1269,30 @@ mod tests {
                 "{diagnostic}"
             );
         }
+        // A recorded file that injection refuses never claims a location: a file
+        // recorded as `kernel.slang` leaves `kernel.slang(6)` a Slang line.
+        for refused in [
+            "kernel.slang",
+            "src/kernel.slang",
+            "src/lib rs",
+            "src\\lib.rs",
+        ] {
+            for diagnostic in [
+                "kernel.slang(6): error: bad\n",
+                "error[E1]: bad\n --> kernel.slang:6:3\n",
+                "error[E1]: bad\n --> C:\\tmp\\kernel.slang:6:3\n",
+            ] {
+                assert_eq!(
+                    parse_diagnostic_location(diagnostic, refused),
+                    Some(DiagnosticLocation::Slang(6)),
+                    "{refused:?}: {diagnostic}"
+                );
+            }
+        }
+        assert_eq!(
+            parse_diagnostic_location("error[E1]: bad\n --> src/lib rs:6:3\n", "src/lib rs"),
+            None
+        );
         // With no Rust file recorded, a path that looks like one is just foreign.
         assert_eq!(
             parse_diagnostic_location("error[E1]: bad\n --> crates/x/src/k.rs:42:17\n", ""),

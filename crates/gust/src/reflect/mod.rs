@@ -546,6 +546,78 @@ impl Reflection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SOURCE: &str = "line one\nline two\n";
+    const LINES: &[crate::LineSpan] = &[crate::LineSpan {
+        slang_start: 2,
+        slang_end: 2,
+        rust_line: 9,
+    }];
+    const KERNEL: KernelDescriptor = KernelDescriptor {
+        module: "m",
+        name: "k",
+        entry_point: "entry",
+        workgroup_size: [1, 1, 1],
+        parameters: &[],
+        slang_source: SOURCE,
+        source: SourceOrigin {
+            file: "src/k.rs",
+            lines: LINES,
+        },
+    };
+    const ARTIFACT: &[u8] = b"artifact bytes";
+
+    /// A canned helper result (a real one cannot be forced to lie): only the
+    /// identity fields, which `from_output` checks before anything else.
+    fn canned(target: &str, entry: &str, source_hash: &str, artifact_hash: &str) -> String {
+        format!(
+            "{{\"schemaVersion\":1,\"compiler\":\"canned\",\"target\":\"{target}\",\"entryPoint\":\"{entry}\",\"sourceHash\":\"{source_hash}\",\"artifactHash\":\"{artifact_hash}\"}}"
+        )
+    }
+
+    fn identity_error(compiled_source: &str, json: &str) -> bool {
+        let result = CompiledReflection::from_output(
+            &KERNEL,
+            compiled_source,
+            Target::Wgsl,
+            ARTIFACT.to_vec(),
+            json,
+        );
+        matches!(result, Err(Error::Invalid(message)) if message.contains("identity mismatch"))
+    }
+
+    #[test]
+    fn helper_identity_is_checked_field_by_field_against_the_compiled_copy() {
+        let copy = slang::compile_copy(SOURCE, &KERNEL.source);
+        assert_ne!(copy, SOURCE, "the fixture must have directives");
+        let source = fingerprint(copy.as_bytes());
+        let artifact = fingerprint(ARTIFACT);
+        // The control: every field right gets past the identity check (and fails
+        // later, on the missing workgroup size).
+        assert!(!identity_error(
+            &copy,
+            &canned("wgsl", "entry", &source, &artifact)
+        ));
+        for (what, json) in [
+            ("target", canned("spirv", "entry", &source, &artifact)),
+            ("entry point", canned("wgsl", "other", &source, &artifact)),
+            (
+                "stale source hash (the clean text)",
+                canned("wgsl", "entry", &fingerprint(SOURCE.as_bytes()), &artifact),
+            ),
+            (
+                "mismatched source hash",
+                canned("wgsl", "entry", "0000000000000000", &artifact),
+            ),
+            (
+                "mismatched artifact hash",
+                canned("wgsl", "entry", &source, &fingerprint(b"other bytes")),
+            ),
+        ] {
+            assert!(identity_error(&copy, &json), "{what}");
+        }
+    }
+
     #[test]
     fn strict_json_syntax_and_unicode() {
         let json =
