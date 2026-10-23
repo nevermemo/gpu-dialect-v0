@@ -118,8 +118,8 @@ impl ResourceLayout {
 /// Rust's size, alignment, field order, and offsets.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a GUST GPU POD type",
-    label = "GPU buffers and struct fields need `u32`, `i32`, `f32`, or a plain struct declared inside the same `#[gpu]` module",
-    note = "declare the struct inside the `#[gpu]` module so that the macro implements `GpuPod` for it"
+    label = "declare a plain struct inside the same `#[gpu]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it",
+    note = "an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`"
 )]
 pub unsafe trait GpuPod: Copy + 'static {
     const LAYOUT: TypeLayout;

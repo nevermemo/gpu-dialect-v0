@@ -344,6 +344,9 @@ fn is_variable_name(name: &str) -> bool {
 /// real duplicates cannot exist) is an error rather than a silent override; this is what stops an
 /// inherited value from forging a second PATH, INCLUDE or LIB. The hidden per-drive entries cmd
 /// prints (`=C:=C:\dir`) are skipped.
+///
+/// The duplicate rule alone does not catch a forged name that vcvars does not set (for example
+/// `CL`). That case is refused before the capture runs, by [`ambiguous_inherited_variable`].
 fn parse_env_dump(dump: &str) -> Result<Vec<(String, String)>, String> {
     let mut variables: Vec<(String, String)> = Vec::new();
     let mut last_is_open = false;
@@ -375,6 +378,48 @@ fn parse_env_dump(dump: &str) -> Result<Vec<(String, String)>, String> {
         }
     }
     Ok(variables)
+}
+
+/// The name of the first inherited variable whose value makes the `set` dump ambiguous, if any.
+///
+/// `set` prints a multi-line value raw. A continuation line shaped like `NAME=value` (or like a
+/// hidden `=C:=...` entry) cannot be told from a real variable in the dump, so such a value could
+/// forge a variable that vcvars never set, for example `CL`, which `cl.exe` reads as extra
+/// command-line options. A multi-line value whose continuation lines are plain text is harmless:
+/// [`parse_env_dump`] drops the variable together with those lines.
+fn ambiguous_inherited_variable(environment: &[(String, String)]) -> Option<&str> {
+    environment
+        .iter()
+        .find(|(_, value)| {
+            value.lines().skip(1).any(|line| {
+                line.starts_with('=')
+                    || line
+                        .split_once('=')
+                        .is_some_and(|(name, _)| is_variable_name(name))
+            })
+        })
+        .map(|(name, _)| name.as_str())
+}
+
+/// The environment the capture process will inherit: the current process environment with the
+/// command's own `env`/`env_remove` changes applied. Names compare case-insensitively, like cmd's.
+fn inherited_environment(command: &std::process::Command) -> Vec<(String, String)> {
+    let mut environment: Vec<(String, String)> = env::vars_os()
+        .map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    for (name, value) in command.get_envs() {
+        let name = name.to_string_lossy().into_owned();
+        environment.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&name));
+        if let Some(value) = value {
+            environment.push((name, value.to_string_lossy().into_owned()));
+        }
+    }
+    environment
 }
 
 /// Looks for `program` in the `;`-separated (platform list separator) directories of `path`.
@@ -414,6 +459,11 @@ fn vcvars_capture_command(vcvars: &Path) -> Result<std::process::Command, String
 fn capture_environment_from(
     mut command: std::process::Command,
 ) -> Result<Vec<(String, String)>, String> {
+    if let Some(name) = ambiguous_inherited_variable(&inherited_environment(&command)) {
+        return Err(format!(
+            "the inherited environment variable `{name}` holds a multi-line value with a line shaped like a variable assignment; the vcvars environment dump could not tell it from a real variable. Unset `{name}` and retry"
+        ));
+    }
     let output = command
         .stdin(std::process::Stdio::null())
         .output()

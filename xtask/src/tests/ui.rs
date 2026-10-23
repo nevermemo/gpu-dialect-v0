@@ -1,6 +1,9 @@
 use std::fs;
 
-use super::{Expectation, UI_DIR, cargo_args, discover_cases, judge, parse_expected};
+use super::{
+    Expectation, UI_DIR, cargo_args, discover_cases, judge, parse_expected, split_diagnostics,
+    starts_diagnostic,
+};
 use crate::workspace::workspace_root;
 
 const MESSAGE: &str = "`Outside` is not a GUST GPU POD type";
@@ -27,7 +30,12 @@ fn a_missing_substring_is_named_and_the_output_is_shown() {
     let problems = judge("gpupod-missing", &wanted, false, CANNED_STDERR);
     assert_eq!(problems.len(), 2, "{problems:#?}");
     assert!(
-        problems[0].contains("does not contain `GUST-E0200`"),
+        problems[0].contains("no single rustc diagnostic contains `GUST-E0200`"),
+        "{problems:?}"
+    );
+    // The gaps are reported against the closest diagnostic, which is the one that matched most.
+    assert!(
+        problems[0].contains("(closest: `gpupod-missing/src/main.rs:13:62: error[E0277]:"),
         "{problems:?}"
     );
     assert!(problems[1].contains("rustc output was:"), "{problems:?}");
@@ -38,6 +46,76 @@ fn a_missing_substring_is_named_and_the_output_is_shown() {
     // Every missing substring is reported, not only the first.
     let both = judge("c", &fails(&["one", "two"]), false, "nothing relevant\n");
     assert_eq!(both.len(), 3, "{both:#?}");
+}
+
+#[test]
+fn every_expectation_must_sit_in_one_diagnostic_not_anywhere_in_stderr() {
+    // An unrelated warning sits at the expected location; the expected error is elsewhere.
+    let stderr = "gpupod-missing\\src\\main.rs:13:5: warning: unused variable: `x`\ngpupod-missing\\src\\main.rs:20:9: error[E0277]: `Outside` is not a GUST GPU POD type\nerror: could not compile `gpupod-missing` (bin \"gpupod-missing\") due to 1 previous error; 1 warning emitted\n";
+    let wanted = fails(&["error[E0277]", MESSAGE, "gpupod-missing/src/main.rs:13:"]);
+    let problems = judge("gpupod-missing", &wanted, false, stderr);
+    assert_eq!(problems.len(), 2, "{problems:#?}");
+    assert!(
+        problems[0]
+            .contains("no single rustc diagnostic contains `gpupod-missing/src/main.rs:13:`"),
+        "{problems:?}"
+    );
+    assert!(
+        problems[0].contains("(closest: `gpupod-missing/src/main.rs:20:9: error[E0277]:"),
+        "{problems:?}"
+    );
+    // The same expectation with the location of the error passes.
+    let right = fails(&["error[E0277]", MESSAGE, "gpupod-missing/src/main.rs:20:"]);
+    assert_eq!(
+        judge("gpupod-missing", &right, false, stderr),
+        Vec::<String>::new()
+    );
+    // The message on one diagnostic and the code on another is no match either.
+    let split = "a.rs:1:1: error[E0308]: mismatched types\na.rs:2:1: error: other message\n";
+    let problems = judge(
+        "c",
+        &fails(&["error[E0308]", "other message"]),
+        false,
+        split,
+    );
+    assert_eq!(problems.len(), 2, "{problems:#?}");
+}
+
+#[test]
+fn diagnostics_are_split_at_severity_lines_with_or_without_a_location() {
+    let output = "   Compiling a v0.0.0\nC:/w/a/src/main.rs:13:65: error[E0277]: first\n    continuation line\nC:/w/a/src/main.rs:20:1: warning: second\nerror: could not compile `a`\n";
+    assert_eq!(
+        split_diagnostics(output),
+        [
+            "C:/w/a/src/main.rs:13:65: error[E0277]: first\n    continuation line",
+            "C:/w/a/src/main.rs:20:1: warning: second",
+            "error: could not compile `a`",
+        ]
+    );
+    assert!(split_diagnostics("").is_empty());
+    assert!(split_diagnostics("   Compiling a v0.0.0\n").is_empty());
+    for opens in [
+        "error: x",
+        "error[E0277]: x",
+        "warning: x",
+        "a/b.rs:1:2: note: x",
+        "a/b.rs:1:2: help: x",
+        "C:/a b/c.rs:10:20: error[E0599]: x",
+    ] {
+        assert!(starts_diagnostic(opens), "{opens}");
+    }
+    for plain in [
+        "   Compiling a v0.0.0",
+        "    error: indented",
+        "errors: not a severity",
+        "a/b.rs:x:2: error: x",
+        "a/b.rs:1: error: x",
+        ": 1:2: error: x",
+        "message: error: x",
+        "",
+    ] {
+        assert!(!starts_diagnostic(plain), "{plain}");
+    }
 }
 
 #[test]

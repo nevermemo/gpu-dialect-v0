@@ -3,7 +3,7 @@ use core::fmt;
 /// Marker implemented by the zero-sized host handle generated for each kernel.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a GUST kernel handle",
-    label = "only the zero-sized handle that `#[gpu]` generates for a `#[kernel]` function implements `Kernel`"
+    label = "pass the zero-sized handle that `#[gpu]` generates for a `#[kernel]` function; it implements `Kernel`"
 )]
 pub trait Kernel {
     const DESCRIPTOR: KernelDescriptor;

@@ -1,6 +1,7 @@
-# Substrings of the `cargo check` output (backslashes read as slashes). Only the wording of
+# Substrings of the `cargo check` output (backslashes read as slashes), all in one diagnostic.
+# Only the wording of
 # `#[diagnostic::on_unimplemented]` on `Kernel` and the user's file and line are compared.
 error[E0277]
 `u32` is not a GUST kernel handle
-only the zero-sized handle that `#[gpu]` generates
+pass the zero-sized handle that `#[gpu]` generates for a `#[kernel]` function
 kernel-missing/src/main.rs:10:
