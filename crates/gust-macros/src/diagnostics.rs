@@ -21,8 +21,16 @@
 //! | E09xx | reserved names and shadowing |
 //!
 //! Every error the crate creates goes through [`error`] (or [`wrap`] for a `syn` parse
-//! error); a guard test rejects any other `syn::Error` construction in the crate, and any
-//! `syn` parse entry point outside tests that is not wrapped in the same statement.
+//! error), and every `syn` parse goes through [`parse2`], [`parse_args_with`] or
+//! [`parse_nested_meta`], which wrap the failure. The workspace `clippy.toml` bars
+//! `syn::Error::new`, `new_spanned`, the `syn` parse functions and `parse_macro_input!`
+//! (`disallowed-methods`, `disallowed-macros`); this file is the only one that allows them,
+//! and CI runs clippy with `-D warnings`. A test keeps the allowance out of other files.
+
+// This module is where `syn` errors are made and `syn` input is parsed, so the items that
+// `clippy.toml` bars everywhere else are allowed here. Do not add this allowance elsewhere:
+// `only_this_file_allows_the_barred_syn_items` fails if another source file names it.
+#![allow(clippy::disallowed_methods)]
 
 use std::fmt::Display;
 
@@ -340,10 +348,89 @@ pub(crate) fn wrap(code: Code, parse_error: syn::Error) -> syn::Error {
     wrapped.expect("a syn::Error holds at least one error")
 }
 
+/// `syn::parse2::<T>`, with a failure given `code`.
+pub(crate) fn parse2<T: syn::parse::Parse>(
+    code: Code,
+    tokens: proc_macro2::TokenStream,
+) -> syn::Result<T> {
+    syn::parse2(tokens).map_err(|error| wrap(code, error))
+}
+
+/// `Attribute::parse_args_with`, with a failure given `code`.
+pub(crate) fn parse_args_with<P: syn::parse::Parser>(
+    attribute: &syn::Attribute,
+    code: Code,
+    parser: P,
+) -> syn::Result<P::Output> {
+    attribute
+        .parse_args_with(parser)
+        .map_err(|error| wrap(code, error))
+}
+
+/// `Attribute::parse_nested_meta`, with a failure `syn` words itself given `code`. An
+/// error `logic` returns with a code of its own keeps that code (see [`wrap`]).
+pub(crate) fn parse_nested_meta(
+    attribute: &syn::Attribute,
+    code: Code,
+    logic: impl FnMut(syn::meta::ParseNestedMeta<'_>) -> syn::Result<()>,
+) -> syn::Result<()> {
+    attribute
+        .parse_nested_meta(logic)
+        .map_err(|error| wrap(code, error))
+}
+
 /// Helpers that read codes back out of errors, for tests.
 #[cfg(test)]
 pub(crate) mod testing {
+    use std::{
+        env,
+        fs::OpenOptions,
+        io::Write,
+        panic::Location,
+        sync::{Mutex, PoisonError},
+    };
+
     use super::{ALL, Code};
+
+    /// `syn::parse_str` for tests that build a module from source text.
+    pub(crate) fn parse_str<T: syn::parse::Parse>(source: &str) -> syn::Result<T> {
+        syn::parse_str(source)
+    }
+
+    /// `syn::parse2` for tests that read macro output back.
+    pub(crate) fn parse2<T: syn::parse::Parse>(tokens: proc_macro2::TokenStream) -> syn::Result<T> {
+        syn::parse2(tokens)
+    }
+
+    /// When set, [`assert_code`] and [`assert_codes`] append `<code> <calling file>` to the
+    /// file it names; see `every_code_is_asserted_by_a_test_or_listed_unreachable_with_a_reason`.
+    pub(crate) const RECORD_VARIABLE: &str = "GUST_RECORD_ASSERTED_CODES";
+
+    /// Whether an assertion made in `file` says something about a rejection. The tests of
+    /// this file check the mechanism with codes of their own making, so they do not count.
+    pub(crate) fn counts_as_rejection_test(file: &str) -> bool {
+        !file
+            .replace('\\', "/")
+            .ends_with("gust-macros/src/diagnostics.rs")
+    }
+
+    fn record(code: Code, caller: &Location<'_>) {
+        let Some(path) = env::var_os(RECORD_VARIABLE) else {
+            return;
+        };
+        if !counts_as_rejection_test(caller.file()) {
+            return;
+        }
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _held = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let line = format!("{} {}\n", code.text(), caller.file().replace('\\', "/"));
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(line.as_bytes()))
+            .unwrap_or_else(|error| panic!("could not record {}: {error}", code.text()));
+    }
 
     /// The code at the start of `message` (`[GUST-E0401] ...`), or `None` when uncoded.
     pub(crate) fn code_of_message(message: &str) -> Option<Code> {
@@ -374,20 +461,48 @@ pub(crate) mod testing {
     /// Asserts the first diagnostic of `error` has `code`. Like the substring checks it
     /// replaces, this looks at the first of any combined errors; use [`assert_codes`]
     /// to pin all of them.
+    ///
+    /// This, [`assert_codes`] and [`assert_rendered_code`] are the only ways a test asserts
+    /// a rejection's code, and the guard counts a code as tested only when one of them
+    /// passed for it.
+    #[track_caller]
     pub(crate) fn assert_code(error: &syn::Error, code: Code) {
+        assert_code_for(error, code, "");
+    }
+
+    /// [`assert_code`] whose failure message also shows `context` (for a table row, the
+    /// input that was rejected).
+    #[track_caller]
+    pub(crate) fn assert_code_for(error: &syn::Error, code: Code, context: &str) {
         let codes = codes_of(error);
-        assert_eq!(codes.first(), Some(&code), "{error}");
+        let separator = if context.is_empty() { "" } else { ": " };
+        assert_eq!(codes.first(), Some(&code), "{error}{separator}{context}");
+        record(code, Location::caller());
+    }
+
+    /// Asserts `text`, a rendered diagnostic (the message of a `compile_error!` the macro
+    /// returned), carries `[code]`. For output that has already left `syn::Error`; it counts
+    /// like [`assert_code`].
+    #[track_caller]
+    pub(crate) fn assert_rendered_code(text: &str, code: Code) {
+        let bracketed = format!("[{}]", code.text());
+        assert!(text.contains(&bracketed), "{bracketed} not in: {text}");
+        record(code, Location::caller());
     }
 
     /// Asserts the codes of every combined error, in order.
+    #[track_caller]
     pub(crate) fn assert_codes(error: &syn::Error, expected: &[Code]) {
         assert_eq!(codes_of(error), expected, "{error}");
+        for &code in expected {
+            record(code, Location::caller());
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, fs, path::Path};
+    use std::{collections::HashSet, env, fs, path::Path, process};
 
     use super::testing::{assert_code, assert_codes, code_of_message, codes_of, codes_of_result};
     use super::*;
@@ -553,512 +668,11 @@ mod tests {
     }
 
     // --- Guard (iii): no error is created outside this file ---
-
-    /// `source` with comments, string literals and char literals replaced by a space,
-    /// so a text scan sees only code.
-    fn code_only(source: &str) -> String {
-        let chars: Vec<char> = source.chars().collect();
-        let mut out = String::with_capacity(source.len());
-        let mut i = 0;
-        while i < chars.len() {
-            let c = chars[i];
-            let next = chars.get(i + 1).copied();
-            if c == '/' && next == Some('/') {
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-            } else if c == '/' && next == Some('*') {
-                let mut depth = 1;
-                i += 2;
-                while i < chars.len() && depth > 0 {
-                    match (chars[i], chars.get(i + 1)) {
-                        ('/', Some('*')) => {
-                            depth += 1;
-                            i += 2;
-                        }
-                        ('*', Some('/')) => {
-                            depth -= 1;
-                            i += 2;
-                        }
-                        _ => i += 1,
-                    }
-                }
-                out.push(' ');
-            } else if let Some(end) = raw_string_end(&chars, i) {
-                i = end;
-                out.push(' ');
-            } else if c == '"' {
-                i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    i += if chars[i] == '\\' { 2 } else { 1 };
-                }
-                i += 1;
-                out.push(' ');
-            } else if c == '\'' && next == Some('\\') {
-                // An escaped char literal: skip the backslash and the escaped character,
-                // then everything up to the closing quote (`'\''`, `'\n'`, `'\u{1f}'`).
-                i += 3;
-                while i < chars.len() && chars[i] != '\'' {
-                    i += 1;
-                }
-                i += 1;
-                out.push(' ');
-            } else if c == '\'' && chars.get(i + 2) == Some(&'\'') {
-                // A one-character literal such as `'"'`; a lifetime has no closing quote there.
-                i += 3;
-                out.push(' ');
-            } else {
-                out.push(c);
-                i += 1;
-            }
-        }
-        out
-    }
-
-    /// The index after a raw string (`r"..."`, `r#"..."#`, `br"..."`) starting at `start`.
-    fn raw_string_end(chars: &[char], start: usize) -> Option<usize> {
-        if start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
-            return None;
-        }
-        let mut i = start;
-        if chars.get(i) == Some(&'b') {
-            i += 1;
-        }
-        if chars.get(i) != Some(&'r') {
-            return None;
-        }
-        i += 1;
-        let hashes = chars[i..].iter().take_while(|&&c| c == '#').count();
-        i += hashes;
-        if chars.get(i) != Some(&'"') {
-            return None;
-        }
-        i += 1;
-        while i < chars.len() {
-            if chars[i] == '"' && chars[i + 1..].iter().take_while(|&&c| c == '#').count() >= hashes
-            {
-                return Some(i + 1 + hashes);
-            }
-            i += 1;
-        }
-        Some(chars.len())
-    }
-
-    // The scans below work on `code_only` text, normalised so that spacing and line breaks
-    // inside a path or a call do not hide a pattern.
-
-    /// `code` with whitespace runs collapsed and the space around `.`, `::`, `(` and `!`
-    /// removed, so `syn :: Error\n::new (` reads `syn::Error::new(`.
-    fn normalize(code: &str) -> String {
-        let mut text = code.split_whitespace().collect::<Vec<_>>().join(" ");
-        for (from, to) in [
-            (" .", "."),
-            (". ", "."),
-            (" ::", "::"),
-            (":: ", "::"),
-            (" (", "("),
-            ("( ", "("),
-            (" !", "!"),
-        ] {
-            text = text.replace(from, to);
-        }
-        text
-    }
-
-    fn is_identifier_byte(byte: u8) -> bool {
-        byte.is_ascii_alphanumeric() || byte == b'_'
-    }
-
-    /// The byte offsets of `pattern` in `code` that do not continue a longer identifier on
-    /// the left (`my_parse2(` does not match `parse2(`).
-    fn word_starts(code: &str, pattern: &str) -> Vec<usize> {
-        code.match_indices(pattern)
-            .map(|(at, _)| at)
-            .filter(|&at| at == 0 || !is_identifier_byte(code.as_bytes()[at - 1]))
-            .collect()
-    }
-
-    /// Whether `text` has `word` as a whole identifier.
-    fn has_word(text: &str, word: &str) -> bool {
-        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .any(|part| part == word)
-    }
-
-    /// `code` without items marked `#[cfg(test)]` (a `mod tests { .. }` block or a
-    /// `mod tests;` declaration, with attributes between).
-    fn strip_test_items(code: &str) -> String {
-        let marker = "#[cfg(test)]";
-        let bytes = code.as_bytes();
-        let mut out = String::new();
-        let mut rest = 0;
-        while let Some(found) = code[rest..].find(marker) {
-            let start = rest + found;
-            out.push_str(&code[rest..start]);
-            let mut i = start + marker.len();
-            // Further attributes on the same item, such as `#[path = ..]`.
-            loop {
-                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-                if !code[i..].starts_with("#[") {
-                    break;
-                }
-                let mut depth = 0;
-                while i < bytes.len() {
-                    match bytes[i] {
-                        b'[' => depth += 1,
-                        b']' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                i += 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-            }
-            // The item: up to `;`, or through the matching `}` of its first `{`.
-            while i < bytes.len() && bytes[i] != b';' && bytes[i] != b'{' {
-                i += 1;
-            }
-            if bytes.get(i) == Some(&b'{') {
-                let mut depth = 0;
-                while i < bytes.len() {
-                    match bytes[i] {
-                        b'{' => depth += 1,
-                        b'}' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-            }
-            rest = (i + 1).min(code.len());
-        }
-        out.push_str(&code[rest..]);
-        out
-    }
-
-    /// The statement around byte `at`: back to the previous `;` or the `{` or `}` that
-    /// opens or ends the enclosing block, forward to the next `;` or the `}` that ends the
-    /// block. An enclosing call's parentheses are part of the statement, so a parse inside
-    /// `wrap(.., parse(..))` sees the `wrap`.
-    fn statement_around(code: &str, at: usize) -> &str {
-        let bytes = code.as_bytes();
-        let mut start = 0;
-        let mut depth = 0_i32;
-        for i in (0..at).rev() {
-            match bytes[i] {
-                b')' | b']' => depth += 1,
-                b'}' if depth == 0 => {
-                    start = i + 1;
-                    break;
-                }
-                b'}' => depth += 1,
-                b'{' if depth == 0 => {
-                    start = i + 1;
-                    break;
-                }
-                b'(' | b'[' | b'{' if depth > 0 => depth -= 1,
-                b';' if depth == 0 => {
-                    start = i + 1;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        let mut end = code.len();
-        depth = 0;
-        for (i, &byte) in bytes.iter().enumerate().skip(at) {
-            match byte {
-                b'(' | b'[' | b'{' => depth += 1,
-                b'}' if depth == 0 => {
-                    end = i;
-                    break;
-                }
-                b')' | b']' | b'}' if depth > 0 => depth -= 1,
-                b';' if depth == 0 => {
-                    end = i;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        &code[start..end]
-    }
-
-    /// The text from `at` to the next `;`.
-    fn through_semicolon(code: &str, at: usize) -> &str {
-        &code[at..at + code[at..].find(';').unwrap_or(code.len() - at)]
-    }
-
-    /// The `use` statements of normalised `code`.
-    fn use_statements(code: &str) -> Vec<&str> {
-        word_starts(code, "use ")
-            .into_iter()
-            .map(|at| through_semicolon(code, at))
-            .collect()
-    }
-
-    /// Whether the file brings syn's `Error` into scope by name (`use syn::Error`,
-    /// `use syn::{.., Error}`, `use syn::parse::Error`, or a `syn` glob).
-    fn imports_syn_error(code: &str) -> bool {
-        use_statements(code).iter().any(|statement| {
-            has_word(statement, "syn") && (has_word(statement, "Error") || statement.contains('*'))
-        })
-    }
-
-    /// Ways to create a `syn::Error` that carries no code, found in normalised `code`.
-    fn syn_error_constructions(code: &str) -> Vec<String> {
-        let mut found = Vec::new();
-        let bare_is_syn = imports_syn_error(code);
-        for pattern in ["Error::new", "Error::from"] {
-            for at in word_starts(code, pattern) {
-                let is_syn = match code[..at].strip_suffix("::") {
-                    Some(path) => {
-                        let segment = path
-                            .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                            .next()
-                            .unwrap_or("");
-                        segment == "syn" || (segment == "parse" && path.ends_with("syn::parse"))
-                    }
-                    None => bare_is_syn,
-                };
-                if is_syn {
-                    found.push(format!("syn's {pattern}"));
-                }
-            }
-        }
-        for statement in use_statements(code) {
-            if has_word(statement, "syn") && statement.contains("Error as") {
-                found.push("syn::Error imported under another name".to_owned());
-            }
-        }
-        for at in word_starts(code, "type ") {
-            if let Some((_, target)) = through_semicolon(code, at).split_once('=')
-                && (target.contains("syn::Error")
-                    || target.contains("syn::parse::Error")
-                    || (bare_is_syn && has_word(target, "Error")))
-            {
-                found.push("type alias of syn::Error".to_owned());
-            }
-        }
-        if code.contains(".error(") {
-            found.push(".error( on a receiver".to_owned());
-        }
-        found.sort();
-        found.dedup();
-        found
-    }
-
-    /// `syn` parse entry points: each can return a `syn::Error` of syn's own making.
-    const PARSE_ENTRIES: &[&str] = &[
-        "parse_args",
-        "parse_nested_meta",
-        "parse2",
-        "parse_str",
-        "parse_macro_input!",
-    ];
-
-    /// Parse entry points in normalised `code` outside a `diagnostics::wrap(` call in the
-    /// same statement. An entry point matches as a call (`name(`, `name::<`, `name_with(`)
-    /// or as the `parse_macro_input!` macro.
-    fn unwrapped_parse_entries(code: &str) -> Vec<String> {
-        let mut found = Vec::new();
-        for entry in PARSE_ENTRIES {
-            for at in word_starts(code, entry) {
-                let after = &code[at + entry.len()..];
-                let is_call = entry.ends_with('!')
-                    || after.starts_with('(')
-                    || after.starts_with("::<")
-                    || (*entry == "parse_args" && after.starts_with("_with("));
-                if is_call && !statement_around(code, at).contains("diagnostics::wrap(") {
-                    found.push(format!("{entry} outside diagnostics::wrap"));
-                }
-            }
-        }
-        found.sort();
-        found.dedup();
-        found
-    }
-
-    /// Everything the guard forbids in `source`: uncoded error constructions anywhere, and,
-    /// when `scan_parse_entries` is set (non-test files), unwrapped parse entry points
-    /// outside `#[cfg(test)]` items.
-    fn uncoded_error_uses(source: &str, scan_parse_entries: bool) -> Vec<String> {
-        let code = code_only(source);
-        let mut found = syn_error_constructions(&normalize(&code));
-        if scan_parse_entries {
-            found.extend(unwrapped_parse_entries(&normalize(&strip_test_items(
-                &code,
-            ))));
-        }
-        found
-    }
-
-    #[test]
-    fn code_only_drops_comments_and_literals_but_keeps_code() {
-        for (source, forbidden) in [
-            ("// syn::Error::new_spanned(a, b)", false),
-            ("/// docs about syn::Error::new\nfn f() {}", false),
-            (
-                "/* syn::Error::new /* nested */ still comment */ fn f() {}",
-                false,
-            ),
-            ("let s = \"syn::Error::new(\";", false),
-            ("let s = \"quote \\\" syn::Error::new(\";", false),
-            ("let s = r#\"syn::Error::new(\"quoted\")\"#;", false),
-            ("let s = br\"syn::Error::new(\";", false),
-            ("let q = '\"'; let s = \"x\";", false),
-            ("let q = '\\''; // syn::Error::new", false),
-            ("let s = \"parse2(\"; // syn::parse2(x)?", false),
-            (
-                "fn f<'a>(x: &'a str) { syn::Error::new_spanned(x, \"m\") }",
-                true,
-            ),
-            ("let e = syn::Error::new_spanned(a, \"m\");", true),
-            // Code after a comment on the same line, and after a string, is still code.
-            ("let s = \"a\"; syn::Error::new(s, \"m\"); // x", true),
-            ("/* c */ syn::Error::new(a, \"m\")", true),
-            ("let q = '\"'; syn::Error::new(a, \"m\");", true),
-        ] {
-            assert_eq!(
-                !uncoded_error_uses(source, true).is_empty(),
-                forbidden,
-                "{source:?} -> {:?}",
-                code_only(source)
-            );
-        }
-    }
-
-    #[test]
-    fn error_constructions_are_found_on_syn_paths_only() {
-        for (source, forbidden) in [
-            // syn's Error by any path.
-            ("let e = syn::Error::new(s, \"m\");", true),
-            ("let e = ::syn::Error::new_spanned(s, \"m\");", true),
-            ("let e = syn :: Error\n    :: new(s, \"m\");", true),
-            ("let e = syn::parse::Error::new(s, \"m\");", true),
-            ("let e = syn::Error::from(other);", true),
-            // A bare `Error` is syn's when the file imports it from syn.
-            ("use syn::Error;\nfn f() { Error::new(s, \"m\") }", true),
-            ("use syn::{Result, Error};\nfn f() { Error::from(x) }", true),
-            ("use syn::*;\nfn f() { Error::new(s, \"m\") }", true),
-            (
-                "use syn::parse::Error;\nfn f() { Error::new(s, \"m\") }",
-                true,
-            ),
-            // The receiver does not matter for `.error(`.
-            ("return Err(meta.error(\"m\"));", true),
-            ("return Err(input.error(\"m\"));", true),
-            ("lookahead\n    .error()", true),
-            // Aliases.
-            ("use syn::Error as E;", true),
-            ("use syn::{Result, Error as SynError};", true),
-            ("type E = syn::Error;", true),
-            ("type E = syn::parse::Error;", true),
-            ("use syn::Error;\ntype E = Error;", true),
-            // Other `Error` types are not syn's.
-            ("let e = std::io::Error::new(kind, \"m\");", false),
-            ("let e = io::Error::from(kind);", false),
-            (
-                "use std::io::Error;\nfn f() { Error::new(kind, \"m\") }",
-                false,
-            ),
-            ("let e = fmt::Error::default();", false),
-            ("let e = MyError::new(\"m\");", false),
-            ("fn f() { Error::new(kind, \"m\") }", false),
-            ("use std::error::Error as _;", false),
-            ("use std::io::{self, Error as IoError};", false),
-            ("type E = std::io::Error;", false),
-            ("use syn::visit::Visit;\ntype E = Error;", false),
-            ("let kind = value.error_kind();", false),
-            ("let e = syn::Error;", false),
-        ] {
-            assert_eq!(
-                !uncoded_error_uses(source, false).is_empty(),
-                forbidden,
-                "{source:?} -> {:?}",
-                uncoded_error_uses(source, false)
-            );
-        }
-    }
-
-    #[test]
-    fn parse_entry_points_must_sit_under_wrap_in_the_same_statement() {
-        for (source, forbidden) in [
-            // Propagated or kept unwrapped.
-            ("let m = syn::parse2::<syn::ItemMod>(tokens)?;", true),
-            ("let m = parse2::<syn::ItemMod>(tokens);", true),
-            ("let t = syn::parse_str::<syn::Type>(\"u32\")?;", true),
-            ("let n = attribute.parse_args::<syn::LitInt>()?;", true),
-            ("let n = attribute.parse_args_with(parser)?;", true),
-            ("attribute.parse_nested_meta(|meta| Ok(()))?;", true),
-            ("let m = parse_macro_input!(input as ItemMod);", true),
-            // The wrap is in another statement: the same expression is the rule.
-            (
-                "let p = syn::parse2::<syn::Item>(t); let e = diagnostics::wrap(Code::X, err);",
-                true,
-            ),
-            (
-                "fn f() { diagnostics::wrap(Code::X, e); }\nfn g() { let p = syn::parse2::<T>(t)?; }",
-                true,
-            ),
-            // Wrapped in the same statement, on one line or several, or around the call.
-            (
-                "let m = syn::parse2::<syn::Item>(t).map_err(|e| diagnostics::wrap(Code::X, e))?;",
-                false,
-            ),
-            (
-                "attribute\n    .parse_nested_meta(|meta| {\n        let a = 1;\n        Ok(())\n    })\n    .map_err(|error| diagnostics::wrap(Code::X, error))?;",
-                false,
-            ),
-            (
-                "let n = attribute.parse_args_with(parser)\n    .map_err(|e| crate::diagnostics::wrap(Code::X, e))?;",
-                false,
-            ),
-            (
-                "let x = diagnostics::wrap(Code::X, parse_str::<T>(\"u\").unwrap_err());",
-                false,
-            ),
-            // Not entry points.
-            ("let n = my_parse2(tokens);", false),
-            ("let n = tokens.parse2_len();", false),
-            ("let n = parse_args_len;", false),
-            ("let n: u32 = text.parse().unwrap();", false),
-            ("let s = \"parse2(x)\"; // parse_str(x)", false),
-            // Items marked cfg(test) are exempt, and only those.
-            (
-                "#[cfg(test)]\nmod tests { fn t() { syn::parse_str::<syn::Type>(\"u32\").unwrap(); } }",
-                false,
-            ),
-            (
-                "#[cfg(test)]\n#[path = \"tests/x.rs\"]\nmod x;\nfn f() { syn::parse2::<T>(t)?; }",
-                true,
-            ),
-            (
-                "fn f() { syn::parse2::<T>(t)?; }\n#[cfg(test)]\nmod tests { fn t() {} }",
-                true,
-            ),
-        ] {
-            assert_eq!(
-                !uncoded_error_uses(source, true).is_empty(),
-                forbidden,
-                "{source:?} -> {:?}",
-                uncoded_error_uses(source, true)
-            );
-        }
-        // A test file is scanned for constructions only.
-        let source = "fn t() { syn::parse_str::<T>(\"x\").unwrap(); }";
-        assert!(uncoded_error_uses(source, false).is_empty());
-        assert!(!uncoded_error_uses(source, true).is_empty());
-    }
+    //
+    // Clippy does the work: the workspace `clippy.toml` bars `syn::Error::new`, the `syn`
+    // parse functions and the rest, and only this file allows them (see the module docs).
+    // These tests keep that honest. The config must still list the items, no other file may
+    // allow them, and the one form clippy cannot name is checked as text.
 
     /// The `.rs` files below `dir`, relative to `root` with `/` separators.
     fn rust_files(root: &Path, dir: &Path, found: &mut Vec<String>) {
@@ -1081,12 +695,8 @@ mod tests {
         }
     }
 
-    /// Guard (iii): every `syn::Error` of this crate is created by `diagnostics::error`
-    /// (or its siblings in this file), and every `syn` parse entry point outside tests is
-    /// wrapped, so none can be added without a code. The exact limit is stated in
-    /// `docs/DIAGNOSTICS.md`.
-    #[test]
-    fn only_this_file_creates_syn_errors() {
+    /// The sources of this crate other than this file, as (path below `src`, text).
+    fn other_sources() -> Vec<(String, String)> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();
         rust_files(&root, &root, &mut files);
@@ -1096,17 +706,185 @@ mod tests {
                 "{expected} not scanned: {files:?}"
             );
         }
+        files
+            .into_iter()
+            .filter(|file| file != "diagnostics.rs")
+            .map(|file| {
+                let source = fs::read_to_string(root.join(&file))
+                    .unwrap_or_else(|error| panic!("could not read {file}: {error}"));
+                (file, source)
+            })
+            .collect()
+    }
+
+    /// What in a source file can silence the bar: the two lints by name (`allow`, `expect`,
+    /// `warn`, `cfg_attr`), the groups that contain them (`clippy::style`, `clippy::all`) and
+    /// `warnings`, which an attribute in the source overrides `-D warnings` for.
+    const SILENCERS: &[&str] = &[
+        "disallowed_",
+        "clippy::style",
+        "clippy::all",
+        "allow(warnings",
+        "expect(warnings",
+    ];
+
+    fn silencers_in(source: &str) -> Vec<&'static str> {
+        SILENCERS
+            .iter()
+            .copied()
+            .filter(|silencer| source.contains(silencer))
+            .collect()
+    }
+
+    /// Whether a manifest has a `[lints]`, `[lints.*]` or `[workspace.lints*]` table.
+    fn has_lints_table(manifest: &str) -> bool {
+        manifest.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("[lints") || line.starts_with("[workspace.lints")
+        })
+    }
+
+    /// Guard (iii), the allowance: nothing but this file may allow the items `clippy.toml`
+    /// bars, so an error without a code cannot be created by silencing the lint. Checked:
+    /// the source files of this crate (the lints by name, `clippy::style`, `clippy::all`,
+    /// `warnings`), a lints table in this crate's and the root manifest, and the config
+    /// clippy reads. Clippy takes the first `clippy.toml` or `.clippy.toml` found walking up
+    /// from the crate's directory, so the root one must exist and none may sit in
+    /// `crates/gust-macros` or `crates`; `CLIPPY_CONF_DIR` must be unset. Not checked:
+    /// `rustflags` in a `.cargo/config.toml` (see docs/DIAGNOSTICS.md).
+    #[test]
+    fn only_this_file_allows_the_barred_syn_items() {
         let mut offenders = Vec::new();
-        for file in files.iter().filter(|file| *file != "diagnostics.rs") {
-            let source = fs::read_to_string(root.join(file))
-                .unwrap_or_else(|error| panic!("could not read {file}: {error}"));
-            for pattern in uncoded_error_uses(&source, !file.starts_with("tests/")) {
-                offenders.push(format!("{file}: {pattern}"));
+        for (file, source) in other_sources() {
+            for silencer in silencers_in(&source) {
+                offenders.push(format!("{file}: names {silencer}"));
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for manifest in ["crates/gust-macros/Cargo.toml", "Cargo.toml"] {
+            let text = fs::read_to_string(root.join(manifest))
+                .unwrap_or_else(|error| panic!("could not read {manifest}: {error}"));
+            if has_lints_table(&text) {
+                offenders.push(format!("{manifest}: has a lints table"));
+            }
+        }
+        assert!(
+            root.join("clippy.toml").is_file(),
+            "the root clippy.toml is missing"
+        );
+        for directory in ["crates/gust-macros", "crates"] {
+            for name in ["clippy.toml", ".clippy.toml"] {
+                if root.join(directory).join(name).exists() {
+                    offenders.push(format!("{directory}/{name}: another clippy config"));
+                }
+            }
+        }
+        if env::var_os("CLIPPY_CONF_DIR").is_some() {
+            offenders.push("CLIPPY_CONF_DIR is set".to_owned());
+        }
+        assert!(
+            offenders.is_empty(),
+            "create errors with diagnostics::error and parse through the helpers in diagnostics.rs instead of silencing the bar: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn silencers_are_found_in_every_form_and_plain_code_has_none() {
+        for source in [
+            "#[allow(clippy::disallowed_methods)]\nfn f() {}",
+            "#![expect(clippy::disallowed_macros)]",
+            "#[cfg_attr(test, allow(clippy::disallowed_methods))]",
+            "#![allow(clippy::style)]",
+            "#[allow(clippy::all)]",
+            "#![allow(warnings)]",
+            "#![expect(warnings)]",
+        ] {
+            assert!(!silencers_in(source).is_empty(), "{source}");
+        }
+        assert!(silencers_in("#[allow(dead_code)]\nfn f() { syn::Ident::new }").is_empty());
+    }
+
+    #[test]
+    fn a_lints_table_is_a_header_not_a_mention() {
+        for manifest in [
+            "[lints]\nworkspace = true",
+            "[package]\n[lints.clippy]\nstyle = \"allow\"",
+            "[workspace.lints.clippy]\n",
+            "  [workspace.lints]",
+        ] {
+            assert!(has_lints_table(manifest), "{manifest}");
+        }
+        assert!(!has_lints_table(
+            "# no lints table here\n[package]\nname = \"x\""
+        ));
+    }
+
+    /// The `syn` items the workspace `clippy.toml` must bar (`disallowed-methods`).
+    const BARRED_METHODS: &[&str] = &[
+        "syn::Error::new",
+        "syn::Error::new_spanned",
+        "syn::parse::ParseBuffer::error",
+        "syn::parse::StepCursor::error",
+        "syn::meta::ParseNestedMeta::error",
+        "syn::parse::Lookahead1::error",
+        "syn::parse",
+        "syn::parse2",
+        "syn::parse_str",
+        "syn::parse_file",
+        "syn::parse::Parser::parse",
+        "syn::parse::Parser::parse2",
+        "syn::parse::Parser::parse_str",
+        "syn::Attribute::parse_args",
+        "syn::Attribute::parse_args_with",
+        "syn::Attribute::parse_nested_meta",
+        "syn::MetaList::parse_args",
+        "syn::MetaList::parse_args_with",
+        "syn::MetaList::parse_nested_meta",
+    ];
+
+    /// Guard (iii), the bar: deleting an entry from `clippy.toml` would silently open the
+    /// crate to uncoded errors, because clippy has nothing to say about a missing entry.
+    #[test]
+    fn clippy_toml_bars_the_syn_items_and_names_this_file() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../clippy.toml");
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("could not read clippy.toml: {error}"));
+        let entries: Vec<&str> = text
+            .lines()
+            .filter(|line| line.trim_start().starts_with("{ path = "))
+            .collect();
+        let mut problems = Vec::new();
+        for item in BARRED_METHODS.iter().chain(&["syn::parse_macro_input"]) {
+            let quoted = format!("path = \"{item}\"");
+            match entries.iter().find(|entry| entry.contains(&quoted)) {
+                None => problems.push(format!("clippy.toml does not bar {item}")),
+                Some(entry) if !entry.contains("diagnostics.rs") => {
+                    problems.push(format!(
+                        "the reason for {item} does not name diagnostics.rs"
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
+
+    /// Guard (iii), the form clippy cannot name: `syn::Error: From<LexError>` is a trait
+    /// impl, which `disallowed-methods` cannot bar for one type. Plain text, so a mention in
+    /// a comment fails too; it does not see a `?` on a `LexError` the source never names.
+    #[test]
+    fn no_other_file_converts_into_a_syn_error() {
+        let mut offenders = Vec::new();
+        for (file, source) in other_sources() {
+            for text in ["LexError", "Error::from("] {
+                if source.contains(text) {
+                    offenders.push(format!("{file}: {text}"));
+                }
             }
         }
         assert!(
             offenders.is_empty(),
-            "create errors with diagnostics::error and wrap syn's parse errors with diagnostics::wrap so they carry a code: {offenders:?}"
+            "create errors with diagnostics::error so they carry a code: {offenders:?}"
         );
     }
 
@@ -1152,69 +930,6 @@ mod tests {
         UNREACHABLE.iter().any(|(listed, _)| *listed == code)
     }
 
-    /// Whether `text` (comments and literals already removed) names `Code::<variant>`.
-    fn mentions_code(text: &str, code: Code) -> bool {
-        let name = format!("Code::{code:?}");
-        word_starts(text, &name).into_iter().any(|at| {
-            text.as_bytes()
-                .get(at + name.len())
-                .is_none_or(|&byte| !is_identifier_byte(byte))
-        })
-    }
-
-    /// The test code of the crate, comments and literals removed: `tests/` files whole,
-    /// other files from their first `#[cfg(test)]`. `diagnostics.rs` is left out, since its
-    /// own tests name codes to test the mechanism, not a rejection.
-    fn test_sources() -> Vec<(String, String)> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        rust_files(&root, &root, &mut files);
-        files
-            .into_iter()
-            .filter(|file| file != "diagnostics.rs")
-            .filter_map(|file| {
-                let source = fs::read_to_string(root.join(&file))
-                    .unwrap_or_else(|error| panic!("could not read {file}: {error}"));
-                let code = code_only(&source);
-                if file.starts_with("tests/") {
-                    return Some((file, code));
-                }
-                let at = code.find("#[cfg(test)]")?;
-                Some((file, code[at..].to_owned()))
-            })
-            .collect()
-    }
-
-    /// Every code is asserted by a test that runs the validator or the validator and emitter
-    /// together as `#[gpu]` does (`tests/regression.rs` and the validator's own tests), or is
-    /// listed in `UNREACHABLE`; and a listed code is asserted directly by some test, so it
-    /// cannot rot unseen.
-    #[test]
-    fn every_code_is_asserted_by_a_test_or_listed_unreachable_with_a_reason() {
-        let sources = test_sources();
-        let pipeline: String = sources
-            .iter()
-            .filter(|(file, _)| file == "tests/regression.rs" || file == "validate/mod.rs")
-            .map(|(_, text)| text.as_str())
-            .collect();
-        assert!(!pipeline.is_empty(), "no pipeline tests were scanned");
-        let mut untested = Vec::new();
-        for &code in ALL {
-            if is_listed_unreachable(code) {
-                if !sources.iter().any(|(_, text)| mentions_code(text, code)) {
-                    untested.push(format!(
-                        "{code:?} is listed UNREACHABLE but no test names it"
-                    ));
-                }
-            } else if !mentions_code(&pipeline, code) {
-                untested.push(format!(
-                    "{code:?} has no row in tests/regression.rs or the validator tests: add an assert_rejected row, or list it in UNREACHABLE with a reason"
-                ));
-            }
-        }
-        assert!(untested.is_empty(), "{untested:#?}");
-    }
-
     #[test]
     fn the_unreachable_list_names_each_code_once_with_a_reason() {
         let mut seen = HashSet::new();
@@ -1225,13 +940,149 @@ mod tests {
         }
     }
 
+    /// Whether an assertion in `file` exercises the validator and emitter together as `#[gpu]`
+    /// does (the regression tests, and the validator's own tests).
+    fn is_pipeline_test_file(file: &str) -> bool {
+        let file = file.replace('\\', "/");
+        file.ends_with("src/tests/regression.rs") || file.ends_with("src/validate/mod.rs")
+    }
+
+    /// The problems with `recorded`, the (code text, calling file) pairs that
+    /// `testing::assert_code` and `testing::assert_codes` wrote after an assertion passed.
+    /// A reachable code needs one from a pipeline test file; a listed code needs one from
+    /// any test file, so it cannot rot unseen. Naming `Code::X` in a test records nothing.
+    fn unasserted(recorded: &[(String, String)]) -> Vec<String> {
+        let files_for = |code: Code| {
+            recorded
+                .iter()
+                .filter(move |(text, _)| text == code.text())
+                .map(|(_, file)| file.as_str())
+        };
+        let mut problems = Vec::new();
+        for &code in ALL {
+            if is_listed_unreachable(code) {
+                if files_for(code).next().is_none() {
+                    problems.push(format!(
+                        "{code:?} is listed UNREACHABLE but no test asserts it"
+                    ));
+                }
+            } else if !files_for(code).any(is_pipeline_test_file) {
+                problems.push(format!(
+                    "{code:?} is asserted by no test of tests/regression.rs or the validator tests: add an assert_rejected row, or list it in UNREACHABLE with a reason"
+                ));
+            }
+        }
+        problems
+    }
+
+    /// Every code is asserted by a test that runs the validator or the validator and emitter
+    /// together as `#[gpu]` does (`tests/regression.rs` and the validator's own tests), or is
+    /// listed in `UNREACHABLE`; and a listed code is asserted directly by some test.
+    ///
+    /// "Asserted" is measured, not read from the source: the test binary runs again with
+    /// every other test (this one skipped) and `testing::assert_code` and `assert_codes`
+    /// append the code and the calling file to a file when an assertion passes. Rows of a
+    /// table that feed `assert_rejected` therefore count, and a `Code::X` that is only named
+    /// (in a comment, a `let`, an unused table) does not.
     #[test]
-    fn mentions_code_matches_whole_names_in_code_only() {
-        let text = code_only("assert_rejected(s, Code::Closure); // Code::Await\nCode::LetElseX");
-        assert!(mentions_code(&text, Code::Closure));
-        assert!(!mentions_code(&text, Code::Await));
-        assert!(!mentions_code(&text, Code::LetElse));
-        assert!(!mentions_code("MyCode::Closure", Code::Closure));
+    fn every_code_is_asserted_by_a_test_or_listed_unreachable_with_a_reason() {
+        if env::var_os(testing::RECORD_VARIABLE).is_some() {
+            return; // The recording run itself.
+        }
+        let record = env::temp_dir().join(format!("gust-asserted-codes-{}.txt", process::id()));
+        let _ = fs::remove_file(&record);
+        let output = process::Command::new(env::current_exe().expect("the test binary"))
+            .env(testing::RECORD_VARIABLE, &record)
+            // A bless run must not make the recording run rewrite fixtures as well.
+            .env_remove("BLESS_GOLDEN")
+            .args(["--skip", "every_code_is_asserted_by_a_test"])
+            .output()
+            .expect("the recording run starts");
+        let text = fs::read_to_string(&record).unwrap_or_default();
+        let _ = fs::remove_file(&record);
+        let recorded: Vec<(String, String)> = text
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(code, file)| (code.to_owned(), file.to_owned()))
+            .collect();
+        let mut problems = unasserted(&recorded);
+        if !output.status.success() {
+            let log = String::from_utf8_lossy(&output.stdout);
+            let tail: Vec<&str> = log.lines().rev().take(40).collect();
+            problems.push(format!(
+                "the recording run failed, so some assertions never ran:\n{}",
+                tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+            ));
+        }
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
+
+    #[test]
+    fn a_code_counts_only_when_an_assertion_passed_in_a_file_that_counts() {
+        let regression = "crates/gust-macros/src/tests/regression.rs";
+        let emitter = "crates/gust-macros/src/slang/mod.rs";
+        let all: Vec<(String, String)> = ALL
+            .iter()
+            .map(|code| (code.text().to_owned(), regression.to_owned()))
+            .collect();
+        assert_eq!(unasserted(&all), Vec::<String>::new());
+        // Nothing recorded, which is what a code that is only named in a test leaves.
+        assert_eq!(unasserted(&[]).len(), ALL.len());
+        // One code missing.
+        let without: Vec<_> = all
+            .iter()
+            .filter(|(text, _)| text != Code::WhileNotSupported.text())
+            .cloned()
+            .collect();
+        let problems = unasserted(&without);
+        assert_eq!(problems.len(), 1, "{problems:#?}");
+        assert!(
+            problems[0].starts_with("WhileNotSupported "),
+            "{problems:#?}"
+        );
+        // A reachable code asserted only below the pipeline is not enough ...
+        let mut moved = all.clone();
+        for entry in &mut moved {
+            if entry.0 == Code::LoopNotSupported.text() {
+                entry.1 = emitter.to_owned();
+            }
+        }
+        let problems = unasserted(&moved);
+        assert_eq!(problems.len(), 1, "{problems:#?}");
+        assert!(
+            problems[0].starts_with("LoopNotSupported "),
+            "{problems:#?}"
+        );
+        // ... but a listed one only needs an assertion somewhere, and Windows paths work.
+        let mut listed = all.clone();
+        for entry in &mut listed {
+            if entry.0 == Code::LetBindingForm.text() {
+                entry.1 = emitter.replace('/', "\\");
+            }
+        }
+        assert_eq!(unasserted(&listed), Vec::<String>::new());
+        let mut windows = all;
+        for entry in &mut windows {
+            entry.1 = entry.1.replace('/', "\\");
+        }
+        assert_eq!(unasserted(&windows), Vec::<String>::new());
+    }
+
+    #[test]
+    fn assertions_made_in_this_file_are_not_rejection_tests() {
+        assert!(!testing::counts_as_rejection_test(
+            "crates/gust-macros/src/diagnostics.rs"
+        ));
+        assert!(!testing::counts_as_rejection_test(
+            r"crates\gust-macros\src\diagnostics.rs"
+        ));
+        // Only this crate's file: a test file that happens to share the name counts.
+        assert!(testing::counts_as_rejection_test(
+            "crates/gust-macros/src/tests/diagnostics.rs"
+        ));
+        assert!(testing::counts_as_rejection_test(
+            "crates/gust-macros/src/validate/mod.rs"
+        ));
     }
 
     /// One `### GUST-E....` section of the doc page.

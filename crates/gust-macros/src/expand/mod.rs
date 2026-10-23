@@ -361,49 +361,47 @@ pub fn kernel_options(function: &syn::ItemFn) -> syn::Result<Option<KernelOption
     let mut result = None;
     // The options below report their own coded errors. Failures `syn` words itself (a
     // missing comma, a literal that is not an integer) get the malformed-attribute code.
-    attribute
-        .parse_nested_meta(|meta| {
-            if meta.path.is_ident("workgroup_size") {
-                if result.is_some() {
-                    return Err(diagnostics::meta_error(
-                        &meta,
-                        Code::DuplicateWorkgroupSize,
-                        "duplicate workgroup_size option",
-                    ));
-                }
-                let content;
-                syn::parenthesized!(content in meta.input);
-                let x: syn::LitInt = content.parse()?;
-                content.parse::<syn::Token![,]>()?;
-                let y: syn::LitInt = content.parse()?;
-                content.parse::<syn::Token![,]>()?;
-                let z: syn::LitInt = content.parse()?;
-                if !content.is_empty() {
-                    return Err(diagnostics::meta_error(
-                        &meta,
-                        Code::WorkgroupDimensionCount,
-                        "expected exactly three workgroup dimensions",
-                    ));
-                }
-                let dimensions = [x.base10_parse()?, y.base10_parse()?, z.base10_parse()?];
-                if dimensions.contains(&0) {
-                    return Err(diagnostics::meta_error(
-                        &meta,
-                        Code::WorkgroupDimensionZero,
-                        "workgroup dimensions must be nonzero",
-                    ));
-                }
-                result = Some(dimensions);
-                Ok(())
-            } else {
-                Err(diagnostics::meta_error(
+    diagnostics::parse_nested_meta(attribute, Code::MalformedKernelAttribute, |meta| {
+        if meta.path.is_ident("workgroup_size") {
+            if result.is_some() {
+                return Err(diagnostics::meta_error(
                     &meta,
-                    Code::UnknownKernelOption,
-                    "expected `workgroup_size(x, y, z)`",
-                ))
+                    Code::DuplicateWorkgroupSize,
+                    "duplicate workgroup_size option",
+                ));
             }
-        })
-        .map_err(|error| diagnostics::wrap(Code::MalformedKernelAttribute, error))?;
+            let content;
+            syn::parenthesized!(content in meta.input);
+            let x: syn::LitInt = content.parse()?;
+            content.parse::<syn::Token![,]>()?;
+            let y: syn::LitInt = content.parse()?;
+            content.parse::<syn::Token![,]>()?;
+            let z: syn::LitInt = content.parse()?;
+            if !content.is_empty() {
+                return Err(diagnostics::meta_error(
+                    &meta,
+                    Code::WorkgroupDimensionCount,
+                    "expected exactly three workgroup dimensions",
+                ));
+            }
+            let dimensions = [x.base10_parse()?, y.base10_parse()?, z.base10_parse()?];
+            if dimensions.contains(&0) {
+                return Err(diagnostics::meta_error(
+                    &meta,
+                    Code::WorkgroupDimensionZero,
+                    "workgroup dimensions must be nonzero",
+                ));
+            }
+            result = Some(dimensions);
+            Ok(())
+        } else {
+            Err(diagnostics::meta_error(
+                &meta,
+                Code::UnknownKernelOption,
+                "expected `workgroup_size(x, y, z)`",
+            ))
+        }
+    })?;
     Ok(Some(KernelOptions {
         workgroup_size: result.unwrap_or([64, 1, 1]),
     }))
@@ -571,7 +569,7 @@ mod tests {
     fn descriptor_origin_is_unknown_when_the_compiler_gave_no_real_file() {
         // Outside a compiler invocation spans carry no real path, so the table is
         // dropped: lines without a file cannot be reported.
-        let module: syn::ItemMod = syn::parse_str(
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(
             "mod layout {\n#[kernel]\npub fn inspect(id: SV_DispatchThreadID, values: StructuredBuffer<f32>) {\nlet i = id.x;\n}\n}",
         )
         .unwrap();

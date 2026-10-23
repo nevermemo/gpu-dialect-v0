@@ -1,0 +1,30 @@
+# Diagnostic-code guard (docs/DIAGNOSTICS.md, "Stability"). Every rejection #[gpu] reports carries a
+# stable code, so a syn::Error is created, and a syn parse failure is given its code, only in
+# crates/gust-macros/src/diagnostics.rs. That file allows these items; clippy runs under
+# `-D warnings` in CI (.github/workflows/ci.yml), so any other use fails the build.
+
+disallowed-methods = [
+    { path = "syn::Error::new", reason = "create errors with diagnostics::error or diagnostics::error_at (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::Error::new_spanned", reason = "create errors with diagnostics::error (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::parse::ParseBuffer::error", reason = "use diagnostics::error (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::parse::StepCursor::error", reason = "use diagnostics::error (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::meta::ParseNestedMeta::error", reason = "use diagnostics::meta_error (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::parse::Lookahead1::error", reason = "use diagnostics::error (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::parse", reason = "parse through a coded helper in crates/gust-macros/src/diagnostics.rs" },
+    { path = "syn::parse2", reason = "parse with diagnostics::parse2 (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::parse_str", reason = "parse with a coded helper in crates/gust-macros/src/diagnostics.rs" },
+    { path = "syn::parse_file", reason = "parse through a coded helper in crates/gust-macros/src/diagnostics.rs" },
+    { path = "syn::parse::Parser::parse", reason = "parse through a coded helper in crates/gust-macros/src/diagnostics.rs" },
+    { path = "syn::parse::Parser::parse2", reason = "parse through a coded helper in crates/gust-macros/src/diagnostics.rs" },
+    { path = "syn::parse::Parser::parse_str", reason = "parse through a coded helper in crates/gust-macros/src/diagnostics.rs" },
+    { path = "syn::Attribute::parse_args", reason = "use diagnostics::parse_args_with (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::Attribute::parse_args_with", reason = "use diagnostics::parse_args_with (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::Attribute::parse_nested_meta", reason = "use diagnostics::parse_nested_meta (crates/gust-macros/src/diagnostics.rs)" },
+    { path = "syn::MetaList::parse_args", reason = "parse through a coded helper in crates/gust-macros/src/diagnostics.rs" },
+    { path = "syn::MetaList::parse_args_with", reason = "parse through a coded helper in crates/gust-macros/src/diagnostics.rs" },
+    { path = "syn::MetaList::parse_nested_meta", reason = "parse through a coded helper in crates/gust-macros/src/diagnostics.rs" },
+]
+
+disallowed-macros = [
+    { path = "syn::parse_macro_input", reason = "parse with diagnostics::parse2 (crates/gust-macros/src/diagnostics.rs)" },
+]

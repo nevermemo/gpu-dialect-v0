@@ -417,11 +417,11 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
         .iter()
         .filter(|attribute| attribute.path().is_ident("derive"))
     {
-        let derives = attribute
-            .parse_args_with(
-                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
-            )
-            .map_err(|error| diagnostics::wrap(Code::MalformedDerive, error))?;
+        let derives = diagnostics::parse_args_with(
+            attribute,
+            Code::MalformedDerive,
+            syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+        )?;
         if derives.iter().any(|path| {
             path.segments
                 .last()

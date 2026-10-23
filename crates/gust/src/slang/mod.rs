@@ -207,16 +207,28 @@ fn compile_at(
 }
 
 /// Characters a `#line` file name may contain: the set `gust-macros` restricts
-/// every recorded path component to, plus the `/` between components. Anything
-/// else (a quote, a backslash, a line break) could end the directive's string or
-/// the directive itself, so a hand-written origin with such a path gets no
-/// directives.
+/// every recorded path component to (ASCII letters and digits, `_ . + -`, and
+/// non-ASCII characters with the Unicode Alphabetic property), plus the `/`
+/// between components. slangc echoes a UTF-8 name back unchanged (probed with
+/// two-, three- and four-byte characters). Anything else (a quote, a
+/// backslash, a control character, a line break) could end the directive's
+/// string or the directive itself, so a hand-written origin with such a path
+/// gets no directives. The structure is the macro's as well (`is_valid_record` in
+/// `gust-macros`): every `/`-separated component is non-empty and not made of
+/// dots only, so a leading or trailing `/`, `//`, `.` and `..` are refused. The
+/// macro never records such a path, so no macro-recorded file is affected. Keep
+/// this in step with `is_valid_component` there.
 fn directive_file_is_usable(file: &str) -> bool {
     let name = file.rsplit('/').next().unwrap_or(file);
-    !file.is_empty()
-        && file
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"_.+-/".contains(&byte))
+    file.split('/').all(|component| {
+        !component.is_empty()
+            && !component.chars().all(|c| c == '.')
+            && component.chars().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || matches!(c, '_' | '.' | '+' | '-')
+                    || (!c.is_ascii() && c.is_alphabetic())
+            })
+    })
         // A Rust file that looks like the compile copy would make its own
         // locations indistinguishable from the switch-back ones.
         && !name.eq_ignore_ascii_case(KERNEL_FILE)
@@ -1217,11 +1229,61 @@ mod tests {
             "C:/src/lib.rs",
             "src/kernel.slang",
             "Kernel.Slang",
+            // Non-ASCII characters that are not Alphabetic: control, separators, a
+            // decomposed accent (the macro's whitelist rejects the same).
+            "src/\u{85}lib.rs",
+            "src/lib\u{2028}.rs",
+            "src/\u{a0}lib.rs",
+            "src/a\u{301}.rs",
+            // Bidi control and zero-width joiner (format characters, not Alphabetic).
+            "src/\u{202e}lib.rs",
+            "src/a\u{200d}b.rs",
+            // The macro's structure: no empty or dot-only component.
+            "/src/lib.rs",
+            "src//lib.rs",
+            "src/lib.rs/",
+            "src/./lib.rs",
+            "src/../lib.rs",
+            "..",
+            ".",
         ] {
             assert_eq!(with(file, LINE), source, "{file:?}");
         }
         // Still applied for the whitelisted characters.
         assert_ne!(with("crates/g-ust+1/src/_a.b.rs", LINE), source);
+        // Non-ASCII letters are whitelisted as in the macro; slangc echoes them intact.
+        assert_eq!(
+            with("crates/\u{fc}/\u{65e5}\u{672c}/k.rs", LINE),
+            "#line 7 \"crates/\u{fc}/\u{65e5}\u{672c}/k.rs\"\nx\n#line 7 \"crates/\u{fc}/\u{65e5}\u{672c}/k.rs\"\ny\n"
+        );
+        // A four-byte letter (U+1D49C) and a combining mark that is Alphabetic (U+0345).
+        assert_eq!(
+            with("crates/\u{1d49c}/\u{345}x/k.rs", LINE),
+            "#line 7 \"crates/\u{1d49c}/\u{345}x/k.rs\"\nx\n#line 7 \"crates/\u{1d49c}/\u{345}x/k.rs\"\ny\n"
+        );
+        // Dots inside a component are fine.
+        assert_ne!(with("src/a..b/.hidden.rs", LINE), source);
+    }
+
+    #[test]
+    fn a_rust_location_in_a_non_ascii_path_is_read_back() {
+        // The text slangc printed for a `#line` naming these UTF-8 files (probed with
+        // slangc 1.4.357), as `parse_diagnostic_location` receives it.
+        for rust in ["dir/\u{fc}/x.rs", "d\u{65e5}\u{672c}/\u{345}\u{1d49c}/x.rs"] {
+            let diagnostic = format!(
+                "error[E30015]: undefined identifier\n --> {rust}:3:13\n  |\n3 | int x = undefined_thing;\n"
+            );
+            assert_eq!(
+                parse_diagnostic_location(&diagnostic, rust),
+                Some(DiagnosticLocation::Rust(3)),
+                "{rust}"
+            );
+            // Another file, even one with the same last component, is not ours.
+            assert_eq!(parse_diagnostic_location(&diagnostic, "dir/x.rs"), None);
+        }
+        // A decomposed (NFD) accent, as macOS file systems store names, is refused by both
+        // ends, so such a file gets no `#line` and no Rust location.
+        assert!(!directive_file_is_usable("dir/u\u{308}/x.rs"));
     }
 
     #[test]

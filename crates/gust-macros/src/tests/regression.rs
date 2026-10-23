@@ -3,7 +3,7 @@ use std::{env, fs, path::Path};
 use crate::{
     diagnostics::{
         Code,
-        testing::{assert_code, codes_of},
+        testing::{assert_code, assert_code_for, assert_rendered_code},
     },
     expand::kernel_options,
     slang::{EmittedKernel, LineRecord, emit_kernel},
@@ -134,11 +134,11 @@ fn translate(source: &str) -> syn::Result<String> {
 /// `code`. The code is stable; the message text is not, so tests do not match it.
 fn assert_rejected(source: &str, code: Code) {
     let error = translate(source).expect_err(source);
-    assert_eq!(codes_of(&error).first(), Some(&code), "{error}: {source}");
+    assert_code_for(&error, code, source);
 }
 
 fn translate_with_lines(source: &str) -> syn::Result<EmittedKernel> {
-    let module: syn::ItemMod = syn::parse_str(source)?;
+    let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source)?;
     validate_module(&module)?;
     let kernel = module
         .content
@@ -621,7 +621,7 @@ fn invalid_kernel_options_are_rejected_early() {
             Code::MalformedKernelAttribute,
         ),
     ] {
-        let module: syn::ItemMod = syn::parse_str(source).unwrap();
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
         let error = crate::expand::expand(module).unwrap_err();
         assert_code(&error, code);
     }
@@ -1387,7 +1387,7 @@ fn atomic_usage_is_isolated_to_the_emitted_kernel() {
             output[id.x] = counter[id.x];
         }
     }";
-    let module: syn::ItemMod = syn::parse_str(source).unwrap();
+    let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
     validate_module(&module).unwrap();
     let reader = module
         .content
@@ -1601,25 +1601,23 @@ fn line_tables_of_the_reviewed_fixtures_are_well_formed() {
 /// The items of a macro output, parsed back as a file so assertions look at structure,
 /// not at token spacing.
 fn output_items(output: proc_macro2::TokenStream) -> Vec<syn::Item> {
-    syn::parse2::<syn::File>(output)
+    crate::diagnostics::testing::parse2::<syn::File>(output)
         .expect("recovery output must parse as items")
         .items
 }
 
-/// `code` as it appears in a message, for example `[GUST-E0401]`.
-fn bracketed(code: Code) -> String {
-    format!("[{}]", code.text())
-}
-
-/// Asserts the first item is a `compile_error!` whose message contains `message`.
-fn assert_leading_compile_error(items: &[syn::Item], message: &str) {
+/// Asserts the first item is a `compile_error!`, and, with `Some(code)`, that its message
+/// carries `code`.
+#[track_caller]
+fn assert_leading_compile_error(items: &[syn::Item], code: Option<Code>) {
     let syn::Item::Macro(item) = &items[0] else {
         panic!("first item must be compile_error!, got {:?}", items[0]);
     };
     let name = item.mac.path.segments.last().unwrap();
     assert_eq!(name.ident, "compile_error");
-    let text = item.mac.tokens.to_string();
-    assert!(text.contains(message), "{text}");
+    if let Some(code) = code {
+        assert_rendered_code(&item.mac.tokens.to_string(), code);
+    }
 }
 
 fn recovered_module(items: &[syn::Item]) -> &syn::ItemMod {
@@ -1641,7 +1639,7 @@ const REJECTED_MODULE: &str = "mod demo { \
 fn rejected_module_is_returned_beside_the_error_without_kernel_attributes() {
     let item: proc_macro2::TokenStream = REJECTED_MODULE.parse().unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
-    assert_leading_compile_error(&items, &bracketed(Code::UnwrapPanics));
+    assert_leading_compile_error(&items, Some(Code::UnwrapPanics));
     let module = recovered_module(&items);
     assert_eq!(module.ident, "demo");
     let content = &module.content.as_ref().unwrap().1;
@@ -1692,7 +1690,7 @@ fn recovery_strips_kernel_attributes_from_nested_modules_and_impls() {
     .parse()
     .unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
-    assert_leading_compile_error(&items, "");
+    assert_leading_compile_error(&items, None);
     let text = quote::ToTokens::to_token_stream(recovered_module(&items)).to_string();
     assert!(!text.contains("kernel"), "{text}");
     for name in ["deep", "method", "__gpu_typecheck_run"] {
@@ -1710,7 +1708,7 @@ fn recovery_keeps_the_users_module_attributes_and_visibility() {
     .parse()
     .unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
-    assert_leading_compile_error(&items, "");
+    assert_leading_compile_error(&items, None);
     let module = recovered_module(&items);
     let doc: syn::Attribute = syn::parse_quote!(#[doc = "mine"]);
     let allow: syn::Attribute = syn::parse_quote! {
@@ -1728,7 +1726,7 @@ fn module_without_inline_content_gets_the_error_alone() {
         let item: proc_macro2::TokenStream = "mod m;".parse().unwrap();
         let items = output_items(crate::gpu_impl(attribute.parse().unwrap(), item));
         assert_eq!(items.len(), 1, "{items:?}");
-        assert_leading_compile_error(&items, &bracketed(code));
+        assert_leading_compile_error(&items, Some(code));
     }
 }
 
@@ -1736,7 +1734,7 @@ fn module_without_inline_content_gets_the_error_alone() {
 fn attribute_arguments_error_keeps_the_module() {
     let item: proc_macro2::TokenStream = "mod m {}".parse().unwrap();
     let items = output_items(crate::gpu_impl("x".parse().unwrap(), item));
-    assert_leading_compile_error(&items, &bracketed(Code::GpuArguments));
+    assert_leading_compile_error(&items, Some(Code::GpuArguments));
     let module = recovered_module(&items);
     assert_eq!(module.ident, "m");
     let expected: syn::Item = syn::parse_quote!(
@@ -1750,7 +1748,7 @@ fn non_module_item_is_returned_unchanged_beside_the_error() {
     let item: proc_macro2::TokenStream = "fn f() {}".parse().unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
     assert_eq!(items.len(), 2);
-    assert_leading_compile_error(&items, &bracketed(Code::ItemNotModule));
+    assert_leading_compile_error(&items, Some(Code::ItemNotModule));
     let expected: syn::Item = syn::parse_quote!(
         fn f() {}
     );
@@ -1764,7 +1762,7 @@ fn unparsable_item_tokens_are_returned_verbatim_after_the_error() {
     let output = crate::gpu_impl(proc_macro2::TokenStream::new(), item.clone()).to_string();
     let item = item.to_string();
     assert!(output.starts_with(":: core :: compile_error !"), "{output}");
-    assert!(output.contains(&bracketed(Code::ItemNotModule)), "{output}");
+    assert_rendered_code(&output, Code::ItemNotModule);
     assert!(output.ends_with(&item), "{output}");
 }
 
@@ -1776,7 +1774,7 @@ fn accepted_module_is_identical_to_the_expansion_and_has_no_error() {
         } \
     }";
     let item: proc_macro2::TokenStream = source.parse().unwrap();
-    let module: syn::ItemMod = syn::parse_str(source).unwrap();
+    let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
     let expected = crate::expand::expand(module).unwrap().to_string();
     let actual = crate::gpu_impl(proc_macro2::TokenStream::new(), item).to_string();
     assert!(!actual.contains("compile_error"), "{actual}");
