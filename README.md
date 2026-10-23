@@ -309,7 +309,9 @@ The workspace contains eight runnable programs:
   `atomic_add` and checks the total against the host count.
 
 Release-mode benchmark examples use fixed sizes selected in each example's
-`main` function; there is currently no environment-variable size override:
+`main` function, kept within the default limit of 65 535 workgroups per dispatch
+dimension (a unit test in each affected example checks it); there is currently no
+environment-variable size override:
 
 ```sh
 cargo run --release -p polynomial
