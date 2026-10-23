@@ -7,7 +7,7 @@ use crate::{
     process::{CheckRecord, require_command, run_checked, run_checked_owned},
     reflect::{BuildOptions, build_slang_reflect},
     time::now_utc,
-    validation::{ArtifactRecord, sha256_hex, write_validation},
+    validation::{ArtifactRecord, GitStamp, RunInfo, sha256_hex, write_validation},
     workspace::{EXAMPLES, EXPECTED_SPIRV, SMOKE_EXAMPLES, workspace_root, workspace_test_args},
 };
 
@@ -82,18 +82,18 @@ impl VerifyCommand {
 pub(crate) fn verify(mode: VerifyMode, record: bool) -> Result<(), String> {
     let root = workspace_root()?;
     let started = now_utc();
+    // Taken before the checks run: the record names the tree they ran against.
+    let git = GitStamp::read(&root);
     let mut checks = Vec::new();
     let mut artifacts = Vec::new();
     let result = verify_inner(&root, mode, &mut checks, &mut artifacts);
     if record {
-        write_validation(
-            &root,
+        let run = RunInfo {
             mode,
-            &started,
-            result.as_ref().err(),
-            &checks,
-            &artifacts,
-        )?;
+            started: &started,
+            git: &git,
+        };
+        write_validation(&root, &run, result.as_ref().err(), &checks, &artifacts)?;
     }
     result?;
     println!("GUST verification passed.");
@@ -124,80 +124,8 @@ fn verify_inner(
     run_checked(root, checks, "rustc", &["--version"])?;
     run_checked(root, checks, "slangc", &["-version"])?;
     build_slang_reflect(BuildOptions::default())?;
-
-    if matches!(
-        mode,
-        VerifyMode::Smoke | VerifyMode::Fast | VerifyMode::Full
-    ) {
-        run_checked(root, checks, "cargo", &["fmt", "--all", "--", "--check"])?;
-    }
-    if matches!(mode, VerifyMode::Smoke | VerifyMode::Full) {
-        run_checked(
-            root,
-            checks,
-            "cargo",
-            &[
-                "clippy",
-                "--locked",
-                "--workspace",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        )?;
-    }
-    match mode {
-        VerifyMode::Fast => {
-            run_checked(
-                root,
-                checks,
-                "cargo",
-                &["test", "--locked", "-p", "gust-macros"],
-            )?;
-            run_checked(
-                root,
-                checks,
-                "cargo",
-                &["test", "--locked", "-p", "gust", "--lib"],
-            )?;
-            run_checked(
-                root,
-                checks,
-                "cargo",
-                &["test", "--locked", "-p", "gust-wgpu"],
-            )?;
-        }
-        VerifyMode::Gpu => run_checked(
-            root,
-            checks,
-            "cargo",
-            &["test", "--locked", "-p", "gust-wgpu"],
-        )?,
-        VerifyMode::Smoke => run_checked_owned(root, checks, "cargo", &workspace_test_args())?,
-        VerifyMode::Full => {
-            run_checked_owned(root, checks, "cargo", &workspace_test_args())?;
-            run_checked(root, checks, "cargo", &RELEASE_SLANG_TESTS)?;
-        }
-        VerifyMode::Examples | VerifyMode::Artifacts => {}
-    }
-    if matches!(mode, VerifyMode::Examples | VerifyMode::Full) {
-        for example in EXAMPLES {
-            run_checked(
-                root,
-                checks,
-                "cargo",
-                &["test", "-p", example, "--", "--ignored"],
-            )?;
-        }
-    }
-    let examples_to_run = match mode {
-        VerifyMode::Smoke => SMOKE_EXAMPLES,
-        VerifyMode::Examples | VerifyMode::Artifacts | VerifyMode::Full => EXAMPLES,
-        VerifyMode::Fast | VerifyMode::Gpu => &[],
-    };
-    for example in examples_to_run {
-        run_checked(root, checks, "cargo", &example_run_args(example))?;
+    for args in cargo_calls(mode) {
+        run_checked_owned(root, checks, "cargo", &args)?;
     }
     if matches!(mode, VerifyMode::Artifacts | VerifyMode::Full) {
         run_checked(root, checks, "spirv-val", &["--version"])?;
@@ -250,6 +178,59 @@ pub(crate) const RELEASE_SLANG_TESTS: [&str; 7] = [
     "slang",
 ];
 
+/// Every cargo call a mode makes after its prerequisite checks, in order, as the arguments
+/// after `cargo`. `verify_inner` runs exactly this list, so a test of it is a test of the mode:
+/// the Full mode is the release gate and must not lose a step unnoticed.
+pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
+    let owned = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    let mut calls = Vec::new();
+    if matches!(
+        mode,
+        VerifyMode::Smoke | VerifyMode::Fast | VerifyMode::Full
+    ) {
+        calls.push(owned(&["fmt", "--all", "--", "--check"]));
+    }
+    if matches!(mode, VerifyMode::Smoke | VerifyMode::Full) {
+        calls.push(owned(&[
+            "clippy",
+            "--locked",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ]));
+    }
+    match mode {
+        VerifyMode::Fast => {
+            calls.push(owned(&["test", "--locked", "-p", "gust-macros"]));
+            calls.push(owned(&["test", "--locked", "-p", "gust", "--lib"]));
+            calls.push(owned(&["test", "--locked", "-p", "gust-wgpu"]));
+        }
+        VerifyMode::Gpu => calls.push(owned(&["test", "--locked", "-p", "gust-wgpu"])),
+        VerifyMode::Smoke => calls.push(workspace_test_args()),
+        VerifyMode::Full => {
+            calls.push(workspace_test_args());
+            calls.push(owned(&RELEASE_SLANG_TESTS));
+        }
+        VerifyMode::Examples | VerifyMode::Artifacts => {}
+    }
+    if matches!(mode, VerifyMode::Examples | VerifyMode::Full) {
+        for example in EXAMPLES {
+            calls.push(owned(&["test", "-p", example, "--", "--ignored"]));
+        }
+    }
+    let examples_to_run = match mode {
+        VerifyMode::Smoke => SMOKE_EXAMPLES,
+        VerifyMode::Examples | VerifyMode::Artifacts | VerifyMode::Full => EXAMPLES,
+        VerifyMode::Fast | VerifyMode::Gpu => &[],
+    };
+    for example in examples_to_run {
+        calls.push(owned(&example_run_args(example)));
+    }
+    calls
+}
+
 /// The cargo call that runs one example binary and exports its SPIR-V (the Spirv suite).
 pub(crate) fn example_run_args(example: &str) -> [&str; 5] {
     ["run", "--locked", "--quiet", "-p", example]
@@ -293,3 +274,7 @@ fn compare_artifact_names(expected: &[&str], found: &[String]) -> Result<(), Str
 #[cfg(test)]
 #[path = "tests/artifact_names.rs"]
 mod artifact_names_tests;
+
+#[cfg(test)]
+#[path = "tests/verify_steps.rs"]
+mod verify_steps_tests;

@@ -103,10 +103,10 @@ pub(crate) fn decode_spirv(bytes: &[u8]) -> Result<Vec<u32>, Error> {
     if !bytes.len().is_multiple_of(size_of::<u32>()) {
         return Err(Error::InvalidSpirvLength(bytes.len()));
     }
-    let words: Vec<_> = bytes
-        .chunks_exact(size_of::<u32>())
-        .map(|word| u32::from_le_bytes(word.try_into().expect("four-byte SPIR-V word")))
-        .collect();
+    // The length check above leaves no remainder.
+    let (chunks, remainder) = bytes.as_chunks::<{ size_of::<u32>() }>();
+    debug_assert!(remainder.is_empty());
+    let words: Vec<_> = chunks.iter().copied().map(u32::from_le_bytes).collect();
     crate::spirv::validate_structure(&words).map_err(Error::InvalidSpirv)?;
     Ok(words)
 }
@@ -225,16 +225,14 @@ fn parse_slang_line(diagnostic: &str) -> Option<usize> {
         {
             error_header = false;
         }
-        if error_header {
-            if let Some(location) = diagnostic.strip_prefix("--> ") {
-                let (path_line, column) = location.rsplit_once(':')?;
-                let (path, line) = path_line.rsplit_once(':')?;
-                if path.rsplit(['/', '\\']).next()? != "kernel.slang" {
-                    return None;
-                }
-                positive_coordinate(column)?;
-                return positive_coordinate(line);
+        if error_header && let Some(location) = diagnostic.strip_prefix("--> ") {
+            let (path_line, column) = location.rsplit_once(':')?;
+            let (path, line) = path_line.rsplit_once(':')?;
+            if path.rsplit(['/', '\\']).next()? != "kernel.slang" {
+                return None;
             }
+            positive_coordinate(column)?;
+            return positive_coordinate(line);
         }
         let (location, message) = diagnostic.trim().split_once("):")?;
         let message = message.trim_start();

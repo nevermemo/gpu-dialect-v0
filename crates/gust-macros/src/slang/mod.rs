@@ -797,16 +797,13 @@ struct AtomicUsage(std::collections::HashSet<String>);
 
 impl<'ast> Visit<'ast> for AtomicUsage {
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if is_atomic_call(call) {
-            if let syn::Expr::Reference(reference) = &call.args[0] {
-                if let syn::Expr::Index(index) = reference.expr.as_ref() {
-                    if let syn::Expr::Path(path) = index.expr.as_ref() {
-                        if let Some(segment) = path.path.segments.first() {
-                            self.0.insert(segment.ident.to_string());
-                        }
-                    }
-                }
-            }
+        if is_atomic_call(call)
+            && let syn::Expr::Reference(reference) = &call.args[0]
+            && let syn::Expr::Index(index) = reference.expr.as_ref()
+            && let syn::Expr::Path(path) = index.expr.as_ref()
+            && let Some(segment) = path.path.segments.first()
+        {
+            self.0.insert(segment.ident.to_string());
         }
         syn::visit::visit_expr_call(self, call);
     }

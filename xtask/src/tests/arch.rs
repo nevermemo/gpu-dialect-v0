@@ -1,121 +1,224 @@
 use super::{
-    CRATE_RULES, CrateRule, WorkspaceDependency, dependency_problems, ir_module_problems,
-    ir_path_problems, manifest_dependencies, strip_comment, unlisted_crate_problems, unquote,
-    workspace_dependencies, workspace_dependency_problems,
+    CRATE_RULES, CrateRule, Dependency, dependency_problems, ir_module_problems, ir_path_problems,
+    package_problems, parse_metadata, relative_to, unlisted_crate_problems,
 };
+
+/// The workspace root of the sample metadata below.
+const ROOT: &str = "/ws";
+const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
 fn rule(name: &str) -> &'static CrateRule {
     CRATE_RULES.iter().find(|rule| rule.name == name).unwrap()
 }
 
-/// A copy of the shape of the root `[workspace.dependencies]` table.
-const ROOT_MANIFEST_TEXT: &str = r#"[workspace]
-members = ["crates/gust"]
-
-[workspace.dependencies]
-gust = { path = "crates/gust" }
-gust-macros = { path = "crates/gust-macros" }
-gust-wgpu = { path = "crates/gust-wgpu" }
-pollster = "0.4"
-proc-macro2 = "1.0"
-quote = "1.0"
-syn = { version = "2.0", features = ["full", "extra-traits", "visit"] }
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"] }
-"#;
-
-fn root() -> Vec<WorkspaceDependency> {
-    workspace_dependencies(ROOT_MANIFEST_TEXT)
+fn quoted(value: Option<&str>) -> String {
+    value.map_or("null".to_owned(), |text| format!("\"{text}\""))
 }
 
-/// The root table with its `[workspace.dependencies]` replaced by `table`.
-fn root_with(table: &str) -> Vec<WorkspaceDependency> {
-    workspace_dependencies(&format!(
-        "[workspace]\nmembers = []\n\n[workspace.dependencies]\n{table}"
-    ))
+/// One dependency object in the shape `cargo metadata --no-deps` prints.
+fn dep(
+    name: &str,
+    rename: Option<&str>,
+    source: Option<&str>,
+    registry: Option<&str>,
+    path: Option<&str>,
+    kind: Option<&str>,
+) -> String {
+    let path = path.map_or(String::new(), |path| format!(r#","path":"{path}""#));
+    format!(
+        r#"{{"name":"{name}","source":{},"req":"^1","kind":{},"rename":{},"optional":false,"uses_default_features":true,"features":["f"],"target":null,"registry":{}{path}}}"#,
+        quoted(source),
+        quoted(kind),
+        quoted(rename),
+        quoted(registry),
+    )
 }
 
-const MACROS_MANIFEST: &str = r#"[package]
-name = "gust-macros"
-version.workspace = true
+/// A crates.io dependency.
+fn from_registry(name: &str) -> String {
+    dep(name, None, Some(CRATES_IO), None, None, None)
+}
 
-[lib]
-proc-macro = true
+/// A path dependency on a workspace crate in its own directory.
+fn workspace_crate(name: &str) -> String {
+    dep(
+        name,
+        None,
+        None,
+        None,
+        Some(&format!("{ROOT}/crates/{name}")),
+        None,
+    )
+}
 
-[dependencies]
-proc-macro2.workspace = true
-quote.workspace = true
-syn.workspace = true
-"#;
+/// One package object, located at the manifest of the rule of the same name.
+fn package_json(name: &str, dependencies: &[String]) -> String {
+    let manifest = rule(name).manifest;
+    format!(
+        r#"{{"name":"{name}","version":"0.1.0","id":"path+file://{ROOT}/{manifest}#0.1.0","source":null,"dependencies":[{}],"targets":[{{"kind":["lib"],"name":"{name}"}}],"features":{{}},"manifest_path":"{ROOT}/{manifest}","metadata":null}}"#,
+        dependencies.join(",")
+    )
+}
+
+fn metadata_json(packages: &[String]) -> String {
+    format!(
+        r#"{{"packages":[{}],"workspace_members":[],"resolve":null,"target_directory":"{ROOT}/target","version":1,"workspace_root":"{ROOT}","metadata":null}}"#,
+        packages.join(",")
+    )
+}
+
+/// The dependency problems of the crate `name` with the given dependencies, read through the
+/// JSON reader like the real input.
+fn found_for(name: &str, dependencies: &[String]) -> Vec<String> {
+    let json = metadata_json(&[package_json(name, dependencies)]);
+    let packages = parse_metadata(&json).unwrap();
+    assert_eq!(packages.len(), 1);
+    dependency_problems(rule(name), &packages[0], ROOT)
+}
+
+/// The dependency sets of the real workspace.
+fn current_packages() -> Vec<String> {
+    vec![
+        package_json(
+            "gust-macros",
+            &[
+                from_registry("proc-macro2"),
+                from_registry("quote"),
+                from_registry("syn"),
+            ],
+        ),
+        package_json("gust", &[workspace_crate("gust-macros")]),
+        package_json(
+            "gust-wgpu",
+            &[
+                workspace_crate("gust"),
+                from_registry("pollster"),
+                from_registry("wgpu"),
+            ],
+        ),
+        package_json("xtask", &[]),
+    ]
+}
 
 #[test]
-fn dependencies_are_read_from_every_table_form() {
-    let text = r#"[package]
-name = "demo"
-description = "dependencies = nope"
-
-[dependencies]
-plain = "1"
-inline = { version = "2", features = ["x"] }
-dotted.workspace = true
-dotted.features = ["y"]
-"quoted" = "3" # trailing comment
-renamed = { package = "real-name", version = "1" }
-# commented = "4"
-
-[dev-dependencies]
-dev-only = "1"
-
-[build-dependencies.table-form]
-version = "1"
-
-[dependencies.alias]
-package = "hidden"
-version = "1"
-
-[target.'cfg(unix)'.dependencies]
-unix-only = "1"
-
-[target.'cfg(windows)'.dependencies.win-table]
-version = "1"
-
-[features]
-extra = ["plain"]
-
-[workspace.dependencies]
-not-counted = "1"
-"#;
+fn metadata_is_read_into_packages_and_dependencies() {
+    let json = metadata_json(&[
+        package_json(
+            "gust-macros",
+            &[
+                from_registry("syn"),
+                dep("quote", None, Some(CRATES_IO), None, None, Some("dev")),
+                dep(
+                    "friendly",
+                    Some("shim"),
+                    Some(CRATES_IO),
+                    None,
+                    None,
+                    Some("build"),
+                ),
+                dep(
+                    "gust",
+                    None,
+                    None,
+                    Some("mine"),
+                    Some("/ws/crates/gust"),
+                    None,
+                ),
+            ],
+        ),
+        package_json("xtask", &[]),
+    ]);
+    let packages = parse_metadata(&json).unwrap();
+    assert_eq!(packages.len(), 2);
+    assert_eq!(packages[0].name, "gust-macros");
     assert_eq!(
-        manifest_dependencies(text, &[]),
+        packages[0].manifest_path,
+        "/ws/crates/gust-macros/Cargo.toml"
+    );
+    assert_eq!(
+        packages[0].dependencies,
         [
-            "plain",
-            "inline",
-            "dotted",
-            "quoted",
-            "real-name",
-            "dev-only",
-            "table-form",
-            "hidden",
-            "unix-only",
-            "win-table",
+            Dependency {
+                name: "syn".to_owned(),
+                rename: None,
+                source: Some(CRATES_IO.to_owned()),
+                registry: None,
+                path: None,
+            },
+            Dependency {
+                name: "quote".to_owned(),
+                rename: None,
+                source: Some(CRATES_IO.to_owned()),
+                registry: None,
+                path: None,
+            },
+            Dependency {
+                name: "friendly".to_owned(),
+                rename: Some("shim".to_owned()),
+                source: Some(CRATES_IO.to_owned()),
+                registry: None,
+                path: None,
+            },
+            Dependency {
+                name: "gust".to_owned(),
+                rename: None,
+                source: None,
+                registry: Some("mine".to_owned()),
+                path: Some("/ws/crates/gust".to_owned()),
+            },
         ]
     );
+    assert!(packages[1].dependencies.is_empty());
+}
+
+#[test]
+fn unreadable_metadata_is_an_error_not_a_pass() {
+    for (text, expected) in [
+        ("", "invalid JSON"),
+        ("not json", "invalid JSON"),
+        ("{}", "no `packages` array"),
+        (r#"{"packages": {}}"#, "no `packages` array"),
+        (r#"{"packages": [{"name": "x"}]}"#, "lacks `manifest_path`"),
+        (
+            r#"{"packages": [{"name": "x", "manifest_path": "/x/Cargo.toml"}]}"#,
+            "package `x` has no `dependencies`",
+        ),
+        (
+            r#"{"packages": [{"name": "x", "manifest_path": "/m", "dependencies": [{}]}]}"#,
+            "lacks `name`",
+        ),
+        (
+            r#"{"packages": [{"name": null, "manifest_path": "/m", "dependencies": []}]}"#,
+            "lacks `name`",
+        ),
+    ] {
+        let error = parse_metadata(text).unwrap_err();
+        assert!(error.contains(expected), "{text}: {error}");
+        assert!(error.starts_with("cargo metadata"), "{error}");
+    }
 }
 
 #[test]
 fn the_current_dependency_sets_pass() {
-    assert!(dependency_problems(rule("gust-macros"), MACROS_MANIFEST, &root()).is_empty());
-    let gust = "[dependencies]\ngust-macros.workspace = true\n";
-    assert!(dependency_problems(rule("gust"), gust, &root()).is_empty());
-    let wgpu =
-        "[dependencies]\ngust.workspace = true\npollster.workspace = true\nwgpu.workspace = true\n";
-    assert!(dependency_problems(rule("gust-wgpu"), wgpu, &root()).is_empty());
-    assert!(dependency_problems(rule("xtask"), "[package]\nname = \"xtask\"\n", &[]).is_empty());
+    let mut packages = current_packages();
+    // Example packages are not checked, whatever they depend on.
+    packages.push(
+        r#"{"name":"vector-add","manifest_path":"/ws/examples/vector-add/Cargo.toml","dependencies":[{"name":"serde","source":null,"rename":null,"registry":null}]}"#
+            .to_owned(),
+    );
+    let parsed = parse_metadata(&metadata_json(&packages)).unwrap();
+    assert_eq!(package_problems(ROOT, &parsed), Vec::<String>::new());
 }
 
 #[test]
 fn a_new_dependency_names_d02_and_decisions() {
-    let manifest = format!("{MACROS_MANIFEST}serde = \"1\"\n");
-    let problems = dependency_problems(rule("gust-macros"), &manifest, &root());
+    let mut deps = vec![
+        from_registry("proc-macro2"),
+        from_registry("quote"),
+        from_registry("syn"),
+    ];
+    deps.push(from_registry("serde"));
+    let problems = found_for("gust-macros", &deps);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("`serde`"), "{}", problems[0]);
     assert!(problems[0].contains("D02"), "{}", problems[0]);
@@ -129,41 +232,280 @@ fn a_new_dependency_names_d02_and_decisions() {
         "{}",
         problems[0]
     );
+    assert!(
+        problems[0].contains("allow-list (proc-macro2, quote, syn)"),
+        "{}",
+        problems[0]
+    );
 }
 
 #[test]
 fn xtask_may_not_gain_any_dependency() {
-    let problems = dependency_problems(rule("xtask"), "[dependencies]\nsha2 = \"0.10\"\n", &[]);
+    let problems = found_for("xtask", &[from_registry("sha2")]);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("allow-list (none)"), "{}", problems[0]);
 }
 
 #[test]
-fn a_dev_dependency_counts_like_any_other() {
-    let problems = dependency_problems(rule("gust"), "[dev-dependencies]\ntempfile = \"3\"\n", &[]);
-    assert_eq!(problems.len(), 1, "{problems:?}");
+fn a_dev_or_build_dependency_counts_like_any_other() {
+    for kind in ["dev", "build"] {
+        let dependency = dep("tempfile", None, Some(CRATES_IO), None, None, Some(kind));
+        let problems = found_for("gust", &[dependency]);
+        assert_eq!(problems.len(), 1, "{kind}: {problems:?}");
+    }
+}
+
+#[test]
+fn a_dependency_listed_under_several_kinds_is_reported_once() {
+    let dependencies = [
+        dep("serde", None, Some(CRATES_IO), None, None, None),
+        dep("serde", None, Some(CRATES_IO), None, None, Some("dev")),
+        dep("serde", None, Some(CRATES_IO), None, None, Some("build")),
+    ];
+    assert_eq!(found_for("gust", &dependencies).len(), 1);
 }
 
 #[test]
 fn spirv_libraries_are_rejected_in_the_compiler_crates_by_name_and_by_rename() {
-    for text in [
-        "[dependencies]\nrspirv = \"0.12\"\n",
-        "[dependencies]\nspirv = \"0.3\"\n",
-        "[dependencies]\nspirv-std = \"0.9\"\n",
-        "[dependencies]\nrspirv-reflect = \"0.8\"\n",
-        "[dependencies]\nfriendly = { package = \"rspirv\", version = \"0.12\" }\n",
-        "[dependencies.friendly]\npackage = \"spirv\"\n",
+    for dependency in [
+        from_registry("rspirv"),
+        from_registry("spirv"),
+        from_registry("spirv-std"),
+        from_registry("rspirv-reflect"),
+        // `friendly = { package = "rspirv" }`: cargo reports the real name and the key.
+        dep(
+            "rspirv",
+            Some("friendly"),
+            Some(CRATES_IO),
+            None,
+            None,
+            None,
+        ),
+        dep("spirv", Some("friendly"), Some(CRATES_IO), None, None, None),
     ] {
         for name in ["gust-macros", "gust"] {
-            let problems = dependency_problems(rule(name), text, &[]);
-            assert_eq!(problems.len(), 1, "{name}: {text}");
+            let problems = found_for(name, std::slice::from_ref(&dependency));
+            assert_eq!(problems.len(), 1, "{name}: {dependency}");
             assert!(problems[0].contains("no SPIR-V emitter"), "{}", problems[0]);
         }
     }
     // The runtime crate gets the generic message; it is not a compiler crate.
-    let problems = dependency_problems(rule("gust-wgpu"), "[dependencies]\nrspirv = \"1\"\n", &[]);
+    let problems = found_for("gust-wgpu", &[from_registry("rspirv")]);
     assert_eq!(problems.len(), 1);
     assert!(problems[0].contains("allow-list"), "{}", problems[0]);
+}
+
+#[test]
+fn a_rename_is_judged_by_the_real_package_and_is_itself_a_problem() {
+    // `syn = { package = "evil-syn", .. }`: the key looks allowed, the package is not.
+    let renamed_away = dep("evil-syn", Some("syn"), Some(CRATES_IO), None, None, None);
+    let problems = found_for("gust-macros", &[renamed_away]);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems[0].contains("dependency `evil-syn`"),
+        "{}",
+        problems[0]
+    );
+    assert!(problems[0].contains("allow-list"), "{}", problems[0]);
+    assert!(
+        problems[1].contains("`syn` is renamed with package = \"evil-syn\""),
+        "{}",
+        problems[1]
+    );
+    // The reverse: an innocent key that is really an allowed package passes the allow-list
+    // but is still a rename.
+    let shim = dep("syn", Some("shim"), Some(CRATES_IO), None, None, None);
+    let problems = found_for("gust-macros", &[shim]);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("`shim` is renamed with package = \"syn\""),
+        "{}",
+        problems[0]
+    );
+    // A rename of something that is allowed nowhere is only an allow-list problem.
+    let other = dep("serde", Some("alias"), Some(CRATES_IO), None, None, None);
+    assert_eq!(problems_len("gust-macros", other), 1);
+}
+
+fn problems_len(name: &str, dependency: String) -> usize {
+    found_for(name, &[dependency]).len()
+}
+
+#[test]
+fn dependencies_with_a_foreign_source_fail() {
+    let path = |name: &str, dir: &str| dep(name, None, None, None, Some(dir), None);
+    let bad = [
+        (
+            "gust-macros",
+            path("syn", "/elsewhere/syn"),
+            "path dependency on `/elsewhere/syn`",
+        ),
+        (
+            "gust-macros",
+            path("syn", "/ws/vendor/syn"),
+            "path dependency on `vendor/syn`",
+        ),
+        (
+            "gust-macros",
+            dep(
+                "syn",
+                None,
+                Some("git+https://example.com/syn"),
+                None,
+                None,
+                None,
+            ),
+            "git source",
+        ),
+        (
+            "gust-wgpu",
+            dep("wgpu", None, Some(CRATES_IO), Some("mine"), None, None),
+            "names a registry",
+        ),
+        (
+            "gust-wgpu",
+            dep(
+                "wgpu",
+                None,
+                Some("registry+https://example.com/index"),
+                None,
+                None,
+                None,
+            ),
+            "names a registry",
+        ),
+        (
+            "gust-wgpu",
+            dep(
+                "pollster",
+                None,
+                Some("sparse+https://example.com/"),
+                None,
+                None,
+                None,
+            ),
+            "names a registry",
+        ),
+        (
+            "gust-wgpu",
+            path("gust", "/ws/vendor/gust"),
+            "must be `path = \"crates/gust\"`, found `vendor/gust`",
+        ),
+        (
+            "gust",
+            from_registry("gust-macros"),
+            "must be `path = \"crates/gust-macros\"`, found no path",
+        ),
+        (
+            "gust-wgpu",
+            dep(
+                "gust",
+                None,
+                None,
+                None,
+                Some("/ws/crates/gust-macros"),
+                None,
+            ),
+            "found `crates/gust-macros`",
+        ),
+        (
+            "gust-wgpu",
+            dep("gust", None, None, None, Some("/ws/crates/gust/sub"), None),
+            "found `crates/gust/sub`",
+        ),
+    ];
+    for (name, dependency, expected) in bad {
+        let problems = found_for(name, std::slice::from_ref(&dependency));
+        assert_eq!(problems.len(), 1, "{dependency}: {problems:?}");
+        assert!(
+            problems[0].contains(expected),
+            "{dependency}: {}",
+            problems[0]
+        );
+        assert!(
+            problems[0].contains(&format!("`{name}` dependency `")),
+            "{}",
+            problems[0]
+        );
+        assert!(problems[0].contains("D02"), "{}", problems[0]);
+    }
+}
+
+#[test]
+fn a_workspace_crate_may_be_reached_by_any_spelling_of_its_directory() {
+    let root = r"D:\ws";
+    for (manifest, dir) in [
+        (r"D:\ws\crates\gust-wgpu\Cargo.toml", r"D:\ws\crates\gust"),
+        (r"D:\ws\crates\gust-wgpu\Cargo.toml", r"D:\ws\crates\gust\\"),
+        (
+            r"\\?\D:\ws\crates\gust-wgpu\Cargo.toml",
+            r"\\?\D:\ws\crates\gust",
+        ),
+        ("D:/ws/crates/gust-wgpu/Cargo.toml", "D:/ws/crates/gust/"),
+    ] {
+        let escaped = |text: &str| text.replace('\\', "\\\\");
+        let json = format!(
+            r#"{{"packages":[{{"name":"gust-wgpu","manifest_path":"{}","dependencies":[{}]}}]}}"#,
+            escaped(manifest),
+            dep("gust", None, None, None, Some(&escaped(dir)), None)
+        );
+        let packages = parse_metadata(&json).unwrap();
+        let found = dependency_problems(rule("gust-wgpu"), &packages[0], root);
+        assert!(found.is_empty(), "{dir}: {found:?}");
+    }
+    // Windows paths ignore case, others do not.
+    assert_eq!(
+        relative_to(r"D:\ws", r"d:\WS\crates\gust").is_some(),
+        cfg!(windows)
+    );
+}
+
+#[test]
+fn relative_paths_need_a_whole_directory_prefix() {
+    assert_eq!(
+        relative_to("/ws", "/ws/crates/a").as_deref(),
+        Some("crates/a")
+    );
+    assert_eq!(
+        relative_to("/ws/", "/ws/crates/a/").as_deref(),
+        Some("crates/a")
+    );
+    assert_eq!(relative_to("/ws", "/ws"), None);
+    assert_eq!(relative_to("/ws", "/ws2/crates/a"), None);
+    assert_eq!(relative_to("/ws", "/other/ws/crates"), None);
+    assert_eq!(relative_to("/ws", "/w"), None);
+    // A multi-byte character at the cut must not panic.
+    assert_eq!(relative_to("/ws", "/w\u{e9}/x"), None);
+}
+
+#[test]
+fn a_rule_crate_that_cargo_does_not_list_is_reported() {
+    let packages = parse_metadata(&metadata_json(&current_packages()[..3])).unwrap();
+    let problems = package_problems(ROOT, &packages);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0]
+            .starts_with("xtask/Cargo.toml: cargo metadata lists no workspace package `xtask`"),
+        "{}",
+        problems[0]
+    );
+    let none = package_problems(ROOT, &[]);
+    assert_eq!(none.len(), CRATE_RULES.len(), "{none:?}");
+}
+
+#[test]
+fn a_rule_crate_at_another_path_is_reported_and_not_judged() {
+    let moved = r#"{"name":"gust","manifest_path":"/ws/elsewhere/gust/Cargo.toml","dependencies":[{"name":"serde","source":null,"rename":null,"registry":null}]}"#;
+    let mut packages = current_packages();
+    packages[1] = moved.to_owned();
+    let parsed = parse_metadata(&metadata_json(&packages)).unwrap();
+    let problems = package_problems(ROOT, &parsed);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("package `gust` is at `elsewhere/gust/Cargo.toml`"),
+        "{}",
+        problems[0]
+    );
 }
 
 #[test]
@@ -238,293 +580,4 @@ fn ir_module_declarations_are_rejected_outside_future() {
 fn other_module_names_and_comments_are_allowed() {
     let text = "mod air;\nmod irq;\nmod ir_notes;\n// mod ir;\n/// mod x_ir;\nlet ir = 1;\nfn ir() {}\nmod modir;\n";
     assert!(ir_module_problems("crates/gust/src/lib.rs", text).is_empty());
-}
-
-#[test]
-fn the_workspace_table_is_read_in_every_form() {
-    let entries = root_with(
-        "plain = \"1\"\n\
-         inline = { version = \"2\", features = [\"package\", \"git\"] }\n\
-         renamed = { package = \"real\", version = \"1\" }\n\
-         local = { path = \"crates/local\" }\n\
-         remote = { git = \"https://example.com/x.git\" }\n\
-         other = { version = \"1\", registry = \"mine\" }\n\
-         dotted.path = \"vendor/dotted\"\n\
-         dotted.package = \"under\"\n\
-         \n\
-         [workspace.dependencies.table-form]\n\
-         package = \"hidden\"\n\
-         version = \"1\"\n",
-    );
-    let by_key = |key: &str| entries.iter().find(|entry| entry.key == key).unwrap();
-    assert_eq!(entries.len(), 8, "{entries:?}");
-    assert_eq!(
-        by_key("plain"),
-        &WorkspaceDependency {
-            key: "plain".to_owned(),
-            ..WorkspaceDependency::default()
-        }
-    );
-    // A feature named like a field is not the field.
-    assert_eq!(by_key("inline").package, None);
-    assert!(!by_key("inline").git);
-    assert_eq!(by_key("renamed").package.as_deref(), Some("real"));
-    assert_eq!(by_key("local").path.as_deref(), Some("crates/local"));
-    assert!(by_key("remote").git);
-    assert!(by_key("other").registry);
-    assert_eq!(by_key("dotted").path.as_deref(), Some("vendor/dotted"));
-    assert_eq!(by_key("dotted").package.as_deref(), Some("under"));
-    assert_eq!(by_key("table-form").package.as_deref(), Some("hidden"));
-}
-
-#[test]
-fn the_current_root_table_passes() {
-    assert_eq!(workspace_dependency_problems(&root()), Vec::<String>::new());
-    // The real root manifest, so that a drift of this copy is noticed.
-    let real = workspace_dependencies(include_str!("../../../Cargo.toml"));
-    assert_eq!(real, root());
-}
-
-#[test]
-fn inherited_dependencies_resolve_to_the_root_entry() {
-    let workspace = root_with("alias = { package = \"serde\", version = \"1\" }\nsyn = \"2\"\n");
-    for manifest in [
-        "[dependencies]\nalias.workspace = true\n",
-        "[dependencies]\nalias = { workspace = true, features = [\"x\"] }\n",
-        "[dependencies.alias]\nworkspace = true\n",
-        "[target.'cfg(unix)'.dev-dependencies]\nalias = { workspace = true }\n",
-    ] {
-        assert_eq!(
-            manifest_dependencies(manifest, &workspace),
-            ["serde"],
-            "{manifest}"
-        );
-        let problems = dependency_problems(rule("gust-macros"), manifest, &workspace);
-        assert_eq!(problems.len(), 1, "{manifest}: {problems:?}");
-        assert!(
-            problems[0].contains("dependency `serde`"),
-            "{}",
-            problems[0]
-        );
-    }
-    // Without `workspace = true` the root entry is not consulted.
-    assert_eq!(
-        manifest_dependencies("[dependencies]\nsyn = \"2\"\nalias = \"1\"\n", &workspace),
-        ["syn", "alias"]
-    );
-}
-
-#[test]
-fn a_renamed_workspace_dependency_fails_even_when_it_resolves_to_an_allowed_name() {
-    // `syn` inherited from a root entry that is really another package.
-    let workspace = root_with("syn = { package = \"evil-syn\", version = \"2\" }\n");
-    let problems = dependency_problems(
-        rule("gust-macros"),
-        "[dependencies]\nsyn.workspace = true\n",
-        &workspace,
-    );
-    assert_eq!(problems.len(), 1, "{problems:?}");
-    assert!(problems[0].contains("`evil-syn`"), "{}", problems[0]);
-    let root_problems = workspace_dependency_problems(&workspace);
-    assert_eq!(root_problems.len(), 1, "{root_problems:?}");
-    assert!(
-        root_problems[0].starts_with("Cargo.toml: "),
-        "{}",
-        root_problems[0]
-    );
-    assert!(
-        root_problems[0].contains("renamed with package = \"evil-syn\""),
-        "{}",
-        root_problems[0]
-    );
-    // The reverse: an innocent key that is really an allowed package passes the crate check
-    // but not the root check.
-    let workspace = root_with("shim = { package = \"syn\", version = \"2\" }\n");
-    assert!(
-        dependency_problems(
-            rule("gust-macros"),
-            "[dependencies]\nshim.workspace = true\n",
-            &workspace
-        )
-        .is_empty()
-    );
-    assert_eq!(workspace_dependency_problems(&workspace).len(), 1);
-}
-
-#[test]
-fn an_inherited_dependency_without_a_root_entry_is_reported() {
-    let problems = dependency_problems(
-        rule("gust-macros"),
-        "[dependencies]\nsyn.workspace = true\nmissing.workspace = true\n",
-        &root(),
-    );
-    assert_eq!(problems.len(), 2, "{problems:?}");
-    assert!(
-        problems[0].contains("no [workspace.dependencies] entry"),
-        "{}",
-        problems[0]
-    );
-    assert!(
-        problems[1].contains("dependency `missing`"),
-        "{}",
-        problems[1]
-    );
-}
-
-#[test]
-fn root_entries_with_a_foreign_source_fail() {
-    let bad = [
-        (
-            "syn = { path = \"../syn\", version = \"2\" }\n",
-            "path dependency on `../syn`",
-        ),
-        (
-            "syn = { git = \"https://example.com/syn\" }\n",
-            "git source",
-        ),
-        (
-            "wgpu = { version = \"30\", registry = \"mine\" }\n",
-            "names a registry",
-        ),
-        (
-            "gust = { path = \"vendor/gust\" }\n",
-            "must be `path = \"crates/gust\"`, found `vendor/gust`",
-        ),
-        ("gust-macros = \"0.1\"\n", "found no path"),
-        (
-            "gust = { path = \"crates/gust-macros\" }\n",
-            "found `crates/gust-macros`",
-        ),
-        (
-            "[workspace.dependencies.quote]\ngit = \"https://example.com/quote\"\n",
-            "git source",
-        ),
-    ];
-    for (table, expected) in bad {
-        let problems = workspace_dependency_problems(&root_with(table));
-        assert_eq!(problems.len(), 1, "{table}: {problems:?}");
-        assert!(problems[0].contains(expected), "{table}: {}", problems[0]);
-    }
-    // Spelling variants of the right path are fine; unrelated entries are not checked.
-    for table in [
-        "gust = { path = \"./crates/gust/\" }\n",
-        // TOML `"crates\\gust"` is the valid basic-string spelling of a backslash path.
-        "gust = { path = \"crates\\\\gust\" }\n",
-        // A literal string keeps its backslash as written.
-        "gust = { path = 'crates\\gust' }\n",
-        "gust = { path = \"crates\\u002fgust\" }\n",
-        "gust.path = \"crates\\\\gust\"\n",
-        "unrelated = { git = \"https://example.com/x\" }\n",
-    ] {
-        assert!(
-            workspace_dependency_problems(&root_with(table)).is_empty(),
-            "{table}"
-        );
-    }
-}
-
-#[test]
-fn quoted_field_names_are_read_like_bare_ones() {
-    // Every spelling of the field `git` / `package` must be judged alike, in every table form.
-    let bad = [
-        ("syn.\"git\" = \"https://example.com/syn\"\n", "git source"),
-        ("syn.'git' = \"https://example.com/syn\"\n", "git source"),
-        (
-            "\"syn\".\"git\" = \"https://example.com/syn\"\n",
-            "git source",
-        ),
-        (
-            "syn.\"p\\u0061ckage\" = \"evil-syn\"\n",
-            "package = \"evil-syn\"",
-        ),
-        ("syn.\"package\" = \"evil-syn\"\n", "package = \"evil-syn\""),
-        ("syn.'package' = 'evil-syn'\n", "package = \"evil-syn\""),
-        (
-            "syn = { \"package\" = \"evil-syn\" }\n",
-            "package = \"evil-syn\"",
-        ),
-        ("syn = { 'git' = \"x\" }\n", "git source"),
-        (
-            "syn = { package = \"ev\\u0069l-syn\" }\n",
-            "package = \"evil-syn\"",
-        ),
-        (
-            "[workspace.dependencies.syn]\n\"package\" = \"evil-syn\"\n",
-            "package = \"evil-syn\"",
-        ),
-        (
-            "[workspace.dependencies.syn]\n'package' = \"evil-syn\"\n",
-            "package = \"evil-syn\"",
-        ),
-        (
-            "[workspace.dependencies.\"syn\"]\n\"git\" = \"https://example.com/syn\"\n",
-            "git source",
-        ),
-        (
-            "[workspace.dependencies.syn]\n\"registry-index\" = \"https://example.com/index\"\n",
-            "names a registry",
-        ),
-    ];
-    for (table, expected) in bad {
-        let problems = workspace_dependency_problems(&root_with(table));
-        assert_eq!(problems.len(), 1, "{table}: {problems:?}");
-        assert!(problems[0].contains(expected), "{table}: {}", problems[0]);
-    }
-    // The same in a member manifest, where a rename hides a SPIR-V library.
-    for manifest in [
-        "[dependencies.friendly]\n\"package\" = \"rspirv\"\n",
-        "[dependencies.friendly]\n'package' = \"rspirv\"\n",
-        "[dependencies]\nfriendly.\"package\" = \"rspirv\"\n",
-        "[dependencies]\nfriendly = { \"package\" = \"rspirv\" }\n",
-        "[dependencies]\n\"friendly\".\"p\\u0061ckage\" = \"rspirv\"\n",
-    ] {
-        let problems = dependency_problems(rule("gust-macros"), manifest, &[]);
-        assert_eq!(problems.len(), 1, "{manifest}: {problems:?}");
-        assert!(
-            problems[0].contains("`rspirv`"),
-            "{manifest}: {}",
-            problems[0]
-        );
-    }
-    // A quoted `workspace` flag inherits, and the dependency name may hold dots and `=`.
-    let workspace = root_with("alias = { package = \"serde\", version = \"1\" }\n");
-    assert_eq!(
-        manifest_dependencies("[dependencies]\nalias.\"workspace\" = true\n", &workspace),
-        ["serde"]
-    );
-    assert_eq!(
-        manifest_dependencies(
-            "[dependencies]\n\"a.b\" = \"1\"\n\"c=d\" = { version = \"1\" }\n'e#f' = \"1\"\n",
-            &[]
-        ),
-        ["a.b", "c=d", "e#f"]
-    );
-}
-
-#[test]
-fn toml_basic_strings_are_decoded_and_literal_strings_are_not() {
-    assert_eq!(unquote("\"plain\"").as_deref(), Some("plain"));
-    assert_eq!(
-        unquote(r#""a\"b\\c\td\ne\u0041\U0001F600""#).as_deref(),
-        Some("a\"b\\c\td\ne\u{41}\u{1F600}")
-    );
-    // The escaped quote does not end the string; trailing text after it is ignored.
-    assert_eq!(unquote(r#""a\"" tail"#).as_deref(), Some("a\""));
-    // Literal strings keep every backslash.
-    assert_eq!(
-        unquote(r"'crates\gust\n'").as_deref(),
-        Some(r"crates\gust\n")
-    );
-    // An invalid escape is kept as written, an unterminated or unquoted value is no string.
-    assert_eq!(unquote(r#""crates\gust""#).as_deref(), Some(r"crates\gust"));
-    assert_eq!(unquote(r#""\u12""#).as_deref(), Some(r"\u12"));
-    assert_eq!(unquote("\"open"), None);
-    assert_eq!(unquote(r#""ends\"#), None);
-    assert_eq!(unquote("bare"), None);
-    // A `#` after an escaped quote is still inside the string.
-    assert_eq!(
-        strip_comment(r##"a = "x\"#y" # note"##),
-        r##"a = "x\"#y" "##
-    );
-    assert_eq!(strip_comment(r"a = 'x\' # note"), r"a = 'x\' ");
 }

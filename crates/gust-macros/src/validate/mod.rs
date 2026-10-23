@@ -453,29 +453,29 @@ fn validate_function(
     let mut visitor = RestrictedVisitor::new(function_names.clone(), result_helpers.clone());
     visitor.atomic_buffers = atomic_buffer_names(function);
     for argument in &function.sig.inputs {
-        if let syn::FnArg::Typed(argument) = argument {
-            if let syn::Pat::Ident(name) = argument.pat.as_ref() {
-                match parameter_flavor(&argument.ty) {
-                    ParameterFlavor::Invocation => {
-                        visitor.invocations.insert(name.ident.to_string());
-                    }
-                    ParameterFlavor::StorageRead => {
-                        visitor.resources.insert(name.ident.to_string());
-                    }
-                    ParameterFlavor::StorageReadWrite => {
-                        visitor.resources.insert(name.ident.to_string());
-                        if let Some(element) = rw_buffer_element_type(&argument.ty) {
-                            visitor
-                                .read_write_buffers
-                                .insert(name.ident.to_string(), element);
-                        }
-                    }
-                    ParameterFlavor::Value if matches!(argument.ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some()) =>
-                    {
-                        visitor.result_values.insert(name.ident.to_string());
-                    }
-                    _ => {}
+        if let syn::FnArg::Typed(argument) = argument
+            && let syn::Pat::Ident(name) = argument.pat.as_ref()
+        {
+            match parameter_flavor(&argument.ty) {
+                ParameterFlavor::Invocation => {
+                    visitor.invocations.insert(name.ident.to_string());
                 }
+                ParameterFlavor::StorageRead => {
+                    visitor.resources.insert(name.ident.to_string());
+                }
+                ParameterFlavor::StorageReadWrite => {
+                    visitor.resources.insert(name.ident.to_string());
+                    if let Some(element) = rw_buffer_element_type(&argument.ty) {
+                        visitor
+                            .read_write_buffers
+                            .insert(name.ident.to_string(), element);
+                    }
+                }
+                ParameterFlavor::Value if matches!(argument.ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some()) =>
+                {
+                    visitor.result_values.insert(name.ident.to_string());
+                }
+                _ => {}
             }
         }
     }

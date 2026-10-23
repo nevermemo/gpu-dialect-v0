@@ -377,10 +377,10 @@ impl Reflection {
             if complete && binding.get("count")?.u32()? != 1 {
                 return Err(invalid("binding arrays are unsupported"));
             }
-            if let Some(count) = binding.optional("count")? {
-                if count.u32()? != 1 {
-                    return Err(invalid("binding arrays are unsupported"));
-                }
+            if let Some(count) = binding.optional("count")?
+                && count.u32()? != 1
+            {
+                return Err(invalid("binding arrays are unsupported"));
             }
             if resources.iter().any(|r: &ReflectedResource| {
                 r.name == name || (r.binding == index && r.space == space)

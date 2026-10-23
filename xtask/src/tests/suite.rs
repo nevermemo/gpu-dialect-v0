@@ -1,7 +1,7 @@
 use super::{Step, Suite};
 use crate::{
     checks::REFLECTION_TESTS,
-    verify::{RELEASE_SLANG_TESTS, VerifyMode, example_run_args},
+    verify::{RELEASE_SLANG_TESTS, VerifyMode, cargo_calls as mode_cargo_calls, example_run_args},
     workspace::EXAMPLES,
 };
 
@@ -146,7 +146,14 @@ fn the_full_gate_runs_the_release_slang_tests() {
         ]
     );
     assert!(Suite::Full.covers().contains("release-profile"));
-    // Suite::Full and check-full both run verify's Full mode; the call must be made there.
-    let source = include_str!("../verify.rs");
-    assert_eq!(source.matches("&RELEASE_SLANG_TESTS").count(), 1);
+    // Suite::Full and check-full both run verify's Full mode (above and in main.rs); the
+    // structured list of that mode's cargo calls is tested in tests/verify_steps.rs.
+    let release = RELEASE_SLANG_TESTS.map(str::to_owned).to_vec();
+    assert_eq!(
+        mode_cargo_calls(VerifyMode::Full)
+            .iter()
+            .filter(|call| **call == release)
+            .count(),
+        1
+    );
 }

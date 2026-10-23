@@ -1,4 +1,8 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    process::{Command, Stdio},
+};
 
 use crate::{process::CheckRecord, time::now_utc, verify::VerifyMode};
 
@@ -7,10 +11,78 @@ pub(crate) struct ArtifactRecord {
     pub(crate) sha256: String,
 }
 
+/// The source state a validation run checked: the commit `HEAD` pointed to and whether the
+/// working tree differed from it. Each is `None` ("null" in the record) when git cannot say,
+/// for instance without git, outside a repository, or on a repository git refuses to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GitStamp {
+    pub(crate) commit: Option<String>,
+    /// True when `git status --porcelain` lists anything: modified, staged or untracked
+    /// (not ignored) files. A run on a dirty tree is evidence about that tree, not the commit.
+    pub(crate) dirty: Option<bool>,
+}
+
+impl GitStamp {
+    /// The stamp of a run without git information.
+    #[cfg(test)]
+    pub(crate) const UNKNOWN: Self = Self {
+        commit: None,
+        dirty: None,
+    };
+
+    /// The stamp of the repository at `root`, taken now.
+    pub(crate) fn read(root: &Path) -> Self {
+        Self::read_with(root, "git")
+    }
+
+    fn read_with(root: &Path, git: &str) -> Self {
+        let run = |args: &[&str]| -> Option<String> {
+            let output = Command::new(git)
+                .args(args)
+                .current_dir(root)
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        };
+        let commit = run(&["rev-parse", "HEAD"])
+            .map(|text| text.trim().to_owned())
+            .filter(|text| {
+                matches!(text.len(), 40 | 64) && text.chars().all(|c| c.is_ascii_hexdigit())
+            });
+        let dirty = run(&["status", "--porcelain"]).map(|text| !text.trim().is_empty());
+        Self { commit, dirty }
+    }
+
+    fn commit_json(&self) -> String {
+        self.commit
+            .as_deref()
+            .map_or("null".to_owned(), json_string)
+    }
+
+    fn dirty_json(&self) -> &'static str {
+        match self.dirty {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "null",
+        }
+    }
+}
+
+/// What a validation run was: the mode, when it started, and the source state it checked.
+pub(crate) struct RunInfo<'a> {
+    pub(crate) mode: VerifyMode,
+    pub(crate) started: &'a str,
+    pub(crate) git: &'a GitStamp,
+}
+
 pub(crate) fn write_validation(
     root: &Path,
-    mode: VerifyMode,
-    started: &str,
+    run: &RunInfo,
     failure: Option<&String>,
     checks: &[CheckRecord],
     artifacts: &[ArtifactRecord],
@@ -18,7 +90,7 @@ pub(crate) fn write_validation(
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
-    write_validation_with_home(root, &home, mode, started, failure, checks, artifacts)
+    write_validation_with_home(root, &home, run, failure, checks, artifacts)
 }
 
 /// `write_validation` with the home directory passed in, so tests need not touch the
@@ -26,8 +98,7 @@ pub(crate) fn write_validation(
 fn write_validation_with_home(
     root: &Path,
     home: &str,
-    mode: VerifyMode,
-    started: &str,
+    run: &RunInfo,
     failure: Option<&String>,
     checks: &[CheckRecord],
     artifacts: &[ArtifactRecord],
@@ -38,12 +109,23 @@ fn write_validation_with_home(
     let mut json = String::new();
     json.push_str("{\n");
     json.push_str("  \"schema_version\": 1,\n");
-    json.push_str(&format!("  \"started_utc\": {},\n", json_string(started)));
+    json.push_str(&format!(
+        "  \"started_utc\": {},\n",
+        json_string(run.started)
+    ));
     json.push_str(&format!(
         "  \"finished_utc\": {},\n",
         json_string(&now_utc())
     ));
-    json.push_str(&format!("  \"mode\": {},\n", json_string(mode.as_str())));
+    json.push_str(&format!(
+        "  \"mode\": {},\n",
+        json_string(run.mode.as_str())
+    ));
+    json.push_str(&format!(
+        "  \"git_commit\": {},\n  \"git_dirty\": {},\n",
+        run.git.commit_json(),
+        run.git.dirty_json()
+    ));
     json.push_str(&format!("  \"passed\": {},\n", failure.is_none()));
     match failure {
         Some(error) => json.push_str(&format!(
@@ -208,7 +290,9 @@ pub(crate) fn compact_validation_summary(text: &str) -> String {
     let finished = field("finished_utc").unwrap_or_else(|| "unknown".to_owned());
     let mode = field("mode").unwrap_or_else(|| "unknown".to_owned());
     let passed = field("passed").unwrap_or_else(|| "unknown".to_owned());
-    format!("finished={finished} mode={mode} passed={passed}")
+    let commit = field("git_commit").unwrap_or_else(|| "unknown".to_owned());
+    let dirty = field("git_dirty").unwrap_or_else(|| "unknown".to_owned());
+    format!("finished={finished} mode={mode} passed={passed} commit={commit} dirty={dirty}")
 }
 
 pub(crate) fn json_string(value: &str) -> String {

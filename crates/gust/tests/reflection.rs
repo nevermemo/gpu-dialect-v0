@@ -77,8 +77,10 @@ fn native_compilation_is_complete_for_both_targets() {
                 Target::Spirv => {
                     let words: Vec<_> = compiled
                         .artifact
-                        .chunks_exact(4)
-                        .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|word| u32::from_le_bytes(*word))
                         .collect();
                     gust::spirv::validate_structure(&words).unwrap();
                 }

@@ -1061,8 +1061,10 @@ impl HeadlessDevice {
                 .get_mapped_range(..)
                 .map_err(|error| Error::Map(error.to_string()))?;
             let values = view
-                .chunks_exact(size_of::<f32>())
-                .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("four-byte f32")))
+                .as_chunks::<{ size_of::<f32>() }>()
+                .0
+                .iter()
+                .map(|chunk| f32::from_ne_bytes(*chunk))
                 .collect();
             drop(view);
             readback.unmap();
@@ -1191,8 +1193,10 @@ impl HeadlessDevice {
                 .get_mapped_range(..)
                 .map_err(|error| Error::Map(error.to_string()))?;
             let values = view
-                .chunks_exact(size_of::<u32>())
-                .map(|chunk| u32::from_ne_bytes(chunk.try_into().expect("four-byte u32")))
+                .as_chunks::<{ size_of::<u32>() }>()
+                .0
+                .iter()
+                .map(|chunk| u32::from_ne_bytes(*chunk))
                 .collect();
             drop(view);
             readback.unmap();
@@ -1390,8 +1394,10 @@ impl HeadlessDevice {
             .get_mapped_range(..)
             .map_err(|error| Error::Map(error.to_string()))?;
         let mut timestamps = view
-            .chunks_exact(size_of::<u64>())
-            .map(|chunk| u64::from_ne_bytes(chunk.try_into().expect("eight-byte timestamp")));
+            .as_chunks::<{ size_of::<u64>() }>()
+            .0
+            .iter()
+            .map(|chunk| u64::from_ne_bytes(*chunk));
         let beginning = timestamps.next().expect("beginning timestamp");
         let end = timestamps.next().expect("end timestamp");
         drop(view);
