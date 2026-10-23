@@ -1,6 +1,7 @@
 use std::{env, fs, path::Path};
 
 use crate::{
+    diagnostics::{Code, testing::codes_of},
     expand::kernel_options,
     slang::{EmittedKernel, LineRecord, emit_kernel},
     validate::validate_module,
@@ -126,6 +127,13 @@ fn translate(source: &str) -> syn::Result<String> {
     translate_with_lines(source).map(|emitted| emitted.source)
 }
 
+/// Asserts that translating `source` is rejected and that the first diagnostic carries
+/// `code`. The code is stable; the message text is not, so tests do not match it.
+fn assert_rejected(source: &str, code: Code) {
+    let error = translate(source).expect_err(source);
+    assert_eq!(codes_of(&error).first(), Some(&code), "{error}: {source}");
+}
+
 fn translate_with_lines(source: &str) -> syn::Result<EmittedKernel> {
     let module: syn::ItemMod = syn::parse_str(source)?;
     validate_module(&module)?;
@@ -207,103 +215,101 @@ fn result_golden() {
 
 #[test]
 fn result_rejects_unproven_forms() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { fn f() -> Result<uint, int> { Ok(1u32) } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
-            "Result<T, T>",
+            Code::ResultShape,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<Option<uint>, Option<uint>> = Ok(Some(1u32)); } }",
-            "nested",
+            Code::ResultShape,
         ),
         (
             "mod bad { struct State { value: Result<uint, uint> } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
-            "struct fields",
+            Code::ResultLayout,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<Result<uint, uint>>) {} }",
-            "resource element",
+            Code::ResultLayout,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); let x = value.unwrap(); } }",
-            "unwrap",
+            Code::UnwrapPanics,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, code);
     }
 }
 
 #[test]
 fn result_match_rejects_unproven_shapes() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) => { let y = x; } } } }",
-            "exactly one `Ok` arm and one `Err` arm",
+            Code::MatchArmCount,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) => { } Ok(y) => { } Err(e) => { } }; } }",
-            "exactly one `Ok` arm and one `Err` arm",
+            Code::MatchArmCount,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) if x > 0u32 => { } Err(e) => { } } } }",
-            "guards",
+            Code::MatchGuard,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { #[allow(unused)] Ok(x) => { } Err(e) => { } }; } }",
-            "attributes",
+            Code::MatchArmAttribute,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { _ => { } Err(e) => { } }; } }",
-            "only `Ok(identifier)` and `Err(identifier)`",
+            Code::MatchPattern,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok((x, y)) => { } Err(e) => { } }; } }",
-            "only `Ok(identifier)` and `Err(identifier)`",
+            Code::MatchPattern,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(mut x) => { } Err(e) => { } }; } }",
-            "plain identifiers",
+            Code::MatchBinding,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(ref x) => { } Err(e) => { } }; } }",
-            "plain identifiers",
+            Code::MatchBinding,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x @ _) => { } Err(e) => { } }; } }",
-            "plain identifiers",
+            Code::MatchBinding,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut output: RWStructuredBuffer<uint>) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(output) => { } Err(error) => { } }; } }",
-            "cannot shadow",
+            Code::ShadowedParameter,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(id) => { } Err(error) => { } }; } }",
-            "cannot shadow",
+            Code::ShadowedParameter,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) => x, Err(e) => e } } }",
-            "block arms",
+            Code::MatchArmBlock,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); match value { Ok(x) => { let y = x; } Err(e) => { let y = e; } } } }",
-            "terminate it with `;`",
+            Code::MatchNeedsSemicolon,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Result<uint, uint> = Ok(1u32); let output = match value { Ok(x) => { x } Err(e) => { e } }; } }",
-            "statement",
+            Code::MatchAsValue,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { match 1u32 { Ok(x) => { } Err(e) => { } }; } }",
-            "only for a known `Result<T, T>`",
+            Code::MatchScrutinee,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let value: Option<uint> = Some(1u32); match value { Ok(x) => { } Err(e) => { } }; } }",
-            "only for a known `Result<T, T>`",
+            Code::MatchScrutinee,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, code);
     }
 }
 
@@ -383,83 +389,84 @@ fn atomics_golden() {
 
 #[test]
 fn unbounded_or_unproven_loop_forms_are_rejected() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let mut i = 0u32; while i < 4u32 { i = i + 1u32; } } }",
-            "`while`",
+            Code::WhileNotSupported,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { loop { break; } } }",
-            "`loop`",
+            Code::LoopNotSupported,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32..=4u32 { } } }",
-            "inclusive",
+            Code::InclusiveRange,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32.. { } } }",
-            "both bounds",
+            Code::OpenRange,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in ..4u32 { } } }",
-            "both bounds",
+            Code::OpenRange,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, input: StructuredBuffer<uint>) { for v in input { } } }",
-            "exclusive integer range",
+            Code::ForIterable,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for (a, b) in 0u32..4u32 { } } }",
-            "single identifier",
+            Code::LoopVariablePattern,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for mut i in 0u32..4u32 { i = i + 1u32; } } }",
-            "immutable",
+            Code::MutableLoopVariable,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { 'outer: for i in 0u32..4u32 { break 'outer; } } }",
-            "labels",
+            Code::LoopLabel,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32..4u32 { break 'x; } } }",
-            "labels",
+            Code::LoopLabel,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { if id.x > 1u32 { break; } } }",
-            "outside a loop",
+            Code::JumpOutsideLoop,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { continue; } }",
-            "outside a loop",
-        ),
-        (
-            "mod bad { fn f() -> uint { for i in 0u32..4u32 { fn g() {} } 0u32 } #[kernel] fn run(id: SV_DispatchThreadID) { } }",
-            "items inside",
+            Code::JumpOutsideLoop,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let r = 0u32..4u32; } }",
-            "only as the iterable",
+            Code::RangeAsValue,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0..4u32 { } } }",
-            "suffix",
+            Code::UnsuffixedLoopBound,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32..(-4) { } } }",
-            "suffix",
+            Code::UnsuffixedLoopBound,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<uint>) { for out in 0u32..4u32 { } } }",
-            "cannot shadow",
+            Code::ShadowedParameter,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { for i in 0u32..4u32 { let v = break; } } }",
-            "statement",
+            Code::JumpAsValue,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, code);
     }
+    // Rejected by the emitter, not the validator; coded in the next slice (m1.5 b2).
+    let error = translate(
+        "mod bad { fn f() -> uint { for i in 0u32..4u32 { fn g() {} } 0u32 } #[kernel] fn run(id: SV_DispatchThreadID) { } }",
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("items inside"), "{error}");
 }
 
 #[test]
@@ -494,54 +501,53 @@ fn for_loop_end_bound_is_evaluated_once_and_body_control_flow_maps_directly() {
 
 #[test]
 fn option_unsafe_forms_are_rejected() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); let v = o.unwrap(); } }",
-            "panics",
+            Code::UnwrapPanics,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); let v = o.expect(\"x\"); } }",
-            "panics",
+            Code::UnwrapPanics,
         ),
         (
             "mod bad { struct Holder { slot: Option<uint> } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
-            "struct fields",
+            Code::OptionLayout,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<Option<uint>>) {} }",
-            "resource element",
+            Code::OptionLayout,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<Option<uint>> = None; } }",
-            "payload",
+            Code::OptionPayload,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); if let Some(_) = o { } } }",
-            "`Some(identifier)`",
+            Code::IfLetPattern,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); if let None = o { } } }",
-            "`Some(identifier)`",
+            Code::IfLetPattern,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); if let Some(v) = o && v > 0u32 { } } }",
-            "`if let`",
+            Code::IfLetPosition,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<uint>) { let o: Option<uint> = Some(1u32); if let Some(out) = o { } } }",
-            "cannot shadow",
+            Code::ShadowedParameter,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32, 2u32); } }",
-            "one argument",
+            Code::SomeArguments,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let o: Option<uint> = Some(1u32); let v = o.unwrap_or(1u32, 2u32); } }",
-            "one argument",
+            Code::UnwrapOrArguments,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, code);
     }
 }
 
@@ -551,23 +557,34 @@ fn generated_symbol_prefixes_are_reserved() {
         "mod bad { #[kernel] fn run(__gpu_len_out: SV_DispatchThreadID) {} }",
         "mod bad { fn __gust_not(x: uint) -> uint { x } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains("reserved"));
+        assert_rejected(source, Code::ReservedPrefix);
     }
 }
 
 #[test]
-fn invalid_kernel_contracts_are_rejected_early() {
-    for (source, message) in [
+fn invalid_kernel_signatures_are_rejected_early() {
+    for (source, code) in [
         (
             "mod bad { #[kernel] fn run(a: SV_DispatchThreadID, b: SV_DispatchThreadID) {} }",
-            "exactly one",
+            Code::KernelDispatchParameter,
         ),
-        ("mod bad { #[kernel] fn run() {} }", "exactly one"),
+        (
+            "mod bad { #[kernel] fn run() {} }",
+            Code::KernelDispatchParameter,
+        ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) -> uint { 1u32 } }",
-            "return unit",
+            Code::KernelReturnsUnit,
         ),
+    ] {
+        assert_rejected(source, code);
+    }
+}
+
+#[test]
+fn invalid_kernel_options_are_rejected_early() {
+    // Rejected by `kernel_options` in expand/mod.rs; coded in the next slice (m1.5 b2).
+    for (source, message) in [
         (
             "mod bad { #[kernel(workgroup_size(0, 1, 1))] fn run(id: SV_DispatchThreadID) {} }",
             "nonzero",
@@ -589,34 +606,33 @@ fn invalid_kernel_contracts_are_rejected_early() {
 
 #[test]
 fn unsupported_attributes_and_builtin_receivers_are_diagnosed() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<uint>) { let out = 1u32; let n = out.len(); } }",
-            "cannot shadow",
+            Code::ShadowedParameter,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { #[cfg(any())] let ignored = 1u32; } }",
-            "attribute",
+            Code::UnsupportedAttribute,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let n = id.len(); } }",
-            "storage parameter",
+            Code::LenReceiver,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, out: RWStructuredBuffer<uint>) { let n = out.len(1u32); } }",
-            "arguments",
+            Code::BuiltinArguments,
         ),
         (
             "mod bad { fn helper(b: StructuredBuffer<uint>) -> uint { b.len() } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
-            "value parameters",
+            Code::HelperResourceParameter,
         ),
         (
             "mod bad { struct Generic<T> { field: T } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
-            "generic GPU structs",
+            Code::GenericStruct,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, code);
     }
 }
 
@@ -649,22 +665,21 @@ fn typed_locals_preserve_numeric_type() {
 
 #[test]
 fn binding_modes_and_typed_resource_shadowing_fail_explicitly() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let ref x: uint = 1u32; } }",
-            "binding modes",
+            Code::BindingMode,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let id: uint = 1u32; } }",
-            "cannot shadow",
+            Code::ShadowedParameter,
         ),
         (
             "mod bad { #[kernel] fn run(ref id: SV_DispatchThreadID) {} }",
-            "binding modes",
+            Code::BindingMode,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}");
+        assert_rejected(source, code);
     }
 }
 
@@ -749,8 +764,7 @@ fn struct_update_syntax_is_rejected_instead_of_dropping_fields() {
         let source = format!(
             "mod update {{ struct Pair {{ first: uint, second: uint }} #[kernel] fn run(id: SV_DispatchThreadID) {{ let mut p = Pair {{ first: 1u32, second: 2u32 }}; {statement} }} }}"
         );
-        let error = translate(&source).unwrap_err();
-        assert!(error.to_string().contains("struct update"), "{error}");
+        assert_rejected(&source, Code::StructUpdateSyntax);
     }
 }
 
@@ -790,8 +804,7 @@ fn casts_to_unproven_targets_are_rejected() {
         let source = format!(
             "mod bad {{ struct Pair {{ first: uint, second: uint }} #[kernel] fn run(id: SV_DispatchThreadID) {{ let v = id.x as {target}; }} }}"
         );
-        let error = translate(&source).unwrap_err();
-        assert!(error.to_string().contains("cast"), "{error}: {source}");
+        assert_rejected(&source, Code::UnsupportedCastTarget);
     }
     for (target, expected) in [
         ("f32", "float(id.x)"),
@@ -839,12 +852,10 @@ fn non_32_bit_primitive_types_are_rejected_before_slang() {
             "char",
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        let message = error.to_string();
-        assert!(
-            message.contains("not a supported GPU type") && message.contains(name),
-            "{error}: {source}"
-        );
+        assert_rejected(source, Code::UnsupportedPrimitive);
+        // The message names the rejected type; that text helps users, so pin it too.
+        let message = translate(source).unwrap_err().to_string();
+        assert!(message.contains(name), "{message}: {source}");
     }
     let ok = translate(
         "mod ok { struct Mixed { a: float, b: int, c: uint, d: bool, e: f32, f: i32, g: u32 } #[kernel] fn run(id: SV_DispatchThreadID) { let flag: bool = true; } }",
@@ -860,58 +871,58 @@ fn const_blocks_are_rejected() {
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = const { 2u32 } + 1u32; } }",
         "mod bad { fn helper() -> uint { const { 3u32 } } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(
-            error.to_string().contains("const blocks"),
-            "{error}: {source}"
-        );
+        assert_rejected(source, Code::ConstBlock);
     }
 }
 
 #[test]
 fn unsupported_name_paths_are_rejected() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = f32::INFINITY; } }",
-            "associated constants",
+            Code::ForeignPath,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = u32::MAX; } }",
-            "associated constants",
+            Code::ForeignPath,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = core::f32::consts::PI; } }",
-            "associated constants",
+            Code::ForeignPath,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v: core::f32 = 1.0; } }",
-            "CPU-only",
+            Code::CpuOnlyName,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, code);
     }
 }
 
 #[test]
 fn unsupported_effects_are_rejected() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { fn maybe() -> Option<uint> { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) { let v = maybe()?; } }",
-            "`?` operator",
+            Code::TryOperator,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { unsafe { let v = 1u32; } } }",
-            "unsafe blocks",
+            Code::UnsafeBlock,
         ),
         (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { asm!(\"nop\"); } }",
-            "macros",
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let v = asm!(\"nop\"); } }",
+            Code::MacroInModule,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, code);
     }
+    // A macro in statement position is rejected by the emitter; coded in the next slice
+    // (m1.5 b2).
+    let error =
+        translate("mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { asm!(\"nop\"); } }")
+            .unwrap_err();
+    assert!(error.to_string().contains("macros"), "{error}");
 }
 
 #[test]
@@ -921,11 +932,7 @@ fn integer_division_by_literal_zero_is_diagnosed() {
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>) { out[id.x] = out[id.x] % 0; } }",
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / -0u32; } }",
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(
-            error.to_string().contains("literal zero"),
-            "{error}: {source}"
-        );
+        assert_rejected(source, Code::DivisionByLiteralZero);
     }
     // Float division by zero is defined (it yields inf/NaN), so it must not be
     // rejected even though the divisor literal is zero.
@@ -1140,88 +1147,70 @@ fn non_atomic_buffer_keeps_plain_element_type() {
 
 #[test]
 fn atomic_ops_reject_unsupported_receivers() {
-    for (source, message) in [
+    for (source, code) in [
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, counter: StructuredBuffer<uint>) { atomic_add(&mut counter[0], 1u32); } }",
-            "read-write buffer",
+            Code::AtomicBufferParameter,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_add(&mut counter[0], 1.0f32); } }",
-            "u32",
+            Code::AtomicElementType,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let mut local = 0u32; atomic_add(&mut local, 1u32); } }",
-            "read-write buffer",
+            Code::AtomicArgumentShape,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter, 1u32); } }",
-            "buffer element",
+            Code::AtomicArgumentShape,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&counter[0], 1u32); } }",
-            "mutable reference",
+            Code::AtomicArgumentShape,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter[0]); } }",
-            "2 arguments",
+            Code::AtomicArgumentCount,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter[0], 1u32, 2u32); } }",
-            "2 arguments",
+            Code::AtomicArgumentCount,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_min(&mut counter[0], 1u32, 2u32); } }",
-            "2 arguments",
+            Code::AtomicArgumentCount,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_compare_exchange(&mut counter[0], 1u32); } }",
-            "3 arguments",
+            Code::AtomicArgumentCount,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_compare_exchange(&mut counter[0], 1u32, 2u32, 3u32); } }",
-            "3 arguments",
+            Code::AtomicArgumentCount,
         ),
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, code);
     }
 }
 
 #[test]
 fn atomic_min_max_reject_signed_elements() {
-    for (source, message) in [
-        (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) { atomic_min(&mut counter[0], 1i32); } }",
-            "unsigned",
-        ),
-        (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) { atomic_max(&mut counter[0], 1i32); } }",
-            "unsigned",
-        ),
+    for source in [
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) { atomic_min(&mut counter[0], 1i32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<int>) { atomic_max(&mut counter[0], 1i32); } }",
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, Code::AtomicSignedMinMax);
     }
 }
 
 #[test]
 fn atomic_ops_reject_unsupported_element_types() {
-    for (source, message) in [
-        (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_add(&mut counter[0], 1.0f32); } }",
-            "u32",
-        ),
-        (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_exchange(&mut counter[0], 1.0f32); } }",
-            "u32",
-        ),
-        (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_compare_exchange(&mut counter[0], 1.0f32, 2.0f32); } }",
-            "u32",
-        ),
+    for source in [
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_add(&mut counter[0], 1.0f32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_exchange(&mut counter[0], 1.0f32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<float>) { atomic_compare_exchange(&mut counter[0], 1.0f32, 2.0f32); } }",
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_rejected(source, Code::AtomicElementType);
     }
 }
 
@@ -1231,11 +1220,7 @@ fn atomic_ops_are_rejected_in_expression_position() {
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let old = atomic_add(&mut counter[0], 1u32); } }",
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { if atomic_compare_exchange(&mut counter[0], 0u32, 1u32) { counter[0] = 2u32; } } }",
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(
-            error.to_string().contains("only as a statement"),
-            "{error}: {source}"
-        );
+        assert_rejected(source, Code::AtomicAsValue);
     }
 }
 
@@ -1255,13 +1240,7 @@ fn atomic_buffers_reject_ordinary_index_access() {
             }
         }",
     ] {
-        let error = translate(source).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("atomic buffer elements cannot be read or written directly"),
-            "{error}: {source}"
-        );
+        assert_rejected(source, Code::AtomicDirectAccess);
     }
 }
 

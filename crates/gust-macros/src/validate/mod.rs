@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use quote::ToTokens;
 use syn::visit::{self, Visit};
 
+use crate::diagnostics::{self, Code};
+
 const BANNED_NAMES: &[&str] = &[
     "std",
     "core",
@@ -157,19 +159,22 @@ pub fn result_match_arms(
     let mut err = None;
     for arm in &expression.arms {
         if !arm.attrs.is_empty() {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::error(
+                Code::MatchArmAttribute,
                 &arm.attrs[0],
                 "match arm attributes are not supported",
             ));
         }
         if arm.guard.is_some() {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::error(
+                Code::MatchGuard,
                 arm,
                 "match guards are not supported in the Rust-to-Slang subset",
             ));
         }
         let syn::Expr::Block(body) = arm.body.as_ref() else {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::error(
+                Code::MatchArmBlock,
                 &arm.body,
                 "Result matches require block arms",
             ));
@@ -177,13 +182,15 @@ pub fn result_match_arms(
         if let Some(binding) = result_pattern(&arm.pat) {
             if binding.mutability.is_some() || binding.by_ref.is_some() || binding.subpat.is_some()
             {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::MatchBinding,
                     binding,
                     "Result match bindings must be plain identifiers; `mut`, `ref`, and @ bindings are not supported",
                 ));
             }
             if ok.replace((binding, &body.block)).is_some() {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::MatchArmCount,
                     &arm.pat,
                     "Result matches require exactly one `Ok` arm and one `Err` arm",
                 ));
@@ -191,19 +198,22 @@ pub fn result_match_arms(
         } else if let Some(binding) = err_pattern(&arm.pat) {
             if binding.mutability.is_some() || binding.by_ref.is_some() || binding.subpat.is_some()
             {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::MatchBinding,
                     binding,
                     "Result match bindings must be plain identifiers; `mut`, `ref`, and @ bindings are not supported",
                 ));
             }
             if err.replace((binding, &body.block)).is_some() {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::MatchArmCount,
                     &arm.pat,
                     "Result matches require exactly one `Ok` arm and one `Err` arm",
                 ));
             }
         } else {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::error(
+                Code::MatchPattern,
                 &arm.pat,
                 "Result matches support only `Ok(identifier)` and `Err(identifier)` patterns",
             ));
@@ -213,7 +223,8 @@ pub fn result_match_arms(
         (Some((ok_name, ok_body)), Some((err_name, err_body))) => {
             Ok((ok_name, ok_body, err_name, err_body))
         }
-        _ => Err(syn::Error::new_spanned(
+        _ => Err(diagnostics::error(
+            Code::MatchArmCount,
             expression,
             "Result matches require exactly one `Ok` arm and one `Err` arm",
         )),
@@ -266,45 +277,58 @@ fn is_unsuffixed_integer_literal(expression: &syn::Expr) -> bool {
     }
 }
 
+/// A rejection reason without a span: the code and message the caller attaches to
+/// the node it was checking (see [`diagnostics::error`]).
+pub type Reason = (Code, &'static str);
+
 /// The loop-variable binding of a `for` loop: `_` or a plain immutable identifier.
-pub fn loop_variable(pattern: &syn::Pat) -> Result<Option<&syn::PatIdent>, &'static str> {
+pub fn loop_variable(pattern: &syn::Pat) -> Result<Option<&syn::PatIdent>, Reason> {
     match pattern {
         syn::Pat::Wild(_) => Ok(None),
-        syn::Pat::Ident(ident) if ident.mutability.is_some() => Err(
+        syn::Pat::Ident(ident) if ident.mutability.is_some() => Err((
+            Code::MutableLoopVariable,
             "the loop variable is immutable in the Rust-to-Slang subset: Slang's counter would diverge from Rust's fresh per-iteration binding; copy it into a `let mut` local",
-        ),
-        syn::Pat::Ident(ident) if ident.by_ref.is_some() || ident.subpat.is_some() => {
-            Err("reference and @ binding modes are not supported in GPU code")
-        }
+        )),
+        syn::Pat::Ident(ident) if ident.by_ref.is_some() || ident.subpat.is_some() => Err((
+            Code::BindingMode,
+            "reference and @ binding modes are not supported in GPU code",
+        )),
         syn::Pat::Ident(ident) => Ok(Some(ident)),
-        _ => Err("the `for` loop variable must be a single identifier or `_`"),
+        _ => Err((
+            Code::LoopVariablePattern,
+            "the `for` loop variable must be a single identifier or `_`",
+        )),
     }
 }
 
 /// The `start..end` bounds of a `for` loop, or the diagnostic explaining why the
 /// iterable has no bounded Slang lowering.
-pub fn range_bounds(iterable: &syn::Expr) -> Result<(&syn::Expr, &syn::Expr), &'static str> {
+pub fn range_bounds(iterable: &syn::Expr) -> Result<(&syn::Expr, &syn::Expr), Reason> {
     let syn::Expr::Range(range) = iterable else {
-        return Err(
+        return Err((
+            Code::ForIterable,
             "`for` iterates only over an exclusive integer range `start..end`; buffers, iterators, and adaptors are not iterable in the Rust-to-Slang subset",
-        );
+        ));
     };
     if matches!(range.limits, syn::RangeLimits::Closed(_)) {
-        return Err(
+        return Err((
+            Code::InclusiveRange,
             "inclusive ranges (`..=`) are not supported: when `end` is the type maximum the Slang counter never exceeds it and the loop would not terminate; use `start..end + 1`",
-        );
+        ));
     }
     match (range.start.as_deref(), range.end.as_deref()) {
         (Some(start), Some(end)) => Ok((start, end)),
-        _ => Err(
+        _ => Err((
+            Code::OpenRange,
             "`for` ranges need both bounds (`start..end`) so the trip count is fixed at loop entry",
-        ),
+        )),
     }
 }
 
 pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
     let Some((_, items)) = &module.content else {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::InlineModuleRequired,
             module,
             "#[gpu] requires an inline module; use `#[gpu] mod name { ... }`",
         ));
@@ -344,7 +368,8 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
             }
             syn::Item::Struct(item) => validate_struct(item)?,
             _ => {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::UnsupportedModuleItem,
                     item,
                     "GPU modules may currently contain only functions and plain structs",
                 ));
@@ -356,19 +381,22 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
 
 fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
     if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::GenericStruct,
             &item.generics,
             "generic GPU structs are not supported yet",
         ));
     }
     let syn::Fields::Named(fields) = &item.fields else {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::StructNeedsNamedFields,
             item,
             "GPU structs must have named fields",
         ));
     };
     if fields.named.is_empty() {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::EmptyStruct,
             item,
             "GPU structs must contain at least one field",
         ));
@@ -378,7 +406,8 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
         .iter()
         .find(|attribute| attribute.path().is_ident("repr"))
     {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::ManualRepr,
             attribute,
             "GPU structs receive repr(C) automatically",
         ));
@@ -388,15 +417,18 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
         .iter()
         .filter(|attribute| attribute.path().is_ident("derive"))
     {
-        let derives = attribute.parse_args_with(
-            syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
-        )?;
+        let derives = attribute
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )
+            .map_err(|error| diagnostics::wrap(Code::MalformedDerive, error))?;
         if derives.iter().any(|path| {
             path.segments
                 .last()
                 .is_some_and(|segment| segment.ident == "Clone" || segment.ident == "Copy")
         }) {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::error(
+                Code::ManualCloneCopy,
                 attribute,
                 "GPU structs receive Clone and Copy automatically",
             ));
@@ -421,30 +453,45 @@ fn validate_function(
         syn::FnArg::Typed(argument) if parameter_flavor(&argument.ty) == ParameterFlavor::Invocation)).count();
     if is_kernel {
         if invocations != 1 {
-            return Err(syn::Error::new_spanned(&function.sig, "a GPU kernel requires exactly one dispatch-thread parameter"));
+            return Err(diagnostics::error(
+                Code::KernelDispatchParameter,
+                &function.sig,
+                "a GPU kernel requires exactly one dispatch-thread parameter",
+            ));
         }
         if !matches!(&function.sig.output, syn::ReturnType::Default)
             && !matches!(&function.sig.output, syn::ReturnType::Type(_, ty) if matches!(ty.as_ref(), syn::Type::Tuple(tuple) if tuple.elems.is_empty())) {
-            return Err(syn::Error::new_spanned(&function.sig.output, "GPU kernels must return unit"));
+            return Err(diagnostics::error(
+                Code::KernelReturnsUnit,
+                &function.sig.output,
+                "GPU kernels must return unit",
+            ));
         }
     } else if function.sig.inputs.iter().any(|argument| matches!(argument,
         syn::FnArg::Typed(argument) if matches!(parameter_flavor(&argument.ty), ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite | ParameterFlavor::Uniform))) {
-        return Err(syn::Error::new_spanned(&function.sig, "GPU helper functions currently accept value parameters only; access resources in the kernel"));
+        return Err(diagnostics::error(
+            Code::HelperResourceParameter,
+            &function.sig,
+            "GPU helper functions currently accept value parameters only; access resources in the kernel",
+        ));
     }
     if function.sig.asyncness.is_some() {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::AsyncFunction,
             &function.sig,
             "async is CPU-only in GPU modules",
         ));
     }
     if function.sig.unsafety.is_some() {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::UnsafeFunction,
             &function.sig,
             "unsafe is not part of the Rust-to-Slang subset",
         ));
     }
     if function.sig.abi.is_some() || !function.sig.generics.params.is_empty() {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::ExternOrGenericFunction,
             &function.sig,
             "extern and generic GPU functions are not supported yet",
         ));
@@ -547,8 +594,12 @@ impl RestrictedVisitor {
         }
     }
 
-    fn reject(&mut self, node: impl quote::ToTokens, message: &str) {
-        let error = syn::Error::new_spanned(node, message);
+    fn reject(&mut self, code: Code, node: impl quote::ToTokens, message: &str) {
+        self.push(diagnostics::error(code, node, message));
+    }
+
+    /// Adds `error` after the ones already collected.
+    fn push(&mut self, error: syn::Error) {
         if let Some(existing) = &mut self.error {
             existing.combine(error);
         } else {
@@ -588,13 +639,18 @@ impl RestrictedVisitor {
     ) {
         if let Some(label) = label {
             self.reject(
+                Code::LoopLabel,
                 label,
                 "loop labels are not supported in the Rust-to-Slang subset; restructure with a flag or a helper return",
             );
             return;
         }
         if self.loop_depth == 0 {
-            self.reject(node, &format!("`{name}` outside a loop has no meaning"));
+            self.reject(
+                Code::JumpOutsideLoop,
+                node,
+                &format!("`{name}` outside a loop has no meaning"),
+            );
         }
     }
 
@@ -609,6 +665,7 @@ impl RestrictedVisitor {
         };
         if call.args.len() != expected_args {
             self.reject(
+                Code::AtomicArgumentCount,
                 call,
                 &format!("`{op_name}` takes exactly {expected_args} arguments"),
             );
@@ -616,6 +673,7 @@ impl RestrictedVisitor {
         }
         let syn::Expr::Reference(ref reference) = call.args[0] else {
             self.reject(
+                Code::AtomicArgumentShape,
                 &call.args[0],
                 &format!("`{op_name}` requires a mutable reference to a buffer element: `&mut buffer[index]`"),
             );
@@ -623,6 +681,7 @@ impl RestrictedVisitor {
         };
         if reference.mutability.is_none() {
             self.reject(
+                Code::AtomicArgumentShape,
                 &call.args[0],
                 &format!("`{op_name}` requires a mutable reference: `&mut buffer[index]`"),
             );
@@ -630,6 +689,7 @@ impl RestrictedVisitor {
         }
         let syn::Expr::Index(index) = reference.expr.as_ref() else {
             self.reject(
+                Code::AtomicArgumentShape,
                 &reference.expr,
                 &format!("`{op_name}` requires a read-write buffer element: `&mut buffer[index]`"),
             );
@@ -637,6 +697,7 @@ impl RestrictedVisitor {
         };
         let syn::Expr::Path(buffer_path) = index.expr.as_ref() else {
             self.reject(
+                Code::AtomicArgumentShape,
                 &index.expr,
                 &format!("`{op_name}` requires a direct buffer receiver: `&mut buffer[index]`"),
             );
@@ -650,6 +711,7 @@ impl RestrictedVisitor {
             Some(element) => element,
             None => {
                 self.reject(
+                    Code::AtomicBufferParameter,
                     &index.expr,
                     &format!("`{op_name}` requires a read-write buffer parameter: `RWStructuredBuffer<u32>` or `RWStructuredBuffer<i32>`"),
                 );
@@ -660,6 +722,7 @@ impl RestrictedVisitor {
         let is_signed = element == "i32" || element == "int";
         if !is_unsigned && !is_signed {
             self.reject(
+                Code::AtomicElementType,
                 &index.expr,
                 &format!("`{op_name}` requires a `u32`/`uint` or `i32`/`int` element; other element types are not supported for atomics"),
             );
@@ -667,6 +730,7 @@ impl RestrictedVisitor {
         }
         if (op_name == "atomic_min" || op_name == "atomic_max") && !is_unsigned {
             self.reject(
+                Code::AtomicSignedMinMax,
                 &index.expr,
                 &format!("`{op_name}` requires an unsigned element (`u32`/`uint`); signed atomics for min/max are not supported"),
             );
@@ -683,6 +747,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
         if pattern.by_ref.is_some() || pattern.subpat.is_some() {
             self.reject(
+                Code::BindingMode,
                 pattern,
                 "reference and @ binding modes are not supported in GPU code",
             );
@@ -697,6 +762,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             .any(|name| attribute.path().is_ident(name))
         {
             self.reject(
+                Code::UnsupportedAttribute,
                 attribute,
                 "this attribute has no proven Rust-to-Slang meaning and cannot be dropped",
             );
@@ -707,6 +773,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         let name = ident.to_string();
         if name.starts_with("__gust_") || name.starts_with("__gpu_") {
             self.reject(
+                Code::ReservedPrefix,
                 ident,
                 "the __gust_ and __gpu_ prefixes are reserved for generated shader symbols",
             );
@@ -717,6 +784,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         for segment in &path.segments {
             if BANNED_NAMES.contains(&segment.ident.to_string().as_str()) {
                 self.reject(
+                    Code::CpuOnlyName,
                     path,
                     "CPU-only library/type is not available inside a #[gpu] module",
                 );
@@ -732,6 +800,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         if let Some(payload) = option_payload(ty) {
             if let Some(context) = self.option_forbidden {
                 self.reject(
+                    Code::OptionLayout,
                     ty,
                     &format!(
                         "`Option` is not supported in {context}: it has no proven storage layout; keep Option values in locals and helper functions"
@@ -749,6 +818,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             });
             if !supported {
                 self.reject(
+                    Code::OptionPayload,
                     ty,
                     "`Option` payload must be a supported scalar or a module struct; nested Options and resources are not lowered",
                 );
@@ -760,6 +830,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         if let Some(payloads) = result_payload(ty) {
             if let Some(context) = self.result_forbidden {
                 self.reject(
+                    Code::ResultLayout,
                     ty,
                     &format!(
                         "`Result` is not supported in {context}: it has no proven storage layout; keep Result values in locals and helper functions"
@@ -776,6 +847,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             });
             if !supported {
                 self.reject(
+                    Code::ResultShape,
                     ty,
                     "`Result` is supported only as `Result<T, T>` with a supported scalar or module-struct payload; mixed, nested, and resource payloads are not lowered",
                 );
@@ -788,6 +860,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             let name = ident.to_string();
             if UNSUPPORTED_PRIMITIVES.contains(&name.as_str()) {
                 self.reject(
+                    Code::UnsupportedPrimitive,
                     ty,
                     &format!(
                         "`{name}` is not a supported GPU type; use the 32-bit scalars `f32`/`float`, `i32`/`int`, `u32`/`uint`, or `bool`"
@@ -823,6 +896,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         };
         if !supported {
             self.reject(
+                Code::UnsupportedCastTarget,
                 &cast.ty,
                 "casts are supported only to the 32-bit scalar types `f32`/`float`, `i32`/`int`, and `u32`/`uint`",
             );
@@ -833,6 +907,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_const(&mut self, expression: &'ast syn::ExprConst) {
         self.reject(
+            Code::ConstBlock,
             expression,
             "const blocks are not in the Rust-to-Slang subset; write the value directly",
         );
@@ -847,6 +922,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 .any(|segment| BANNED_NAMES.contains(&segment.ident.to_string().as_str()));
             if contains_banned_name {
                 self.reject(
+                    Code::CpuOnlyName,
                     path,
                     "CPU-only library/type is not available inside a #[gpu] module",
                 );
@@ -854,7 +930,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             if path.path.is_ident("Some") {
                 if call.args.len() != 1 {
-                    self.reject(call, "`Some` takes exactly one argument");
+                    self.reject(
+                        Code::SomeArguments,
+                        call,
+                        "`Some` takes exactly one argument",
+                    );
                     return;
                 }
                 // The callee is the prelude constructor, not a bare path value.
@@ -863,7 +943,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             if path.path.is_ident("Ok") || path.path.is_ident("Err") {
                 if call.args.len() != 1 {
-                    self.reject(call, "`Ok` and `Err` take exactly one argument");
+                    self.reject(
+                        Code::OkErrArguments,
+                        call,
+                        "`Ok` and `Err` take exactly one argument",
+                    );
                     return;
                 }
                 self.visit_expr(&call.args[0]);
@@ -871,6 +955,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             if let Some(op) = atomic_operation_name(path) {
                 self.reject(
+                    Code::AtomicAsValue,
                     call,
                     &format!("`{op}` is supported only as a statement, not as a value"),
                 );
@@ -886,6 +971,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         };
         if !allowed {
             self.reject(
+                Code::UnknownCall,
                 call,
                 "only calls to helper functions declared in the same GPU module are allowed",
             );
@@ -900,6 +986,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             && self.atomic_buffers.contains(&name.to_string())
         {
             self.reject(
+                Code::AtomicDirectAccess,
                 index,
                 "atomic buffer elements cannot be read or written directly; use an atomic operation",
             );
@@ -912,6 +999,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         let is_div_or_rem = matches!(binary.op, syn::BinOp::Div(_) | syn::BinOp::Rem(_));
         if is_div_or_rem && is_literal_zero(&binary.right) {
             self.reject(
+                Code::DivisionByLiteralZero,
                 binary,
                 "integer division or modulo by a literal zero has no portable GPU result; guard the divisor before dividing",
             );
@@ -922,7 +1010,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         if call.turbofish.is_some() {
-            self.reject(call, "GPU built-ins do not accept type arguments");
+            self.reject(
+                Code::BuiltinTypeArguments,
+                call,
+                "GPU built-ins do not accept type arguments",
+            );
             return;
         }
         let method = call.method.to_string();
@@ -937,17 +1029,23 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             "is_some" | "is_none" | "is_ok" | "is_err" => {
                 self.reject(
+                    Code::PredicateArguments,
                     call,
                     "`is_some`, `is_none`, `is_ok`, and `is_err` take no arguments",
                 );
                 return;
             }
             "unwrap_or" => {
-                self.reject(call, "`unwrap_or` takes exactly one argument");
+                self.reject(
+                    Code::UnwrapOrArguments,
+                    call,
+                    "`unwrap_or` takes exactly one argument",
+                );
                 return;
             }
             "unwrap" | "expect" => {
                 self.reject(
+                    Code::UnwrapPanics,
                     call,
                     "`Option::unwrap`/`expect` panics on `None` in Rust and GPU code cannot panic; use `unwrap_or` or `if let Some(x) = ..`",
                 );
@@ -957,6 +1055,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         if !call.args.is_empty() {
             self.reject(
+                Code::BuiltinArguments,
                 call,
                 "GPU built-ins do not accept arguments or type arguments",
             );
@@ -964,6 +1063,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         if !matches!(method.as_str(), "global_id" | "len") {
             self.reject(
+                Code::UnsupportedMethod,
                 call,
                 "only the compatibility built-ins `.global_id()` and `.len()` and the Option/Result methods `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`, `.unwrap_or(default)` are supported",
             );
@@ -981,14 +1081,19 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
         });
         if !valid {
-            self.reject(
-                call,
-                if method == "len" {
-                    "`.len()` requires a direct storage parameter receiver"
-                } else {
-                    "`.global_id()` requires a direct dispatch-thread parameter receiver"
-                },
-            );
+            if method == "len" {
+                self.reject(
+                    Code::LenReceiver,
+                    call,
+                    "`.len()` requires a direct storage parameter receiver",
+                );
+            } else {
+                self.reject(
+                    Code::GlobalIdReceiver,
+                    call,
+                    "`.global_id()` requires a direct dispatch-thread parameter receiver",
+                );
+            }
             return;
         }
         visit::visit_expr_method_call(self, call);
@@ -1002,6 +1107,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         // single-identifier helpers, so this fires only for bare values.
         if path.path.get_ident().is_none() {
             self.reject(
+                Code::ForeignPath,
                 path,
                 "associated constants and foreign paths are not in the Rust-to-Slang subset; reference local variables, parameters, or same-module helpers",
             );
@@ -1010,6 +1116,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             || path.path.is_ident("Err")
         {
             self.reject(
+                Code::VariantAsValue,
                 path,
                 "`Some`, `Ok`, and `Err` must be called with one argument",
             );
@@ -1024,6 +1131,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         let name = option_pattern(&binding.pat).or_else(|| result_pattern(&binding.pat));
         let Some(name) = name else {
             self.reject(
+                Code::IfLetPattern,
                 &binding.pat,
                 "`if let` supports only the `Some(identifier)` or `Ok(identifier)` pattern",
             );
@@ -1032,6 +1140,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         let text = name.ident.to_string();
         if self.resources.contains(&text) || self.invocations.contains(&text) {
             self.reject(
+                Code::ShadowedParameter,
                 name,
                 "GPU locals cannot shadow resource or dispatch-thread parameters",
             );
@@ -1047,6 +1156,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
         self.reject(
+            Code::MatchAsValue,
             expression,
             "Result match is supported only as a statement, not as a value",
         );
@@ -1055,6 +1165,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_let(&mut self, expression: &'ast syn::ExprLet) {
         // Reached only outside the direct `if let` condition position.
         self.reject(
+            Code::IfLetPosition,
             expression,
             "`if let` is supported only as `if let Some(x) = value { .. }` or `if let Ok(x) = value { .. }`; let chains and other let positions are not",
         );
@@ -1063,6 +1174,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_struct(&mut self, expression: &'ast syn::ExprStruct) {
         if expression.rest.is_some() {
             self.reject(
+                Code::StructUpdateSyntax,
                 expression,
                 "struct update syntax (`..base`) is not supported; list every field explicitly",
             );
@@ -1073,6 +1185,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_try(&mut self, expression: &'ast syn::ExprTry) {
         self.reject(
+            Code::TryOperator,
             expression,
             "the `?` operator is not in the Rust-to-Slang subset",
         );
@@ -1080,6 +1193,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_unsafe(&mut self, expression: &'ast syn::ExprUnsafe) {
         self.reject(
+            Code::UnsafeBlock,
             expression,
             "unsafe blocks are not in the Rust-to-Slang subset",
         );
@@ -1087,6 +1201,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_macro(&mut self, expression: &'ast syn::ExprMacro) {
         self.reject(
+            Code::MacroInModule,
             expression,
             "macros cannot run inside a Rust-to-Slang module",
         );
@@ -1094,6 +1209,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_closure(&mut self, expression: &'ast syn::ExprClosure) {
         self.reject(
+            Code::Closure,
             expression,
             "closures are not supported in the Rust-to-Slang subset",
         );
@@ -1101,6 +1217,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_loop(&mut self, expression: &'ast syn::ExprLoop) {
         self.reject(
+            Code::LoopNotSupported,
             expression,
             "`loop` is not supported: its trip count is not fixed at entry, so a GPU thread could never be proven to terminate; use `for i in start..end`",
         );
@@ -1109,6 +1226,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
         if let Some(label) = &expression.label {
             self.reject(
+                Code::LoopLabel,
                 label,
                 "loop labels are not supported in the Rust-to-Slang subset; restructure with a flag or a helper return",
             );
@@ -1116,8 +1234,8 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         let variable = match loop_variable(&expression.pat) {
             Ok(variable) => variable,
-            Err(message) => {
-                self.reject(&expression.pat, message);
+            Err((code, message)) => {
+                self.reject(code, &expression.pat, message);
                 return;
             }
         };
@@ -1125,6 +1243,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             let name = variable.ident.to_string();
             if self.resources.contains(&name) || self.invocations.contains(&name) {
                 self.reject(
+                    Code::ShadowedParameter,
                     variable,
                     "GPU locals cannot shadow resource or dispatch-thread parameters",
                 );
@@ -1134,14 +1253,15 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         let (start, end) = match range_bounds(&expression.expr) {
             Ok(bounds) => bounds,
-            Err(message) => {
-                self.reject(&expression.expr, message);
+            Err((code, message)) => {
+                self.reject(code, &expression.expr, message);
                 return;
             }
         };
         for bound in [start, end] {
             if is_unsuffixed_integer_literal(bound) {
                 self.reject(
+                    Code::UnsuffixedLoopBound,
                     bound,
                     "integer-literal loop bounds need an explicit `u32`/`i32` suffix so the Slang counter type matches rustc's inference",
                 );
@@ -1157,6 +1277,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
         self.reject(
+            Code::WhileNotSupported,
             expression,
             "`while` loops are not supported: the trip count is not fixed at entry, so a GPU thread could never be proven to terminate; use `for i in start..end` with a `break`",
         );
@@ -1166,6 +1287,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         // `visit_expr_for_loop` reads its bounds directly, so this is reached only
         // for a range used as a value.
         self.reject(
+            Code::RangeAsValue,
             expression,
             "ranges are supported only as the iterable of a `for` loop",
         );
@@ -1177,16 +1299,13 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 let (ok_name, _, err_name, _) = match result_match_arms(expression) {
                     Ok(arms) => arms,
                     Err(error) => {
-                        if let Some(existing) = &mut self.error {
-                            existing.combine(error);
-                        } else {
-                            self.error = Some(error);
-                        }
+                        self.push(error);
                         return;
                     }
                 };
                 if semicolon.is_none() {
                     self.reject(
+                        Code::MatchNeedsSemicolon,
                         expression,
                         "Result match is supported only as a statement; terminate it with `;`",
                     );
@@ -1194,6 +1313,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 }
                 if !self.is_known_result(&expression.expr) {
                     self.reject(
+                        Code::MatchScrutinee,
                         &expression.expr,
                         "statement match is supported only for a known `Result<T, T>` local, parameter, or same-module helper call",
                     );
@@ -1203,6 +1323,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     let text = name.ident.to_string();
                     if self.resources.contains(&text) || self.invocations.contains(&text) {
                         self.reject(
+                            Code::ShadowedParameter,
                             name,
                             "GPU locals cannot shadow resource or dispatch-thread parameters",
                         );
@@ -1229,7 +1350,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             syn::Stmt::Expr(syn::Expr::Break(jump), _) => {
                 if let Some(value) = &jump.expr {
-                    self.reject(value, "`break` with a value is not supported");
+                    self.reject(
+                        Code::BreakWithValue,
+                        value,
+                        "`break` with a value is not supported",
+                    );
                     return;
                 }
                 self.check_jump(jump, jump.label.as_ref(), "break");
@@ -1244,6 +1369,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_break(&mut self, expression: &'ast syn::ExprBreak) {
         // Statement-position jumps are handled in `visit_stmt`.
         self.reject(
+            Code::JumpAsValue,
             expression,
             "`break` and `continue` are supported only as statements, not as values",
         );
@@ -1251,6 +1377,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_continue(&mut self, expression: &'ast syn::ExprContinue) {
         self.reject(
+            Code::JumpAsValue,
             expression,
             "`break` and `continue` are supported only as statements, not as values",
         );
@@ -1258,6 +1385,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_await(&mut self, expression: &'ast syn::ExprAwait) {
         self.reject(
+            Code::Await,
             expression,
             "await is CPU-only and cannot appear in GPU code",
         );
@@ -1265,6 +1393,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_expr_reference(&mut self, expression: &'ast syn::ExprReference) {
         self.reject(
+            Code::Reference,
             expression,
             "references are not part of the Rust-to-Slang value model",
         );
@@ -1275,6 +1404,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             let name = pattern.ident.to_string();
             if self.resources.contains(&name) || self.invocations.contains(&name) {
                 self.reject(
+                    Code::ShadowedParameter,
                     local,
                     "GPU locals cannot shadow resource or dispatch-thread parameters",
                 );
@@ -1282,7 +1412,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
         }
         if crate::slang::local_binding(&local.pat).is_err() {
-            self.reject(local, "GPU let bindings require a single identifier");
+            self.reject(
+                Code::LetNeedsIdentifier,
+                local,
+                "GPU let bindings require a single identifier",
+            );
             return;
         }
         if local
@@ -1291,6 +1425,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             .is_some_and(|initial| initial.diverge.is_some())
         {
             self.reject(
+                Code::LetElse,
                 local,
                 "let-else requires control-flow lowering and is not supported yet",
             );
@@ -1320,6 +1455,8 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
 #[cfg(test)]
 mod tests {
+    use crate::diagnostics::testing::{assert_code, assert_codes, codes_of_result};
+
     use super::*;
 
     #[test]
@@ -1333,7 +1470,100 @@ mod tests {
             }
         };
         let error = validate_module(&module).expect_err("Vec must be rejected");
-        assert!(error.to_string().contains("CPU-only"));
+        assert_code(&error, Code::CpuOnlyName);
+    }
+
+    #[test]
+    fn independent_causes_report_every_code_in_source_order() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            mod bad {
+                #[kernel]
+                pub fn bad(ctx: Invocation) {
+                    loop { }
+                    while true { }
+                    let values = Vec::new();
+                }
+            }
+        };
+        let error = validate_module(&module).expect_err("three causes must be rejected");
+        assert_codes(
+            &error,
+            &[
+                Code::LoopNotSupported,
+                Code::WhileNotSupported,
+                Code::CpuOnlyName,
+            ],
+        );
+    }
+
+    #[test]
+    fn an_accepted_module_reports_no_code() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            mod good {
+                #[kernel]
+                pub fn add(ctx: Invocation, mut out: StorageMut<f32>) {
+                    let i = ctx.global_id().x;
+                    if i < out.len() { out[i] = 1.0; }
+                }
+            }
+        };
+        assert!(codes_of_result(&validate_module(&module)).is_empty());
+    }
+
+    #[test]
+    fn a_module_without_inline_content_and_stray_items_are_coded() {
+        let outline: syn::ItemMod = syn::parse_quote! { mod outline; };
+        assert_code(
+            &validate_module(&outline).expect_err("outline module"),
+            Code::InlineModuleRequired,
+        );
+        let stray: syn::ItemMod = syn::parse_quote! { mod bad { const LIMIT: u32 = 1; } };
+        assert_code(
+            &validate_module(&stray).expect_err("const item"),
+            Code::UnsupportedModuleItem,
+        );
+    }
+
+    #[test]
+    fn signature_restrictions_are_coded() {
+        for (module, code) in [
+            (
+                syn::parse_quote! { mod bad { async fn f() {} } },
+                Code::AsyncFunction,
+            ),
+            (
+                syn::parse_quote! { mod bad { unsafe fn f() {} } },
+                Code::UnsafeFunction,
+            ),
+            (
+                syn::parse_quote! { mod bad { fn f<T>(x: T) {} } },
+                Code::ExternOrGenericFunction,
+            ),
+            (
+                syn::parse_quote! { mod bad { extern "C" fn f() {} } },
+                Code::ExternOrGenericFunction,
+            ),
+            (
+                syn::parse_quote! { mod bad { struct Pair(uint, uint); } },
+                Code::StructNeedsNamedFields,
+            ),
+        ] {
+            let module: syn::ItemMod = module;
+            assert_code(&validate_module(&module).expect_err("rejected"), code);
+        }
+    }
+
+    #[test]
+    fn a_derive_that_does_not_parse_is_wrapped_with_a_code() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            mod bad {
+                #[derive = "Debug"]
+                struct Params { value: f32 }
+            }
+        };
+        // `syn` words this failure itself; the code is added in front of it.
+        let error = validate_module(&module).expect_err("malformed derive");
+        assert_code(&error, Code::MalformedDerive);
     }
 
     #[test]
@@ -1359,11 +1589,9 @@ mod tests {
                 struct Empty {}
             }
         };
-        assert!(
-            validate_module(&empty)
-                .expect_err("empty GPU struct must fail")
-                .to_string()
-                .contains("at least one field")
+        assert_code(
+            &validate_module(&empty).expect_err("empty GPU struct must fail"),
+            Code::EmptyStruct,
         );
 
         let represented: syn::ItemMod = syn::parse_quote! {
@@ -1372,11 +1600,9 @@ mod tests {
                 struct Params { value: f32 }
             }
         };
-        assert!(
-            validate_module(&represented)
-                .expect_err("manual representation must fail")
-                .to_string()
-                .contains("receive repr(C)")
+        assert_code(
+            &validate_module(&represented).expect_err("manual representation must fail"),
+            Code::ManualRepr,
         );
 
         let copied: syn::ItemMod = syn::parse_quote! {
@@ -1385,11 +1611,9 @@ mod tests {
                 struct Params { value: f32 }
             }
         };
-        assert!(
-            validate_module(&copied)
-                .expect_err("manual Copy derive must fail")
-                .to_string()
-                .contains("receive Clone and Copy")
+        assert_code(
+            &validate_module(&copied).expect_err("manual Copy derive must fail"),
+            Code::ManualCloneCopy,
         );
     }
 

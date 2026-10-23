@@ -1,5 +1,6 @@
 use proc_macro::TokenStream;
 
+mod diagnostics;
 mod expand;
 mod recover;
 mod slang;

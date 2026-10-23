@@ -666,10 +666,12 @@ fn emit_for(
     let variable = match crate::validate::loop_variable(&expression.pat) {
         Ok(Some(variable)) => variable.ident.to_string(),
         Ok(None) => format!("__gust_iter_{index}"),
-        Err(message) => return Err(syn::Error::new_spanned(&expression.pat, message)),
+        Err((code, message)) => {
+            return Err(crate::diagnostics::error(code, &expression.pat, message));
+        }
     };
     let (start, end) = crate::validate::range_bounds(&expression.expr)
-        .map_err(|message| syn::Error::new_spanned(&expression.expr, message))?;
+        .map_err(|(code, message)| crate::diagnostics::error(code, &expression.expr, message))?;
     let end_temporary = format!("__gust_end_{index}");
     writeln!(
         output,
