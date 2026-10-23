@@ -38,14 +38,14 @@ jobs:
         run: cargo --locked xtask test --suite Unit
 
   msrv:
-    # Measures the declared minimum Rust version (Cargo.toml rust-version, D29): compiles every
+    # Measures the declared minimum Rust version (Cargo.toml rust-version, D30): compiles every
     # workspace target, including tests and examples, with exactly that toolchain. No slangc
     # and no GPU are involved, so this is Unit-tier evidence only. Not a required check yet.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       # Job-level value wins over the workflow-level pin above.
-      RUSTUP_TOOLCHAIN: 1.88.0
+      RUSTUP_TOOLCHAIN: 1.90.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust

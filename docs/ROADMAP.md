@@ -36,7 +36,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 
 | Item | Work | Status |
 | --- | --- | --- |
-| M1.0 | Minimum Rust 1.88 (D29) plus an `msrv` CI job; validation records stamped with the commit and dirty state; `check-arch` reads dependencies through `cargo metadata`; structured Full-step test | ready |
+| M1.0 | Minimum Rust 1.90 (D29, D30) plus an `msrv` CI job; validation records stamped with the commit and dirty state; `check-arch` reads dependencies through `cargo metadata`; structured Full-step test | ready |
 | M1.1 | Rust line table: statement-level source lines recorded by the emitter; sidecar schema v2 with Rust lines; one shared diagnostic annotation for both compile paths (CLI and reflection helper) | planned |
 | M1.2 | `#[diagnostic::on_unimplemented]` on the shadow-type traits; `cargo xtask check-ui` over a fixture workspace | planned |
 | M1.3 | `#line` markers injected into the compile-time Slang copy only, so errors name the Rust file and line; exported `.slang` stays clean | planned |

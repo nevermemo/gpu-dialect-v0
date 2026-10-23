@@ -63,7 +63,7 @@ Workflow commands live in `cargo xtask` (D27); no shell or PowerShell scripts ar
 
 ## Minimum Rust version
 
-The workspace declares `rust-version = "1.88"` (D29). The CI job `msrv` measures the claim: it installs exactly Rust 1.88.0 and runs `cargo check --workspace --all-targets --locked` (all targets, so test code is covered). It needs no slangc and no GPU and runs no tests, so it is Unit-tier evidence of compilation only. It is not a required check yet. A local run needs a 1.88 toolchain: `rustup toolchain install 1.88.0`, then `RUSTUP_TOOLCHAIN=1.88.0 cargo check --workspace --all-targets --locked`. `cargo xtask check-full` uses the stable toolchain and does not measure the minimum version; `.ai/VALIDATION.json` lists it under `untested`.
+The workspace declares `rust-version = "1.90"` (D30, which supersedes the 1.88 in D29: the locked `ordered-float 5.5.0`, pulled in by wgpu-hal, declares 1.90). The CI job `msrv` measures the claim: it installs exactly Rust 1.90.0 and runs `cargo check --workspace --all-targets --locked` (all targets, so test code is covered). It needs no slangc and no GPU and runs no tests, so it is Unit-tier evidence of compilation only. It is not a required check yet. A local run needs a 1.90 toolchain: `rustup toolchain install 1.90.0`, then `RUSTUP_TOOLCHAIN=1.90.0 cargo check --workspace --all-targets --locked`. `cargo xtask check-full` uses the stable toolchain and does not measure the minimum version; `.ai/VALIDATION.json` lists it under `untested`.
 
 ## Record policy
 
