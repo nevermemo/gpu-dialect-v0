@@ -29,6 +29,7 @@ const KERNEL: KernelDescriptor = KernelDescriptor {
             if (id.x == 0) output[0] = 17.0;
         }
     "#,
+    source: gust::SourceOrigin::UNKNOWN,
 };
 
 fn assert_mismatch(error: Error, expected: &str) {

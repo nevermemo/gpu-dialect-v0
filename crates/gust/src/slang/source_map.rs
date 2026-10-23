@@ -4,6 +4,8 @@
 //! is Allman style with one statement per line, so brace depth is enough to turn
 //! a construct's first line into a range that ends at its closing brace.
 
+use crate::SourceOrigin;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SourceMapSegment {
     pub(crate) start_line: usize,
@@ -287,14 +289,29 @@ impl SourceMap {
             })
     }
 
-    pub(crate) fn json(&self) -> String {
-        let mut output = String::from("{\n  \"schema_version\": 1,\n  \"segments\": [");
+    /// Schema version 2: `rust_file` is the kernel's Rust source path or `null`,
+    /// and a segment carries `rust_line` only when `origin` has a record for its
+    /// first Slang line. The key is omitted otherwise.
+    pub(crate) fn json(&self, origin: &SourceOrigin) -> String {
+        let rust_file = if origin.file.is_empty() {
+            "null".to_owned()
+        } else {
+            format!("\"{}\"", json_escape(origin.file))
+        };
+        let mut output = format!(
+            "{{\n  \"schema_version\": 2,\n  \"rust_file\": {rust_file},\n  \"segments\": ["
+        );
         for (index, segment) in self.segments.iter().enumerate() {
             if index != 0 {
                 output.push(',');
             }
+            let rust_line = u32::try_from(segment.start_line)
+                .ok()
+                .and_then(|line| origin.rust_line_at(line))
+                .map(|line| format!(",\"rust_line\":{line}"))
+                .unwrap_or_default();
             output.push_str(&format!(
-                "\n    {{\"slang_start\":{},\"slang_end\":{},\"kernel\":\"{}\",\"construct\":\"{}\",\"ordinal\":{}}}",
+                "\n    {{\"slang_start\":{},\"slang_end\":{},\"kernel\":\"{}\",\"construct\":\"{}\",\"ordinal\":{}{rust_line}}}",
                 segment.start_line,
                 segment.end_line,
                 json_escape(&segment.kernel),
@@ -614,7 +631,10 @@ mod tests {
         let map = SourceMap::from_slang(source);
         // The map would have numbered this construct 2; the emitter called it 7.
         assert_eq!(segment(&map, "match", 6).ordinal, 7);
-        assert!(map.json().contains("\"construct\":\"match\",\"ordinal\":7"));
+        assert!(
+            map.json(&SourceOrigin::UNKNOWN)
+                .contains("\"construct\":\"match\",\"ordinal\":7")
+        );
         // Other constructs keep the per-kernel count, which the marker still advances.
         assert_eq!(segment(&map, "assignment", 10).ordinal, 3);
         assert_eq!(segment(&map, "local", 16).ordinal, 5);
@@ -732,8 +752,12 @@ mod tests {
     #[test]
     fn sidecar_json_has_stable_schema_fields_and_kinds() {
         let map = SourceMap::from_slang(KERNEL);
-        let json = map.json();
-        assert!(json.starts_with("{\n  \"schema_version\": 1,\n  \"segments\": ["));
+        let json = map.json(&SourceOrigin::UNKNOWN);
+        assert!(
+            json.starts_with(
+                "{\n  \"schema_version\": 2,\n  \"rust_file\": null,\n  \"segments\": ["
+            )
+        );
         assert!(json.ends_with("\n  ]\n}\n"));
         assert!(json.contains(
             "{\"slang_start\":2,\"slang_end\":40,\"kernel\":\"example::run\",\"construct\":\"kernel\",\"ordinal\":0}"
@@ -757,6 +781,86 @@ mod tests {
                 "missing {kind}: {json}"
             );
         }
-        assert_eq!(json, SourceMap::from_slang(KERNEL).json(), "deterministic");
+        assert!(!json.contains("rust_line"), "unknown origin: {json}");
+        assert_eq!(
+            json,
+            SourceMap::from_slang(KERNEL).json(&SourceOrigin::UNKNOWN),
+            "deterministic"
+        );
+    }
+
+    #[test]
+    fn sidecar_json_v2_carries_the_rust_file_and_line_of_mapped_segments_only() {
+        use crate::LineSpan;
+        // KERNEL: `var i = id.x;` is Slang line 10, the match scaffolding starts at 11
+        // and the loop spans 23 to 38. Lines 2 to 9 (marker, attributes, prologue)
+        // have no record.
+        const LINES: &[LineSpan] = &[
+            LineSpan {
+                slang_start: 10,
+                slang_end: 10,
+                rust_line: 41,
+            },
+            LineSpan {
+                slang_start: 23,
+                slang_end: 38,
+                rust_line: 50,
+            },
+            LineSpan {
+                slang_start: 26,
+                slang_end: 29,
+                rust_line: 52,
+            },
+        ];
+        let origin = SourceOrigin {
+            file: "crates/demo/src/lib.rs",
+            lines: LINES,
+        };
+        let json = SourceMap::from_slang(KERNEL).json(&origin);
+        assert!(
+            json.starts_with(
+                "{\n  \"schema_version\": 2,\n  \"rust_file\": \"crates/demo/src/lib.rs\",\n  \"segments\": ["
+            ),
+            "{json}"
+        );
+        // Mapped: the key follows the ordinal.
+        assert!(
+            json.contains(
+                "{\"slang_start\":10,\"slang_end\":10,\"kernel\":\"example::run\",\"construct\":\"local\",\"ordinal\":0,\"rust_line\":41}"
+            ),
+            "{json}"
+        );
+        // The nested conditional inside the loop gets the innermost record.
+        let map = SourceMap::from_slang(KERNEL);
+        let inner = segment(&map, "conditional", 26);
+        assert!(
+            json.contains(&format!(
+                "{{\"slang_start\":26,\"slang_end\":{},\"kernel\":\"example::run\",\"construct\":\"conditional\",\"ordinal\":{},\"rust_line\":52}}",
+                inner.end_line, inner.ordinal
+            )),
+            "{json}"
+        );
+        let outer = segment(&map, "loop", 24);
+        assert!(
+            json.contains(&format!(
+                "{{\"slang_start\":24,\"slang_end\":{},\"kernel\":\"example::run\",\"construct\":\"loop\",\"ordinal\":{},\"rust_line\":50}}",
+                outer.end_line, outer.ordinal
+            )),
+            "{json}"
+        );
+        // Unmapped segments omit the key entirely.
+        assert!(
+            json.contains(
+                "{\"slang_start\":2,\"slang_end\":40,\"kernel\":\"example::run\",\"construct\":\"kernel\",\"ordinal\":0}"
+            ),
+            "{json}"
+        );
+        assert!(
+            json.contains(
+                "{\"slang_start\":7,\"slang_end\":9,\"kernel\":\"example::run\",\"construct\":\"prologue\",\"ordinal\":0}"
+            ),
+            "{json}"
+        );
+        assert_eq!(json, SourceMap::from_slang(KERNEL).json(&origin));
     }
 }

@@ -38,6 +38,8 @@ pub(crate) enum Step {
 const MACROS_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-macros"]);
 const XTASK_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "xtask"]);
 const CORE_LIB_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust", "--lib"]);
+const CORE_DIAGNOSTICS_TESTS: Step =
+    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "diagnostics"]);
 const WGPU_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-wgpu"]);
 
 const ALL: [Suite; 6] = [
@@ -84,7 +86,7 @@ impl Suite {
                 "macro validation and translation tests, xtask tests, lint, docs-check, check-arch; no external tools"
             }
             Self::Slangc => {
-                "Unit, plus the gust library tests, which compile generated Slang to WGSL with slangc"
+                "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc"
             }
             Self::Spirv => {
                 "the example binaries export SPIR-V and spirv-val accepts every file (vulkan1.2)"
@@ -133,6 +135,7 @@ impl Suite {
                 let mut steps = vec![Step::RequireTool("slangc")];
                 steps.extend(unit);
                 steps.push(CORE_LIB_TESTS);
+                steps.push(CORE_DIAGNOSTICS_TESTS);
                 steps
             }
             Self::Spirv => vec![Step::Verify(VerifyMode::Artifacts, false)],

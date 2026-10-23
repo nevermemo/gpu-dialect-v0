@@ -44,6 +44,14 @@ fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
     let mut expected = vec![Step::RequireTool("slangc")];
     expected.extend(UNIT);
     expected.push(Step::Cargo(&["test", "--locked", "-p", "gust", "--lib"]));
+    expected.push(Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust",
+        "--test",
+        "diagnostics",
+    ]));
     assert_eq!(Suite::Slangc.steps(), expected);
 }
 

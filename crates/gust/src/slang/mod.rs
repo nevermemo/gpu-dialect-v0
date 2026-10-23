@@ -10,7 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::KernelDescriptor;
+use crate::{KernelDescriptor, SourceOrigin};
 use source_map::{SourceMap, SourceMapSegment};
 
 mod source_map;
@@ -91,7 +91,12 @@ impl From<std::io::Error> for Error {
 }
 
 pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Error> {
-    compile_source(kernel.slang_source, kernel.entry_point, target)
+    compile_with_origin(
+        kernel.slang_source,
+        kernel.entry_point,
+        &kernel.source,
+        target,
+    )
 }
 
 pub fn compile_spirv(kernel: &KernelDescriptor) -> Result<Vec<u32>, Error> {
@@ -118,17 +123,27 @@ pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
 }
 
 pub fn compile_source(source: &str, entry: &str, target: Target) -> Result<Vec<u8>, Error> {
-    compile_in_directory(TemporaryDirectory::create()?, source, entry, target)
+    compile_with_origin(source, entry, &SourceOrigin::UNKNOWN, target)
+}
+
+fn compile_with_origin(
+    source: &str,
+    entry: &str,
+    origin: &SourceOrigin,
+    target: Target,
+) -> Result<Vec<u8>, Error> {
+    compile_in_directory(TemporaryDirectory::create()?, source, entry, origin, target)
 }
 
 fn compile_in_directory(
     directory: TemporaryDirectory,
     source: &str,
     entry: &str,
+    origin: &SourceOrigin,
     target: Target,
 ) -> Result<Vec<u8>, Error> {
     // The guard removes the directory when this returns, on every path.
-    compile_at(&directory.0, source, entry, target)
+    compile_at(&directory.0, source, entry, origin, target)
 }
 
 /// Compile inside `directory`, which the caller owns and removes.
@@ -136,6 +151,7 @@ fn compile_at(
     directory: &Path,
     source: &str,
     entry: &str,
+    origin: &SourceOrigin,
     target: Target,
 ) -> Result<Vec<u8>, Error> {
     let source_path = directory.join("kernel.slang");
@@ -143,7 +159,7 @@ fn compile_at(
     let output_path = directory.join(format!("kernel.{}", target.extension()));
     let source_map = SourceMap::from_slang(source);
     fs::write(&source_path, source)?;
-    fs::write(&map_path, source_map.json())?;
+    fs::write(&map_path, source_map.json(origin))?;
 
     let mut command = Command::new("slangc");
     command.arg(&source_path).args([
@@ -174,14 +190,7 @@ fn compile_at(
             String::from_utf8_lossy(&output.stdout),
             output.status
         );
-        let diagnostics = map_slang_diagnostic(&source_map, source, &diagnostics)
-            .map(|origin| {
-                format!(
-                    "{diagnostics}\noriginating Rust kernel: {}\noriginating Rust construct: {} #{}",
-                    origin.kernel, origin.construct, origin.ordinal
-                )
-            })
-            .unwrap_or(diagnostics);
+        let diagnostics = annotate_diagnostics(origin, source, &source_map, &diagnostics);
         return Err(Error::CompilationFailed {
             target,
             diagnostics,
@@ -189,6 +198,47 @@ fn compile_at(
     }
     let artifact = fs::read(&output_path)?;
     Ok(artifact)
+}
+
+/// Append the originating Rust kernel and construct (DX19), and the Rust source
+/// location when the descriptor carries a line table, to a Slang failure.
+/// Shared by every path that compiles a kernel, so none reports less than the
+/// others. A diagnostic with no usable error location is returned unchanged.
+pub(crate) fn annotate_diagnostics(
+    origin: &SourceOrigin,
+    slang_source: &str,
+    source_map: &SourceMap,
+    diagnostics: &str,
+) -> String {
+    let segment = map_slang_diagnostic(source_map, slang_source, diagnostics);
+    // The Rust line is independent of the kernel segment: a helper or struct above
+    // the first `// @rust kernel:` marker has a line record but no construct.
+    let rust_line = parse_slang_line(diagnostics)
+        .filter(|line| *line <= slang_source.lines().count())
+        .and_then(|line| u32::try_from(line).ok())
+        .and_then(|line| origin.rust_line_at(line))
+        .filter(|_| !origin.file.is_empty());
+    let mut annotated = diagnostics.to_owned();
+    if let Some(segment) = segment {
+        annotated.push_str(&format!(
+            "\noriginating Rust kernel: {}\noriginating Rust construct: {} #{}",
+            segment.kernel, segment.construct, segment.ordinal
+        ));
+    }
+    if let Some(rust_line) = rust_line {
+        annotated.push_str(&format!(
+            "\noriginating Rust source: {}:{rust_line}",
+            origin.file
+        ));
+    }
+    annotated
+}
+
+/// [`annotate_diagnostics`] for a kernel that is compiled without the sidecar
+/// map, such as the reflection helper path.
+pub(crate) fn annotate_kernel_diagnostics(kernel: &KernelDescriptor, diagnostics: &str) -> String {
+    let map = SourceMap::from_slang(kernel.slang_source);
+    annotate_diagnostics(&kernel.source, kernel.slang_source, &map, diagnostics)
 }
 
 /// Map a `slangc` diagnostic to a generated construct segment. The sidecar
@@ -375,8 +425,14 @@ mod tests {
     fn compiler_failure_reports_diagnostics_and_cleans_owned_files() {
         let directory = TemporaryDirectory::create().unwrap();
         let path = directory.0.clone();
-        let error = compile_in_directory(directory, "this is not Slang;", "missing", Target::Wgsl)
-            .unwrap_err();
+        let error = compile_in_directory(
+            directory,
+            "this is not Slang;",
+            "missing",
+            &SourceOrigin::UNKNOWN,
+            Target::Wgsl,
+        )
+        .unwrap_err();
         assert!(matches!(error, Error::CompilationFailed { .. }), "{error}");
         assert!(error.to_string().contains("compiler exit:"));
         assert!(!path.exists());
@@ -388,7 +444,13 @@ mod tests {
         let path = directory.0.clone();
         fs::create_dir(path.join("kernel.slang")).unwrap();
         assert!(matches!(
-            compile_in_directory(directory, "", "missing", Target::Wgsl),
+            compile_in_directory(
+                directory,
+                "",
+                "missing",
+                &SourceOrigin::UNKNOWN,
+                Target::Wgsl,
+            ),
             Err(Error::Io(_))
         ));
         assert!(!path.exists());
@@ -494,7 +556,7 @@ mod tests {
             "}\n",
         );
         let expected = concat!(
-            "{\n  \"schema_version\": 1,\n  \"segments\": [\n",
+            "{\n  \"schema_version\": 2,\n  \"rust_file\": null,\n  \"segments\": [\n",
             "    {\"slang_start\":3,\"slang_end\":16,\"kernel\":\"example::ok\",\"construct\":\"kernel\",\"ordinal\":0},\n",
             "    {\"slang_start\":8,\"slang_end\":10,\"kernel\":\"example::ok\",\"construct\":\"prologue\",\"ordinal\":0},\n",
             "    {\"slang_start\":11,\"slang_end\":11,\"kernel\":\"example::ok\",\"construct\":\"local\",\"ordinal\":0},\n",
@@ -505,7 +567,14 @@ mod tests {
         // A successful compile and a failing one both leave the sidecar behind
         // until the owner removes the directory.
         let directory = TemporaryDirectory::create().unwrap();
-        compile_at(directory.path(), source, "ok", Target::Wgsl).unwrap();
+        compile_at(
+            directory.path(),
+            source,
+            "ok",
+            &SourceOrigin::UNKNOWN,
+            Target::Wgsl,
+        )
+        .unwrap();
         assert_eq!(
             fs::read_to_string(directory.path().join("kernel.map.json")).unwrap(),
             expected
@@ -517,9 +586,21 @@ mod tests {
 
         let failing = TemporaryDirectory::create().unwrap();
         let broken = match_kernel(VALID_SIGNATURE, "undefined_symbol", "h");
-        assert!(compile_at(failing.path(), &broken, "broken", Target::Wgsl).is_err());
+        assert!(
+            compile_at(
+                failing.path(),
+                &broken,
+                "broken",
+                &SourceOrigin::UNKNOWN,
+                Target::Wgsl
+            )
+            .is_err()
+        );
         let sidecar = fs::read_to_string(failing.path().join("kernel.map.json")).unwrap();
-        assert_eq!(sidecar, SourceMap::from_slang(&broken).json());
+        assert_eq!(
+            sidecar,
+            SourceMap::from_slang(&broken).json(&SourceOrigin::UNKNOWN)
+        );
         assert!(sidecar.contains("\"construct\":\"match\""), "{sidecar}");
     }
 
@@ -711,6 +792,224 @@ mod tests {
                 "{target:?}: {diagnostics}"
             );
         }
+    }
+
+    /// Slang lines 1 to 8 of this source: marker, attributes, signature, `{`, three
+    /// statements and `}`. The synthetic table below maps lines 6 and 7 only.
+    const ANNOTATED_SOURCE: &str = concat!(
+        "// @rust kernel: demo::k\n",               // 1
+        "[shader(\"compute\")]\n",                  // 2
+        "[numthreads(1, 1, 1)]\n",                  // 3
+        "void k(uint3 id : SV_DispatchThreadID)\n", // 4
+        "{\n",                                      // 5
+        "    var a = uint(1);\n",                   // 6
+        "    var b = (a + undefined_symbol);\n",    // 7
+        "    var c = uint(3);\n",                   // 8
+        "}\n",                                      // 9
+    );
+    const ANNOTATED_LINES: &[crate::LineSpan] = &[
+        crate::LineSpan {
+            slang_start: 6,
+            slang_end: 6,
+            rust_line: 21,
+        },
+        crate::LineSpan {
+            slang_start: 7,
+            slang_end: 7,
+            rust_line: 22,
+        },
+    ];
+    const ANNOTATED_ORIGIN: SourceOrigin = SourceOrigin {
+        file: "crates/demo/src/lib.rs",
+        lines: ANNOTATED_LINES,
+    };
+
+    fn annotate(origin: &SourceOrigin, diagnostics: &str) -> String {
+        annotate_diagnostics(
+            origin,
+            ANNOTATED_SOURCE,
+            &SourceMap::from_slang(ANNOTATED_SOURCE),
+            diagnostics,
+        )
+    }
+
+    #[test]
+    fn annotation_appends_the_rust_source_line_of_the_innermost_record() {
+        for diagnostic in [
+            "kernel.slang(7): error: undefined identifier\n",
+            "error[E30015]: undefined identifier\n --> C:\\tmp\\kernel.slang:7:17\n",
+        ] {
+            let annotated = annotate(&ANNOTATED_ORIGIN, diagnostic);
+            assert!(annotated.starts_with(diagnostic), "{annotated}");
+            assert!(
+                annotated.ends_with(concat!(
+                    "\noriginating Rust kernel: demo::k",
+                    "\noriginating Rust construct: local #1",
+                    "\noriginating Rust source: crates/demo/src/lib.rs:22",
+                )),
+                "{annotated}"
+            );
+        }
+    }
+
+    #[test]
+    fn annotation_without_a_record_for_the_line_names_kernel_and_construct_only() {
+        // Line 8 is inside the kernel but outside every record.
+        let annotated = annotate(
+            &ANNOTATED_ORIGIN,
+            "kernel.slang(8): error: undefined identifier\n",
+        );
+        assert!(
+            annotated.contains("originating Rust construct: local #2"),
+            "{annotated}"
+        );
+        assert!(
+            !annotated.contains("originating Rust source"),
+            "{annotated}"
+        );
+        // A record outside this source's lines never matches a line it does not cover.
+        let annotated = annotate(&ANNOTATED_ORIGIN, "kernel.slang(5): error: x\n");
+        assert!(
+            !annotated.contains("originating Rust source"),
+            "{annotated}"
+        );
+    }
+
+    #[test]
+    fn unknown_origin_diagnostics_match_the_pre_line_table_text() {
+        let diagnostic = "kernel.slang(7): error: undefined identifier\n";
+        let annotated = annotate(&SourceOrigin::UNKNOWN, diagnostic);
+        assert_eq!(
+            annotated,
+            format!(
+                "{diagnostic}\noriginating Rust kernel: demo::k\noriginating Rust construct: local #1"
+            )
+        );
+        // A table without a file is as good as none.
+        let fileless = SourceOrigin {
+            file: "",
+            lines: ANNOTATED_LINES,
+        };
+        assert_eq!(annotate(&fileless, diagnostic), annotated);
+    }
+
+    #[test]
+    fn a_helper_line_above_the_first_marker_gets_a_rust_line_but_no_kernel() {
+        let source = concat!(
+            "uint twice(uint x)\n",                 // 1
+            "{\n",                                  // 2
+            "    return (x + undefined_symbol);\n", // 3
+            "}\n",                                  // 4
+            "\n",                                   // 5
+            "// @rust kernel: demo::k\n",           // 6
+            "void k() {}\n",                        // 7
+        );
+        const LINES: &[crate::LineSpan] = &[
+            crate::LineSpan {
+                slang_start: 1,
+                slang_end: 4,
+                rust_line: 30,
+            },
+            crate::LineSpan {
+                slang_start: 3,
+                slang_end: 3,
+                rust_line: 31,
+            },
+        ];
+        let origin = SourceOrigin {
+            file: "src/helpers.rs",
+            lines: LINES,
+        };
+        let diagnostic = "kernel.slang(3): error: undefined identifier\n";
+        let annotated =
+            annotate_diagnostics(&origin, source, &SourceMap::from_slang(source), diagnostic);
+        assert_eq!(
+            annotated,
+            format!("{diagnostic}\noriginating Rust source: src/helpers.rs:31")
+        );
+        // Without a table the same failure stays unattributed, as before.
+        assert_eq!(
+            annotate_diagnostics(
+                &SourceOrigin::UNKNOWN,
+                source,
+                &SourceMap::from_slang(source),
+                diagnostic
+            ),
+            diagnostic
+        );
+    }
+
+    #[test]
+    fn annotation_does_not_attribute_a_warning_or_a_foreign_file() {
+        for diagnostic in [
+            "warning[W1]: careful\n --> C:\\tmp\\kernel.slang:7:17\n",
+            "error[E1]: bad\n --> crates/demo/src/lib.rs:7:17\n",
+            "no location at all\n",
+        ] {
+            assert_eq!(annotate(&ANNOTATED_ORIGIN, diagnostic), diagnostic);
+        }
+    }
+
+    #[test]
+    fn sidecar_written_by_a_compile_carries_the_rust_file_and_lines() {
+        let source = concat!(
+            "RWStructuredBuffer<uint> values;\n",        // 1
+            "\n",                                        // 2
+            "// @rust kernel: example::ok\n",            // 3
+            "[shader(\"compute\")]\n",                   // 4
+            "[numthreads(1, 1, 1)]\n",                   // 5
+            "void ok(uint3 id : SV_DispatchThreadID)\n", // 6
+            "{\n",                                       // 7
+            "    uint __gpu_len_values;\n",              // 8
+            "    uint __gpu_stride_values;\n",           // 9
+            "    values.GetDimensions(__gpu_len_values, __gpu_stride_values);\n", // 10
+            "    var i = id.x;\n",                       // 11
+            "    values[i] = uint(1);\n",                // 12
+            "}\n",                                       // 13
+        );
+        const LINES: &[crate::LineSpan] = &[
+            crate::LineSpan {
+                slang_start: 11,
+                slang_end: 11,
+                rust_line: 7,
+            },
+            crate::LineSpan {
+                slang_start: 12,
+                slang_end: 12,
+                rust_line: 8,
+            },
+        ];
+        let origin = SourceOrigin {
+            file: "src/kernels.rs",
+            lines: LINES,
+        };
+        let directory = TemporaryDirectory::create().unwrap();
+        compile_at(directory.path(), source, "ok", &origin, Target::Wgsl).unwrap();
+        let sidecar = fs::read_to_string(directory.path().join("kernel.map.json")).unwrap();
+        assert!(
+            sidecar.starts_with(
+                "{\n  \"schema_version\": 2,\n  \"rust_file\": \"src/kernels.rs\",\n  \"segments\": ["
+            ),
+            "{sidecar}"
+        );
+        assert!(
+            sidecar.contains("\"construct\":\"local\",\"ordinal\":0,\"rust_line\":7}"),
+            "{sidecar}"
+        );
+        assert!(
+            sidecar.contains("\"construct\":\"assignment\",\"ordinal\":1,\"rust_line\":8}"),
+            "{sidecar}"
+        );
+        // The prologue has no record, and neither does the kernel as a whole.
+        assert!(
+            sidecar.contains("\"construct\":\"prologue\",\"ordinal\":0}"),
+            "{sidecar}"
+        );
+        // Compiling with a table does not change the text the compiler reads.
+        assert_eq!(
+            fs::read_to_string(directory.path().join("kernel.slang")).unwrap(),
+            source
+        );
     }
 
     #[test]

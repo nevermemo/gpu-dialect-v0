@@ -39,7 +39,9 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
         let visibility = function.vis.clone();
         let parameter_descriptors = parameter_descriptors(&function.sig.inputs)?;
         let original_kernel = find_function(&original_module, &original_name_text);
-        let slang_source = crate::slang::emit_kernel(&original_module, original_kernel, options)?;
+        let emitted = crate::slang::emit_kernel(&original_module, original_kernel, options)?;
+        let source_origin = source_origin(original_kernel, &emitted.lines);
+        let slang_source = emitted.source;
         let [x, y, z] = options.workgroup_size;
 
         function
@@ -66,6 +68,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
                     workgroup_size: [#x, #y, #z],
                     parameters: &[#(#parameter_descriptors),*],
                     slang_source: #slang_source,
+                    source: #source_origin,
                 };
             }
         });
@@ -90,6 +93,25 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
                 };
         }
     })
+}
+
+/// The `source:` field of a kernel descriptor: the Rust file the kernel was
+/// written in plus the line table recorded by the emitter. `file` is taken from
+/// the kernel's span with `/` separators (a later `#line` directive would embed
+/// it in a Slang string literal, where `\` is an escape). When the compiler gave no real file (a span from a
+/// synthesized token stream, as in unit tests), the origin is unknown and the
+/// table is dropped, because lines without a file cannot be reported.
+fn source_origin(kernel: &syn::ItemFn, lines: &[crate::slang::LineRecord]) -> TokenStream {
+    let file = kernel.sig.ident.span().file().replace('\\', "/");
+    if file.is_empty() || file.starts_with('<') || lines.is_empty() {
+        return quote!(::gust::SourceOrigin::UNKNOWN);
+    }
+    let lines = lines.iter().map(|line| {
+        let (slang_start, slang_end, rust_line) =
+            (line.slang_start, line.slang_end, line.rust_line);
+        quote!(::gust::LineSpan { slang_start: #slang_start, slang_end: #slang_end, rust_line: #rust_line })
+    });
+    quote!(::gust::SourceOrigin { file: #file, lines: &[#(#lines),*] })
 }
 
 fn find_function<'a>(module: &'a syn::ItemMod, name: &str) -> &'a syn::ItemFn {
@@ -305,5 +327,18 @@ mod tests {
         assert!(output.contains("slang_source"));
         assert!(!output.contains("spirv_words"));
         assert!(!output.contains("fn cpu"));
+    }
+
+    #[test]
+    fn descriptor_origin_is_unknown_when_the_compiler_gave_no_real_file() {
+        // Outside a compiler invocation spans carry no real path, so the table is
+        // dropped: lines without a file cannot be reported.
+        let module: syn::ItemMod = syn::parse_str(
+            "mod layout {\n#[kernel]\npub fn inspect(id: SV_DispatchThreadID, values: StructuredBuffer<f32>) {\nlet i = id.x;\n}\n}",
+        )
+        .unwrap();
+        let output = expand(module).unwrap().to_string();
+        assert!(output.contains("source : :: gust :: SourceOrigin :: UNKNOWN"));
+        assert!(!output.contains("LineSpan"));
     }
 }

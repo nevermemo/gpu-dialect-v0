@@ -1670,6 +1670,7 @@ mod tests {
             [numthreads(64, 1, 1)]
             void gpu_test_kernel(uint3 id : SV_DispatchThreadID) { if (id.x < 1) out[id.x] = 0.0; }
         "#,
+        source: gust::SourceOrigin::UNKNOWN,
     };
 
     fn no_adapter() -> Error {
@@ -1803,6 +1804,29 @@ mod tests {
         assert_eq!(
             KernelCacheKey::new(&DESCRIPTOR),
             KernelCacheKey::new(&DESCRIPTOR)
+        );
+    }
+
+    #[test]
+    fn pipeline_cache_identity_ignores_the_diagnostic_source_origin() {
+        // The line table is diagnostic metadata only (DX19): two descriptors that
+        // differ only in `source` must share one cached pipeline.
+        const LINES: &[gust::LineSpan] = &[gust::LineSpan {
+            slang_start: 3,
+            slang_end: 3,
+            rust_line: 9,
+        }];
+        let located = KernelDescriptor {
+            source: gust::SourceOrigin {
+                file: "crates/demo/src/lib.rs",
+                lines: LINES,
+            },
+            ..DESCRIPTOR
+        };
+        assert_ne!(located.source, DESCRIPTOR.source);
+        assert_eq!(
+            KernelCacheKey::new(&DESCRIPTOR),
+            KernelCacheKey::new(&located)
         );
     }
 

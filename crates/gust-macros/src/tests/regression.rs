@@ -1,6 +1,10 @@
 use std::{env, fs, path::Path};
 
-use crate::{expand::kernel_options, slang::emit_kernel, validate::validate_module};
+use crate::{
+    expand::kernel_options,
+    slang::{EmittedKernel, LineRecord, emit_kernel},
+    validate::validate_module,
+};
 
 /// Set to `1` to rewrite a reviewed Slang golden with the emitted text. A bless prints a line
 /// diff and still fails the test, so it cannot pass silently; review the diff, then rerun
@@ -119,6 +123,10 @@ fn line_diff_reports_changed_lines_with_context() {
 }
 
 fn translate(source: &str) -> syn::Result<String> {
+    translate_with_lines(source).map(|emitted| emitted.source)
+}
+
+fn translate_with_lines(source: &str) -> syn::Result<EmittedKernel> {
     let module: syn::ItemMod = syn::parse_str(source)?;
     validate_module(&module)?;
     let kernel = module
@@ -1281,10 +1289,199 @@ fn atomic_usage_is_isolated_to_the_emitted_kernel() {
         })
         .unwrap();
     let options = kernel_options(reader).unwrap().unwrap();
-    let emitted = emit_kernel(&module, reader, options).unwrap();
+    let emitted = emit_kernel(&module, reader, options).unwrap().source;
     assert!(
         emitted.contains("StructuredBuffer<uint> counter;"),
         "{emitted}"
     );
     assert!(!emitted.contains("Atomic<uint> counter"), "{emitted}");
+}
+
+/// The text of 1-based Slang line `number` of `source`, trimmed.
+fn slang_line(source: &str, number: u32) -> &str {
+    source.lines().nth(number as usize - 1).unwrap().trim()
+}
+
+/// Every range is non-empty and inside the source, records are in emission order,
+/// and a record that starts inside an earlier one ends inside it too (outer
+/// construct first).
+fn assert_table_is_well_formed(emitted: &EmittedKernel, rust_lines: usize) {
+    let slang_lines = emitted.source.lines().count() as u32;
+    let mut open: Vec<&LineRecord> = Vec::new();
+    let mut previous_start = 0;
+    for record in &emitted.lines {
+        assert!(record.slang_start >= 1, "{record:?}");
+        assert!(record.slang_end >= record.slang_start, "{record:?}");
+        assert!(record.slang_end <= slang_lines, "{record:?}");
+        assert!(record.slang_start >= previous_start, "{record:?}");
+        assert!(
+            (1..=rust_lines as u32).contains(&record.rust_line),
+            "{record:?}"
+        );
+        previous_start = record.slang_start;
+        while open
+            .last()
+            .is_some_and(|parent| parent.slang_end < record.slang_start)
+        {
+            open.pop();
+        }
+        if let Some(parent) = open.last() {
+            assert!(
+                record.slang_end <= parent.slang_end,
+                "{record:?} escapes {parent:?}"
+            );
+        }
+        open.push(record);
+    }
+}
+
+#[test]
+fn line_table_records_statements_helpers_and_structs_at_their_rust_lines() {
+    let source = concat!(
+        "mod demo {\n",                                                               // 1
+        "    struct Pair { first: uint, second: uint }\n",                            // 2
+        "    fn twice(x: uint) -> uint {\n",                                          // 3
+        "        let y = x + x;\n",                                                   // 4
+        "        y\n",                                                                // 5
+        "    }\n",                                                                    // 6
+        "    #[kernel]\n",                                                            // 7
+        "    fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {\n", // 8
+        "        let a = twice(id.x);\n",                                             // 9
+        "        if a > 1u32 {\n",                                                    // 10
+        "            out[a] = 1u32;\n",                                               // 11
+        "        } else {\n",                                                         // 12
+        "            out[a] = 2u32;\n",                                               // 13
+        "        }\n",                                                                // 14
+        "        for k in 0u32..4u32 {\n",                                            // 15
+        "            out[k] = a;\n",                                                  // 16
+        "        }\n",                                                                // 17
+        "    }\n",                                                                    // 18
+        "}\n",
+    );
+    let emitted = translate_with_lines(source).unwrap();
+    assert_table_is_well_formed(&emitted, 19);
+    let described: Vec<(&str, &str, u32)> = emitted
+        .lines
+        .iter()
+        .map(|record| {
+            (
+                slang_line(&emitted.source, record.slang_start),
+                slang_line(&emitted.source, record.slang_end),
+                record.rust_line,
+            )
+        })
+        .collect();
+    let expected = [
+        ("struct Pair", "};", 2),
+        ("uint twice(uint x)", "}", 3),
+        ("var y = ", "var y = ", 4),
+        ("return y;", "return y;", 5),
+        ("var a = ", "var a = ", 9),
+        // The conditional covers its `else` branch.
+        ("if (", "}", 10),
+        ("out[a] = ", "out[a] = ", 11),
+        ("out[a] = ", "out[a] = ", 13),
+        // The loop covers the hoisted end bound and the closing brace.
+        ("var __gust_end_", "}", 15),
+        ("out[k] = ", "out[k] = ", 16),
+    ];
+    assert_eq!(
+        described.len(),
+        expected.len(),
+        "one record per statement, helper and struct: {described:#?}\n{}",
+        emitted.source
+    );
+    for ((first, last, rust), (first_prefix, last_prefix, expected_rust)) in
+        described.iter().zip(expected)
+    {
+        assert!(first.starts_with(first_prefix), "{first} vs {first_prefix}");
+        assert!(last.starts_with(last_prefix), "{last} vs {last_prefix}");
+        assert_eq!(*rust, expected_rust, "{first}");
+    }
+    // The loop record includes its `for (` header line.
+    let for_record = emitted.lines[8];
+    assert!(
+        (for_record.slang_start..=for_record.slang_end).any(|line| slang_line(
+            &emitted.source,
+            line
+        )
+        .starts_with("for ("))
+    );
+    // The prologue and the marker comment belong to no statement.
+    let prologue = emitted
+        .source
+        .lines()
+        .position(|line| line.contains("__gpu_len_out;"))
+        .unwrap() as u32
+        + 1;
+    assert!(
+        emitted
+            .lines
+            .iter()
+            .all(|record| !(record.slang_start..=record.slang_end).contains(&prologue))
+    );
+}
+
+#[test]
+fn line_table_records_nested_statements_inside_their_parent() {
+    let source = concat!(
+        "mod demo {\n",
+        "    #[kernel]\n",
+        "    fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {\n",
+        "        if id.x < out.len() {\n",
+        "            let inner = id.x;\n",
+        "            if inner > 1u32 {\n",
+        "                out[inner] = 1u32;\n",
+        "            }\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+    let emitted = translate_with_lines(source).unwrap();
+    assert_table_is_well_formed(&emitted, 11);
+    let rust: Vec<u32> = emitted
+        .lines
+        .iter()
+        .map(|record| record.rust_line)
+        .collect();
+    assert_eq!(rust, [4, 5, 6, 7]);
+    let outer = emitted.lines[0];
+    for nested in &emitted.lines[1..] {
+        assert!(outer.slang_start < nested.slang_start && nested.slang_end < outer.slang_end);
+    }
+}
+
+#[test]
+fn line_tables_of_the_reviewed_fixtures_are_well_formed() {
+    for (name, source) in [
+        (
+            "semantics",
+            include_str!("../../../../tests/fixtures/semantics.rs"),
+        ),
+        (
+            "numeric",
+            include_str!("../../../../tests/fixtures/numeric.rs"),
+        ),
+        (
+            "option",
+            include_str!("../../../../tests/fixtures/option.rs"),
+        ),
+        (
+            "result",
+            include_str!("../../../../tests/fixtures/result.rs"),
+        ),
+    ] {
+        let emitted = translate_with_lines(source).unwrap();
+        assert!(!emitted.lines.is_empty(), "{name}");
+        assert_table_is_well_formed(&emitted, source.lines().count());
+        // A record's Rust line holds the first token of the statement it came from:
+        // never a blank line or a closing brace.
+        for record in &emitted.lines {
+            let rust = source.lines().nth(record.rust_line as usize - 1).unwrap();
+            assert!(
+                !rust.trim().is_empty() && !rust.trim().starts_with('}'),
+                "{name}: {record:?} -> `{rust}`"
+            );
+        }
+    }
 }

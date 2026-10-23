@@ -165,13 +165,15 @@ pub fn compile_reflected_with_helper(
     if !output.status.success() {
         return Err(Error::Compiler(slang::Error::CompilationFailed {
             target,
-            diagnostics: format!(
-                "{}\n{}\ncompiler exit: {}\nreflection helper: {}\noriginating Rust kernel: {}",
-                String::from_utf8_lossy(&output.stderr),
-                String::from_utf8_lossy(&output.stdout),
-                output.status,
-                helper.as_ref().display(),
-                kernel.qualified_name()
+            diagnostics: annotated_failure(
+                kernel,
+                format!(
+                    "{}\n{}\ncompiler exit: {}\nreflection helper: {}",
+                    String::from_utf8_lossy(&output.stderr),
+                    String::from_utf8_lossy(&output.stdout),
+                    output.status,
+                    helper.as_ref().display(),
+                ),
             ),
         }));
     }
@@ -181,6 +183,21 @@ pub fn compile_reflected_with_helper(
         fs::read(artifact)?,
         &fs::read_to_string(json)?,
     )
+}
+
+/// Attribute a failed compile to its Rust origin, as `slang::compile` does. A
+/// diagnostic whose error location cannot be mapped still names the kernel.
+fn annotated_failure(kernel: &KernelDescriptor, diagnostics: String) -> String {
+    let annotated = slang::annotate_kernel_diagnostics(kernel, &diagnostics);
+    // A helper above the first kernel marker maps to a Rust line but to no kernel.
+    if annotated.contains("\noriginating Rust kernel: ") {
+        annotated
+    } else {
+        format!(
+            "{annotated}\noriginating Rust kernel: {}",
+            kernel.qualified_name()
+        )
+    }
 }
 
 fn target_name(target: Target) -> &'static str {
@@ -294,12 +311,14 @@ pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, 
     if !output.status.success() {
         return Err(Error::Compiler(slang::Error::CompilationFailed {
             target,
-            diagnostics: format!(
-                "{}\n{}\ncompiler exit: {}\noriginating Rust kernel: {}",
-                String::from_utf8_lossy(&output.stderr),
-                String::from_utf8_lossy(&output.stdout),
-                output.status,
-                kernel.qualified_name()
+            diagnostics: annotated_failure(
+                kernel,
+                format!(
+                    "{}\n{}\ncompiler exit: {}",
+                    String::from_utf8_lossy(&output.stderr),
+                    String::from_utf8_lossy(&output.stdout),
+                    output.status,
+                ),
             ),
         }));
     }

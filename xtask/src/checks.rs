@@ -36,7 +36,14 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
     let area = area.ok_or("check-feature needs an area")?;
     match area {
         "macro" => run_direct(&root, "cargo", &["test", "-p", "gust-macros"]),
-        "core" => run_direct(&root, "cargo", &["test", "-p", "gust", "--lib"]),
+        "core" => {
+            run_direct(&root, "cargo", &["test", "-p", "gust", "--lib"])?;
+            run_direct(
+                &root,
+                "cargo",
+                &["test", "-p", "gust", "--test", "diagnostics"],
+            )
+        }
         "wgpu" => verify(VerifyMode::Gpu, false),
         "gpu-smoke" => run_direct(&root, "cargo", &["test", "-p", "gust-wgpu", "--lib"]),
         "gpu-semantics" => {

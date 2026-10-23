@@ -22,6 +22,49 @@ pub struct KernelDescriptor {
     /// Slang source emitted directly from the annotated Rust syntax tree.
     /// Backends compile this source to their preferred target on demand.
     pub slang_source: &'static str,
+    /// Where the kernel's Rust source lives and which Slang lines came from
+    /// which Rust line. Diagnostic metadata only: it never affects the emitted
+    /// Slang, the pipeline cache identity or the runtime ABI.
+    pub source: SourceOrigin,
+}
+
+/// Rust source location of a kernel module and the line table that maps its
+/// emitted Slang lines back to Rust lines (DX19).
+///
+/// The table is a line index over the generated text, not an IR.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceOrigin {
+    /// Rust source path as rustc reports it, with `/` separators. Empty when
+    /// no location is known.
+    pub file: &'static str,
+    /// In emission order, outer construct first, so the innermost record
+    /// containing a Slang line is the last match.
+    pub lines: &'static [LineSpan],
+}
+
+impl SourceOrigin {
+    /// No known Rust location, as for hand-written descriptors and probes.
+    pub const UNKNOWN: Self = Self {
+        file: "",
+        lines: &[],
+    };
+
+    /// The Rust line of the innermost record containing `slang_line`.
+    pub(crate) fn rust_line_at(&self, slang_line: u32) -> Option<u32> {
+        self.lines
+            .iter()
+            .rev()
+            .find(|span| span.slang_start <= slang_line && slang_line <= span.slang_end)
+            .map(|span| span.rust_line)
+    }
+}
+
+/// An inclusive, 1-based Slang line range generated from one Rust line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineSpan {
+    pub slang_start: u32,
+    pub slang_end: u32,
+    pub rust_line: u32,
 }
 
 impl KernelDescriptor {

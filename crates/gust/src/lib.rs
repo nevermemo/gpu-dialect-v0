@@ -77,8 +77,8 @@ pub use abi::{
     TypeLayoutKind, pod_slice_as_bytes,
 };
 pub use descriptor::{
-    Access, Kernel, KernelDescriptor, ModuleDescriptor, ParameterDescriptor, ParameterKind,
-    ResourceBinding,
+    Access, Kernel, KernelDescriptor, LineSpan, ModuleDescriptor, ParameterDescriptor,
+    ParameterKind, ResourceBinding, SourceOrigin,
 };
 pub use gust_macros::gpu;
 pub use job::{Device, Job, JobStatus};
