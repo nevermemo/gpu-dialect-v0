@@ -1514,10 +1514,10 @@ fn recovered_module(items: &[syn::Item]) -> &syn::ItemMod {
 }
 
 const REJECTED_MODULE: &str = "mod demo { \
-    #[kernel] fn run(id: SV_DispatchThreadID) { \
+    #[kernel] pub fn run(id: SV_DispatchThreadID) { \
         let value: Result<uint, uint> = Ok(1u32); let x = value.unwrap(); \
     } \
-    fn helper(x: uint) -> uint { x } \
+    pub fn helper(x: uint) -> uint { x } \
 }";
 
 #[test]
@@ -1543,7 +1543,10 @@ fn rejected_module_is_returned_beside_the_error_without_kernel_attributes() {
         })
         .collect();
     let names: Vec<String> = functions.iter().map(|f| f.sig.ident.to_string()).collect();
-    assert_eq!(names, ["run", "helper"]);
+    // The kernel gets the success path's private shadow name; other functions are untouched.
+    assert_eq!(names, ["__gpu_typecheck_run", "helper"]);
+    assert!(matches!(functions[0].vis, syn::Visibility::Inherited));
+    assert!(matches!(functions[1].vis, syn::Visibility::Public(_)));
     for function in functions {
         assert!(
             function
@@ -1566,6 +1569,7 @@ fn recovery_strips_kernel_attributes_from_nested_modules_and_impls() {
     let item: proc_macro2::TokenStream = "mod demo { \
         mod inner { #[kernel] fn deep() {} } \
         struct S; impl S { #[kernel] fn method(&self) {} } \
+        #[kernel] struct Marked { x: uint } #[kernel] const LIMIT: uint = 1; \
         #[kernel(workgroup_size(8, 1, 1))] fn run(id: SV_DispatchThreadID) { loop {} } \
     }"
     .parse()
@@ -1574,8 +1578,40 @@ fn recovery_strips_kernel_attributes_from_nested_modules_and_impls() {
     assert_leading_compile_error(&items, "");
     let text = quote::ToTokens::to_token_stream(recovered_module(&items)).to_string();
     assert!(!text.contains("kernel"), "{text}");
-    for name in ["deep", "method", "run"] {
+    for name in ["deep", "method", "__gpu_typecheck_run"] {
         assert!(text.contains(&format!("fn {name}")), "{name}: {text}");
+    }
+    assert!(text.contains("struct Marked"), "{text}");
+    assert!(text.contains("const LIMIT"), "{text}");
+}
+
+#[test]
+fn recovery_keeps_the_users_module_attributes_and_visibility() {
+    let item: proc_macro2::TokenStream = "#[doc = \"mine\"] pub(crate) mod demo { \
+        #[kernel] fn run(id: SV_DispatchThreadID) { let value: u64 = 1; } \
+    }"
+    .parse()
+    .unwrap();
+    let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
+    assert_leading_compile_error(&items, "");
+    let module = recovered_module(&items);
+    let doc: syn::Attribute = syn::parse_quote!(#[doc = "mine"]);
+    let allow: syn::Attribute = syn::parse_quote! {
+        #[allow(dead_code, unused_variables, unused_mut, unused_imports)]
+    };
+    assert_eq!(module.attrs, [doc, allow]);
+    let visibility: syn::Visibility = syn::parse_quote!(pub(crate));
+    assert_eq!(module.vis, visibility);
+}
+
+#[test]
+fn module_without_inline_content_gets_the_error_alone() {
+    // `mod m;` would make rustc look for a file; nothing may be re-emitted.
+    for attribute in ["", "x"] {
+        let item: proc_macro2::TokenStream = "mod m;".parse().unwrap();
+        let items = output_items(crate::gpu_impl(attribute.parse().unwrap(), item));
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_leading_compile_error(&items, "");
     }
 }
 
