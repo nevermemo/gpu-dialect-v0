@@ -128,9 +128,8 @@ fn build_slang_reflect_windows(
     if command_exists("cl") {
         run_direct_args(Path::new("."), "cl", &args)?;
     } else {
-        let vcvars = find_vcvars64()?;
-        let command = format!("\"{}\" && cl {}", vcvars.display(), quote_cmd_args(&args));
-        run_direct_args(Path::new("."), "cmd", &["/C".into(), command])?;
+        let environment = capture_vcvars_environment(&find_vcvars64()?)?;
+        run_cl_in_environment(&environment, &args)?;
     }
     fs::copy(
         &dll,
@@ -253,9 +252,100 @@ fn find_vcvars64() -> Result<PathBuf, String> {
     }
 }
 
-fn quote_cmd_args(args: &[String]) -> String {
-    args.iter()
-        .map(|arg| format!("\"{}\"", arg.replace('"', "\\\"")))
-        .collect::<Vec<_>>()
-        .join(" ")
+/// The command line (after the program name) that makes `cmd.exe` run `vcvars64.bat` quietly
+/// and then print the resulting environment with `set`.
+///
+/// `/S` makes cmd strip exactly the outer pair of quotes and leave the inner ones alone, which is
+/// what keeps a path with spaces and parentheses (`Program Files (x86)`) intact. The string must
+/// reach cmd verbatim: `Command::arg` would escape the inner quotes as `\"`, which cmd does not
+/// understand. Characters that cannot be quoted safely in a cmd line are rejected.
+fn vcvars_capture_command_line(vcvars: &Path) -> Result<String, String> {
+    let path = vcvars
+        .to_str()
+        .ok_or("non-utf8 vcvars64.bat path")?
+        .replace('/', "\\");
+    if path.contains(['"', '%', '\r', '\n']) {
+        return Err(format!(
+            "vcvars64.bat path contains a character cmd.exe cannot quote safely: {path}"
+        ));
+    }
+    Ok(format!("/S /C \"\"{path}\" >nul && set\""))
 }
+
+/// Parses the output of `set` into `(name, value)` pairs. Lines without `=` and the hidden
+/// per-drive entries cmd prints (`=C:=C:\dir`, empty name) are skipped.
+fn parse_env_dump(dump: &str) -> Vec<(String, String)> {
+    dump.lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(name, _)| !name.is_empty())
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect()
+}
+
+/// Looks for `program` in the `;`-separated (platform list separator) directories of `path`.
+fn find_in_path(program: &str, path: &str) -> Option<PathBuf> {
+    env::split_paths(path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(windows)]
+fn set_raw_command_line(command: &mut std::process::Command, line: &str) {
+    use std::os::windows::process::CommandExt;
+    command.raw_arg(line);
+}
+
+#[cfg(not(windows))]
+fn set_raw_command_line(command: &mut std::process::Command, line: &str) {
+    command.arg(line);
+}
+
+/// Runs `vcvars64.bat` once in `cmd.exe` and returns the environment it produced.
+fn capture_vcvars_environment(vcvars: &Path) -> Result<Vec<(String, String)>, String> {
+    let mut command = std::process::Command::new("cmd");
+    set_raw_command_line(&mut command, &vcvars_capture_command_line(vcvars)?);
+    let output = command
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("could not launch cmd: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "vcvars64.bat failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(parse_env_dump(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Runs `cl.exe` directly (no shell) with the environment captured from `vcvars64.bat`.
+fn run_cl_in_environment(environment: &[(String, String)], args: &[String]) -> Result<(), String> {
+    let path = environment
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("path"))
+        .map(|(_, value)| value.as_str())
+        .ok_or("vcvars64.bat did not produce a PATH")?;
+    let cl = find_in_path("cl.exe", path)
+        .ok_or("cl.exe was not found on the PATH that vcvars64.bat produced")?;
+    let status = std::process::Command::new(&cl)
+        .args(args)
+        .envs(environment.iter().map(|(name, value)| (name, value)))
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|error| format!("could not launch {}: {error}", cl.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cl {} failed (exit {})",
+            args.join(" "),
+            status.code().unwrap_or(-1)
+        ))
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/reflect.rs"]
+mod reflect_tests;
