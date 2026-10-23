@@ -4,8 +4,9 @@
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done except M0.15,
-which waits for a week of green CI (from 2026-10-30). M1 (diagnostics): M1.0 to M1.4
-are done (per-item evidence in the roadmap); M1.5, stable diagnostic codes, is next.
+which waits for a week of green CI (from 2026-10-30). M1 (diagnostics):
+M1.0 to M1.5 are done (per-item evidence in the roadmap); the M1 sanity check is
+next, then M2 (typed host API).
 
 - M1.3: the compile-time copy carries `#line` directives on `slang::compile*` and both
   reflection paths; exported `.slang` never does. The native helper honours them, and
@@ -18,6 +19,17 @@ are done (per-item evidence in the roadmap); M1.5, stable diagnostic codes, is n
   imported; `mod m;` gets the error alone. Measured on `vector-add` with one rejection
   inside the referenced kernel (rustc 1.98): one error before and after, the same
   message; the editor benefit is not measured (`e01b82c`, `f507ab4`).
+- M1.5: every `#[gpu]` rejection carries a stable code (`[GUST-E0401] message`, D31);
+  111 codes, one `docs/DIAGNOSTICS.md` section each with its reachability. Every code is
+  asserted by a test or listed as unreachable through `#[gpu]` (seven codes). Guards:
+  unique codes, doc and enum agree, and a source scan for uncoded `syn` errors whose
+  limits the doc states (`df07122`, `6e195bc`, `f20d313`).
+- M1 carry-overs: check-ui matches each expectation within one rustc diagnostic; the
+  `on_unimplemented` text no longer claims exclusivity; the vcvars capture refuses
+  inherited multi-line values that could forge a variable (`fb257c9`).
+- Bug fix: the `typed-pipeline` and `staged-graph` release runs dispatched 65 536
+  workgroups against wgpu's default limit of 65 535 and panicked; release sizes are now
+  `1 << 21` with a test per example, and both release runs complete (`5c34e22`).
 
 T13 remains deferred by owner; its work in progress is the git stash
 `WIP T13 active count deferred`, not the working tree. Do not apply, continue,
