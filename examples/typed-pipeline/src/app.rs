@@ -435,12 +435,23 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(directory.canonicalize().unwrap_or(directory))
 }
 
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let count = if cfg!(debug_assertions) {
-        1 << 18
+/// Element count of a debug run.
+const DEBUG_COUNT: usize = 1 << 18;
+/// Element count of a release run. Every stage dispatches `count / workgroup_size`
+/// groups, which must stay within the default per-dimension workgroup limit of
+/// 65 535; 2^21 elements need 32 768 groups of 64.
+const RELEASE_COUNT: usize = 1 << 21;
+
+fn demo_count() -> usize {
+    if cfg!(debug_assertions) {
+        DEBUG_COUNT
     } else {
-        1 << 22
-    };
+        RELEASE_COUNT
+    }
+}
+
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let count = demo_count();
     let inputs = make_inputs(count);
     let cpu_started = Instant::now();
     let expected = run_cpu(&inputs);
@@ -469,6 +480,26 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
+    /// (gust-wgpu requests the default limits).
+    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
+
+    #[test]
+    fn demo_sizes_stay_within_the_default_workgroup_limit() {
+        for count in [DEBUG_COUNT, RELEASE_COUNT] {
+            for descriptor in descriptors() {
+                let groups = u32::try_from(count)
+                    .unwrap()
+                    .div_ceil(descriptor.workgroup_size[0]);
+                assert!(
+                    groups <= MAX_WORKGROUPS_PER_DIMENSION,
+                    "{}: {count} elements need {groups} workgroups",
+                    descriptor.entry_point
+                );
+            }
+        }
+    }
 
     #[test]
     #[ignore = "example validation runs only in full verification"]

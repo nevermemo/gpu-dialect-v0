@@ -1,8 +1,9 @@
 use std::{env, fs, path::Path};
 
 use super::{
-    decode_diagnostic, decode_utf16le, diagnostic_tail, environment_path, find_in_path,
-    parse_env_dump, vcvars_capture_command, vcvars_capture_command_line,
+    ambiguous_inherited_variable, decode_diagnostic, decode_utf16le, diagnostic_tail,
+    environment_path, find_in_path, inherited_environment, parse_env_dump, vcvars_capture_command,
+    vcvars_capture_command_line,
 };
 
 #[cfg(windows)]
@@ -83,8 +84,9 @@ fn capture_command_hands_the_exact_line_to_cmd_as_one_raw_argument() {
 
 /// The real wiring: a fake `vcvars64.bat` in a directory full of cmd metacharacters and
 /// non-ASCII letters runs through the real `cmd.exe`. With `Command::arg` (escaped inner
-/// quotes) cmd cannot find the batch file; without `/V:OFF` the `!bang!` vanishes; with an
-/// ANSI decode the accented letters are mangled.
+/// quotes) cmd cannot find the batch file; with an ANSI decode the accented letters are mangled.
+/// The `!bang!` directory does not prove `/V:OFF` here, because delayed expansion is off in
+/// `cmd /C` by default; the exact-string tests above are what pin `/V:OFF`.
 #[cfg(windows)]
 #[test]
 fn capture_runs_a_batch_file_in_an_odd_directory_through_real_cmd() {
@@ -92,7 +94,7 @@ fn capture_runs_a_batch_file_in_an_odd_directory_through_real_cmd() {
     let bat = dir.join("vcvars64.bat");
     fs::write(
         &bat,
-        "@echo off\r\nset \"GUST_FAKE_HERE=%~dp0\"\r\nset \"GUST_FAKE_BANG=hi!there!\"\r\necho noise on stdout\r\n",
+        "@echo off\r\nset \"GUST_FAKE_HERE=%~dp0\"\r\nset \"GUST_FAKE_BANG=hi!there!\"\r\necho GUST_NOISE=unexpected\r\n",
     )
     .unwrap();
     let environment = capture_vcvars_environment(&bat);
@@ -110,8 +112,14 @@ fn capture_runs_a_batch_file_in_an_odd_directory_through_real_cmd() {
         "the directory (with !bang! and accents) must survive intact"
     );
     assert_eq!(get("GUST_FAKE_BANG"), Some("hi!there!".to_owned()));
-    // The batch file's own stdout must not leak into the dump.
-    assert!(environment.iter().all(|(name, _)| !name.contains("noise")));
+    // The batch file's own stdout (shaped like a variable, so a lost `1>&2` would parse it as
+    // one) must not leak into the dump.
+    assert!(
+        environment
+            .iter()
+            .all(|(name, value)| name != "GUST_NOISE" && value != "unexpected"),
+        "{environment:?}"
+    );
     assert!(environment_path(&environment).is_some());
 }
 
@@ -150,14 +158,81 @@ fn inherited_multiline_values_never_become_variables() {
     assert!(environment.iter().all(|(name, _)| name != "GUST_MULTI"));
     assert!(environment.iter().all(|(_, value)| value != "second line"));
 
-    // A continuation line that looks like `PATH=...` cannot be told from a variable, so the
-    // duplicate is refused instead of overriding the real PATH.
-    let mut command = vcvars_capture_command(&bat).unwrap();
-    command.env("GUST_FORGE", "x\r\nPATH=C:\\evil");
-    let error = capture_environment_from(command).unwrap_err();
+    // A continuation line shaped like `NAME=...` cannot be told from a variable. It is refused
+    // before the capture runs, whether or not vcvars sets that name: `CL` is never set by vcvars,
+    // so the duplicate rule alone would let it through; `PATH` is set, so it was caught before too.
+    for forged in ["CL=/evil", "PATH=C:\\evil"] {
+        let mut command = vcvars_capture_command(&bat).unwrap();
+        command.env("GUST_FORGE", format!("x\r\n{forged}"));
+        let error = capture_environment_from(command).unwrap_err();
+        assert!(error.contains("`GUST_FORGE`"), "{forged}: {error}");
+        assert!(error.contains("multi-line"), "{forged}: {error}");
+        assert!(
+            !error.contains("evil"),
+            "the value must not be echoed: {error}"
+        );
+    }
     fs::remove_dir_all(&dir).unwrap();
-    assert!(error.contains("more than once"), "{error}");
-    assert!(error.contains("PATH") || error.contains("Path"), "{error}");
+}
+
+#[test]
+fn ambiguous_inherited_values_are_found_by_their_continuation_lines() {
+    // Only a line after the first can forge: it is shaped like `NAME=value` or like `=C:=...`.
+    for value in [
+        "x\r\nCL=/evil",
+        "x\nCL=/evil",
+        "\r\nCL=/evil",
+        "x\r\ny\r\nProgramFiles(x86)=C:\\pf",
+        "x\r\n=C:=C:\\dir",
+    ] {
+        let environment = pairs(&[("A", "1"), ("GUST_FORGE", value)]);
+        assert_eq!(
+            ambiguous_inherited_variable(&environment),
+            Some("GUST_FORGE"),
+            "{value:?}"
+        );
+    }
+    // Plain continuation lines, single-line values (even with `=`), and names that are not
+    // variable names (a space) are harmless: parse_env_dump drops or ignores them.
+    for value in [
+        "",
+        "plain",
+        "FLAGS=/a=b",
+        "x\r\nsecond line",
+        "x\r\nbad name=1",
+        "x\r\n\r\nthird",
+    ] {
+        let environment = pairs(&[("A", "1"), ("B", value)]);
+        assert_eq!(
+            ambiguous_inherited_variable(&environment),
+            None,
+            "{value:?}"
+        );
+    }
+    assert_eq!(ambiguous_inherited_variable(&[]), None);
+}
+
+#[test]
+fn the_inherited_environment_applies_the_commands_own_changes_case_insensitively() {
+    let mut command = std::process::Command::new("cmd");
+    command.env("GUST_INHERIT_NEW", "n");
+    let path_name = env::vars_os()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .find(|name| name.eq_ignore_ascii_case("path"))
+        .expect("PATH is set when the tests run");
+    command.env_remove(path_name.to_ascii_lowercase());
+    let environment = inherited_environment(&command);
+    assert!(
+        environment
+            .iter()
+            .any(|(name, value)| name == "GUST_INHERIT_NEW" && value == "n")
+    );
+    assert!(
+        environment
+            .iter()
+            .all(|(name, _)| !name.eq_ignore_ascii_case("path")),
+        "an env_remove of any casing must drop the inherited name"
+    );
 }
 
 #[test]

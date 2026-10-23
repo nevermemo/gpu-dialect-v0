@@ -304,12 +304,23 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(directory.canonicalize().unwrap_or(directory))
 }
 
-pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let count = if cfg!(debug_assertions) {
-        1 << 18
+/// Sample count of a debug run.
+const DEBUG_COUNT: usize = 1 << 18;
+/// Sample count of a release run. Stage A dispatches `count / workgroup_size`
+/// groups, which must stay within the default per-dimension workgroup limit of
+/// 65 535; 2^21 samples need 32 768 groups of 64.
+const RELEASE_COUNT: usize = 1 << 21;
+
+fn demo_count() -> usize {
+    if cfg!(debug_assertions) {
+        DEBUG_COUNT
     } else {
-        1 << 22
-    };
+        RELEASE_COUNT
+    }
+}
+
+pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let count = demo_count();
     let samples = make_samples(count);
     let device = HeadlessDevice::new()?;
     let state = ResidentState::new(&device, &samples);
@@ -359,6 +370,31 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use gust_wgpu::{Error, TransferDirection};
+
+    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
+    /// (gust-wgpu requests the default limits).
+    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
+
+    #[test]
+    fn demo_sizes_stay_within_the_default_workgroup_limit() {
+        for count in [DEBUG_COUNT, RELEASE_COUNT] {
+            // Stage A runs one element per sample, stage B one per summary.
+            let stages = [
+                (&staged::transform::DESCRIPTOR, count),
+                (&staged::summarize::DESCRIPTOR, summary_count(count)),
+            ];
+            for (descriptor, elements) in stages {
+                let groups = u32::try_from(elements)
+                    .unwrap()
+                    .div_ceil(descriptor.workgroup_size[0]);
+                assert!(
+                    groups <= MAX_WORKGROUPS_PER_DIMENSION,
+                    "{}: {elements} elements need {groups} workgroups",
+                    descriptor.entry_point
+                );
+            }
+        }
+    }
 
     #[test]
     #[ignore = "example validation runs only in full verification"]

@@ -17,7 +17,8 @@ pub(crate) const UI_DIR: &str = "tests/ui";
 pub(crate) enum Expectation {
     /// No `expected.txt`: the crate must compile.
     Compiles,
-    /// `expected.txt` lists substrings: the crate must fail and its output must contain them all.
+    /// `expected.txt` lists substrings: the crate must fail and one single rustc diagnostic must
+    /// contain them all (location, error code and custom message), not just the output as a whole.
     Fails(Vec<String>),
 }
 
@@ -77,7 +78,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         .filter(|case| matches!(case.expectation, Expectation::Fails(_)))
         .count();
     Ok(format!(
-        "UI check passed: {failing} fixture crate(s) failed to compile with the expected rustc output and {} compiled cleanly (tests/ui, `cargo check --locked`). Only the substrings of each expected.txt are compared, not the whole rustc output; no slangc and no GPU were involved.\n",
+        "UI check passed: {failing} fixture crate(s) failed to compile with the expected rustc output and {} compiled cleanly (tests/ui, `cargo check --locked`). Only the substrings of each expected.txt are compared, all within one rustc diagnostic, not the whole rustc output; no slangc and no GPU were involved.\n",
         cases.len() - failing
     ))
 }
@@ -173,23 +174,84 @@ pub(crate) fn judge(
             "{case}: has an expected.txt so `cargo check` must fail, but it compiled"
         )],
         Expectation::Fails(wanted) => {
-            let missing: Vec<&String> = wanted
-                .iter()
-                .filter(|substring| !shown.contains(substring.as_str()))
-                .collect();
-            if missing.is_empty() {
+            // Every substring must sit in one and the same diagnostic: the location, the error
+            // code and the custom message together. The diagnostic that matches most of them is
+            // the one whose gaps are reported.
+            let diagnostics = split_diagnostics(&shown);
+            let contains_all = |diagnostic: &String| {
+                wanted
+                    .iter()
+                    .all(|substring| diagnostic.contains(substring.as_str()))
+            };
+            if diagnostics.iter().any(contains_all) {
                 return Vec::new();
             }
-            let mut problems: Vec<String> = missing
+            let matched = |diagnostic: &String| {
+                wanted
+                    .iter()
+                    .filter(|substring| diagnostic.contains(substring.as_str()))
+                    .count()
+            };
+            let closest = diagnostics.iter().rev().max_by_key(|d| matched(d));
+            let mut problems: Vec<String> = wanted
                 .iter()
-                .map(|substring| {
-                    format!("{case}: rustc output does not contain `{substring}` (expected.txt)")
+                .filter(|substring| closest.is_none_or(|d| !d.contains(substring.as_str())))
+                .map(|substring| match closest {
+                    Some(diagnostic) => format!(
+                        "{case}: no single rustc diagnostic contains `{substring}` together with the rest of expected.txt (closest: `{}`)",
+                        diagnostic.lines().next().unwrap_or_default()
+                    ),
+                    None => format!("{case}: rustc output has no diagnostic containing `{substring}` (expected.txt)"),
                 })
                 .collect();
             problems.push(format!("{case}: rustc output was:\n{}", indent(&shown)));
             problems
         }
     }
+}
+
+/// The rustc diagnostics of `cargo check --message-format short` output. Each starts at a line
+/// with a severity (`error`, `warning`, `note`, `help`), optionally after a `path:line:col: `
+/// location, and takes the lines up to the next such line. Cargo's own status lines
+/// (`Checking ...`) have no severity and join the preceding diagnostic or are dropped before the
+/// first one, which is harmless since no expectation can name a fixture file there.
+fn split_diagnostics(output: &str) -> Vec<String> {
+    let mut diagnostics: Vec<String> = Vec::new();
+    for line in output.lines() {
+        if starts_diagnostic(line) {
+            diagnostics.push(line.to_owned());
+        } else if let Some(last) = diagnostics.last_mut() {
+            last.push('\n');
+            last.push_str(line);
+        }
+    }
+    diagnostics
+}
+
+/// Whether `line` opens a diagnostic: `error...`, `warning...`, `note...` or `help...` at the
+/// start of the line or right after a `: ` that ends a location, followed by `:` or `[`.
+fn starts_diagnostic(line: &str) -> bool {
+    const SEVERITIES: [&str; 4] = ["error", "warning", "note", "help"];
+    let opens = |text: &str| {
+        SEVERITIES.iter().any(|severity| {
+            text.strip_prefix(severity)
+                .is_some_and(|rest| rest.starts_with([':', '[']))
+        })
+    };
+    if line.starts_with(char::is_whitespace) {
+        return false;
+    }
+    if opens(line) {
+        return true;
+    }
+    // `<path>:<line>:<col>: error[E0277]: ...`: the severity follows the first `:<digits>:<digits>: `.
+    let is_number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    line.match_indices(": ").any(|(split, _)| {
+        let mut parts = line[..split].rsplitn(3, ':');
+        let (column, row, path) = (parts.next(), parts.next(), parts.next());
+        matches!((column, row, path), (Some(c), Some(r), Some(p)) if is_number(c) && is_number(r) && !p.is_empty())
+            && opens(&line[split + 2..])
+    })
 }
 
 fn indent(text: &str) -> String {
