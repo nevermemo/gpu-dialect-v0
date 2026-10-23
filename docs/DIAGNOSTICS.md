@@ -14,16 +14,38 @@ the words. Renumbering or retiring a code needs a row in [DECISIONS.md](DECISION
 Search this page for the code to find what it rejects and what to write instead.
 Decision: D31.
 
+The promise starts with the first crates.io release (D33). Until then a code may still be
+split or renumbered, and each change is listed here:
+
+- `f20d313`: E0602 narrowed from any wrong shape of an atomic's first argument to "not a
+  reference"; the other shapes moved to the new codes E0608, E0609 and E0610.
+
 Tests assert the code, not the wording. Every code appears once on this page and once in
-the macro's code list; unit tests fail if the two disagree. They also fail when a source
-file outside `diagnostics.rs` builds a `syn::Error` directly (`syn::Error::new`,
-`Error::from`, `.error(` on any receiver, an alias of `syn::Error`), or calls a `syn` parse
-entry point (`parse_args`, `parse_nested_meta`, `parse2`, `parse_str`, `parse_macro_input!`)
-without `diagnostics::wrap` in the same statement. The limit of that guard is that it is a
-text scan: it does not see a `syn::Error` that arrives through another `syn` call and is
-propagated with `?` (for example `Parse::parse` or `base10_parse` outside a wrapped entry
-point), nor one converted with `.into()`. Review new code that handles a `syn::Result` by
-hand with that in mind.
+the macro's code list; unit tests fail if the two disagree. A code counts as tested only
+when a test assertion passed for it: the test binary runs again and the code helpers
+(`assert_code`, `assert_codes`, `assert_rendered_code`) record what they checked, so a
+`Code::X` that is only named in a test does not count.
+
+Clippy keeps uncoded errors out. The workspace `clippy.toml` bars `syn::Error::new` and
+`new_spanned`, the `error` methods of `ParseBuffer`, `StepCursor`, `ParseNestedMeta` and
+`Lookahead1`, the `syn` parse functions (`parse`, `parse2`, `parse_str`, `parse_file`,
+`Parser::parse*`, `Attribute::` and `MetaList::` `parse_args`, `parse_args_with`,
+`parse_nested_meta`) and `parse_macro_input!`.
+Only `diagnostics.rs` allows them, and it offers coded wrappers (`error`, `wrap`, `parse2`,
+`parse_args_with`, `parse_nested_meta`); CI runs clippy with `-D warnings`, so any other use
+fails the build. Clippy resolves the real item, so an alias or a renamed import is caught
+too. Unit tests fail if `clippy.toml` drops an entry, if another source file names the
+lints, their groups (`clippy::style`, `clippy::all`) or `allow(warnings`, if this crate's
+or the root manifest has a `[lints` table, if the root `clippy.toml` is missing, if one sits
+in `crates/` or `crates/gust-macros` (clippy takes the first it finds walking up), or if
+`CLIPPY_CONF_DIR` is set. Not checked: `rustflags` in a `.cargo/config.toml` (for example
+`-A clippy::disallowed_methods`) would silence the bar; keep such flags out of the repository.
+The limits of the guard: clippy cannot bar one type's `From` impl, so the
+conversion `syn::Error::from(LexError)` is only checked as text (`LexError` and
+`Error::from(` outside `diagnostics.rs`). It also does not see a `syn::Error` that arrives
+through another `syn` call (for example `Parse::parse`, `base10_parse`, `LitStr::parse`)
+and is propagated with `?`, nor one converted with `.into()`. Review new code
+that handles a `syn::Result` by hand with that in mind.
 
 The subset is deliberately small: the macro translates Rust syntax directly to Slang
 without an intermediate representation (D02), and rejects what it cannot lower with a
@@ -49,6 +71,29 @@ this page and the macro's list of such codes in agreement.
 | E07xx | Macro entry and `#[kernel]` options |
 | E08xx | Emitter-only rejections |
 | E09xx | Reserved names and shadowing |
+
+## Slang compiler errors and Rust lines
+
+The codes below are the macro's. An error that `slangc` reports later, in the emitted
+Slang, is mapped back to a Rust line when the kernel's source file is known: the compile
+copy of the Slang carries `#line <rust_line> "<file>"` directives, and the runtime reads
+the location back from the compiler's message. A source file whose name fails the
+directive whitelist (`directive_file_is_usable` in `crates/gust/src/slang/mod.rs`) gets
+no Rust-line attribution: its errors name Slang lines of `kernel.slang` only. The macro
+and the runtime check the same characters and the same structure. The macro records a path
+only if every `/`-separated component is non-empty, is not made of dots only, and consists
+of ASCII letters and digits, `_ . + -`, and non-ASCII characters with the Unicode
+Alphabetic property; the directive check applies exactly that to each component, so no path
+the macro records is refused, and hand-written origins with an empty, dot-only or leading
+`/` component are refused as well. A path under a non-ASCII directory such as
+`crates/ü/src/k.rs` therefore gets `#line` directives; slangc echoes a UTF-8 name back
+unchanged (probed with two-, three- and four-byte characters). A decomposed accent (U+0301,
+U+0308) is not Alphabetic, so a name in NFD form, as macOS file systems store accented
+names, gets no `#line`. The name `kernel.slang` itself is excluded. The reason is Slang
+string quoting: the file name is written into the directive's string literal, and a quote,
+a backslash, a control character or a line break would end that string or the directive,
+so no such name is ever injected. A file named like the compile copy would also make
+Rust and Slang locations indistinguishable.
 
 ## E01xx: module and item shape
 

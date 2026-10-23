@@ -32,8 +32,7 @@ pub(crate) fn gpu_impl(
     item: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     // `syn` words the parse failure itself; the code is added in front.
-    let parsed = syn::parse2::<syn::ItemMod>(item.clone())
-        .map_err(|error| diagnostics::wrap(Code::ItemNotModule, error));
+    let parsed = diagnostics::parse2::<syn::ItemMod>(Code::ItemNotModule, item.clone());
     if !attribute.is_empty() {
         let error = diagnostics::error_at(
             Code::GpuArguments,

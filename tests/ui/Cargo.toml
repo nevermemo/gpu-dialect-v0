@@ -2,4 +2,4 @@
 # root workspace does not contain it and `cargo test --workspace` never builds it.
 [workspace]
 members = ["gpupod-missing", "gpupod-present", "kernel-missing"]
-resolver = "2"
+resolver = "3"
