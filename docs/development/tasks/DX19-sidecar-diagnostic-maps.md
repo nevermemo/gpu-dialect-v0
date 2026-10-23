@@ -47,11 +47,14 @@ and use it to enrich Slang errors with a stable generated construct label.
   `"rust_file"`: the kernel's Rust source path with `/` separators, or `null` when
   no location is known (hand-written descriptors, probes, any compile outside a
   real macro expansion). The path is never absolute (the descriptor ships in public
-  binaries): a relative path is kept as rustc reports it; an absolute path under the
-  expanding crate's `CARGO_MANIFEST_DIR` is stored relative to it (for example
-  `src/kernels/a.rs`); any other absolute path (Unix root, drive, UNC, `\\?\`) is
-  reduced to its file name (for example `lib.rs`). A segment carries
-  `"rust_line"` (after `"ordinal"`) when the innermost line record containing the
+  binaries): both paths are first normalised lexically (repeated separators
+  collapsed, `.` dropped, `..` resolved). A relative path is kept as its normalised
+  components; an absolute path under the expanding crate's `CARGO_MANIFEST_DIR` is
+  stored relative to it (for example `src/kernels/a.rs`); any other absolute path
+  (Unix root, drive, UNC, `\\?\`, including one that leaves the manifest dir through
+  `..`) and any relative path that starts with `..` after normalisation is reduced
+  to its file name (for example `lib.rs`). The result never contains `..`. A segment
+  carries `"rust_line"` (after `"ordinal"`) when the innermost line record containing the
   segment's first Slang line exists; the key is omitted otherwise, so the
   kernel and prologue segments never have it.
 - The Rust lines come from the emitter's line table, carried by

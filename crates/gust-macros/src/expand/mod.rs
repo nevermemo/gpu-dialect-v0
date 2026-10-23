@@ -119,53 +119,134 @@ fn source_origin(kernel: &syn::ItemFn, lines: &[crate::slang::LineRecord]) -> To
     quote!(::gust::SourceOrigin { file: #file, lines: &[#(#lines),*] })
 }
 
-/// The path stored in a descriptor, never absolute and always with `/`:
-/// - a relative path is kept as given;
-/// - an absolute path under `manifest_dir` (the expanding crate's
-///   `CARGO_MANIFEST_DIR`) is stored relative to it;
-/// - any other absolute path (Unix root, drive, UNC or `\\?\` verbatim) is stored
-///   as its file name only.
+/// The path stored in a descriptor, never absolute, never containing `..`, and
+/// always with `/`. Both paths are first normalised lexically (see
+/// [`NormalizedPath`]: repeated separators collapsed, `.` dropped, `..` resolved),
+/// then:
+/// - a relative path is kept as its normalised components, unless it climbs out
+///   of its root (starts with `..`), which stores the file name only;
+/// - an absolute path whose components lie under `manifest_dir` (the expanding
+///   crate's `CARGO_MANIFEST_DIR`) is stored relative to it;
+/// - any other absolute path (Unix root, drive, UNC or `\\?\` verbatim), including
+///   one that leaves the manifest dir by way of `..`, is stored as its file
+///   name only.
+///
+/// A final guard replaces any result that is still absolute, has a drive prefix or
+/// contains `..` with the file name.
 fn recorded_path(reported: &str, manifest_dir: Option<&str>) -> String {
-    let path = normalized(reported);
-    if !is_absolute(&path) {
-        return path;
+    let record = contained_record(reported, manifest_dir);
+    if is_safe_record(&record) {
+        record
+    } else {
+        file_name(record.split('/'))
+    }
+}
+
+/// [`recorded_path`] before the final guard.
+fn contained_record(reported: &str, manifest_dir: Option<&str>) -> String {
+    let path = NormalizedPath::new(reported);
+    if path.root.is_empty() {
+        return if path.parts.first().is_some_and(|part| part == "..") {
+            file_name(path.parts.iter().map(String::as_str))
+        } else {
+            path.parts.join("/")
+        };
     }
     if let Some(manifest_dir) = manifest_dir {
-        let root = normalized(manifest_dir);
-        let root = root.trim_end_matches('/');
+        let dir = NormalizedPath::new(manifest_dir);
         // Windows paths compare case-insensitively; a false match on another
         // platform could only shorten a path that is already under the root.
-        let windows = path.as_bytes().get(1) == Some(&b':') || path.starts_with("//");
-        let under_root = path.len() > root.len() + 1
-            && path.as_bytes()[root.len()] == b'/'
-            && path.is_char_boundary(root.len())
-            && if windows {
-                path[..root.len()].eq_ignore_ascii_case(root)
+        let windows = dir.root != "/";
+        let same = |a: &str, b: &str| {
+            if windows {
+                a.eq_ignore_ascii_case(b)
             } else {
-                path.starts_with(root)
-            };
-        if !root.is_empty() && under_root {
-            return path[root.len() + 1..].to_owned();
+                a == b
+            }
+        };
+        if !dir.root.is_empty()
+            && same(&path.root, &dir.root)
+            && path.parts.len() > dir.parts.len()
+            && dir.parts.iter().zip(&path.parts).all(|(a, b)| same(a, b))
+        {
+            return path.parts[dir.parts.len()..].join("/");
         }
     }
-    let name = path.rsplit('/').next().unwrap_or_default();
-    // A drive-relative `C:name.rs` has no separator, so drop its drive.
+    file_name(path.parts.iter().map(String::as_str))
+}
+
+/// What may be stored: relative, no drive prefix, no `..` component.
+fn is_safe_record(record: &str) -> bool {
+    !is_absolute(record) && !record.split('/').any(|part| part == "..")
+}
+
+/// The last component that is not `..`, without a drive prefix (a drive-relative
+/// `C:name.rs` has no separator, so its drive is dropped).
+fn file_name<'a>(parts: impl Iterator<Item = &'a str>) -> String {
+    let name = parts
+        .filter(|part| *part != "..")
+        .last()
+        .unwrap_or_default();
     match name.as_bytes() {
         [drive, b':', ..] if drive.is_ascii_alphabetic() => name[2..].to_owned(),
         _ => name.to_owned(),
     }
 }
 
-/// `\` to `/`, with a `\\?\` verbatim prefix removed (`\\?\UNC\host\share`
-/// becomes the UNC path `//host/share`).
-fn normalized(path: &str) -> String {
-    let path = path.replace('\\', "/");
-    if let Some(rest) = path.strip_prefix("//?/UNC/") {
-        format!("//{rest}")
-    } else if let Some(rest) = path.strip_prefix("//?/") {
-        rest.to_owned()
-    } else {
-        path
+/// A path split into a root and lexically normalised components. `root` is `""`
+/// (relative), `/` (Unix), `X:/` (drive), `X:` (drive-relative), or `//host/share`
+/// (UNC; a `\\?\` verbatim prefix is removed first, `\\?\UNC\host\share` being the
+/// same UNC path). Separators are `/` or `\`. In `parts` repeated separators are
+/// collapsed, `.` is dropped and `..` pops its parent; a `..` with no parent is
+/// dropped under a root and kept at the head of a relative path.
+struct NormalizedPath {
+    root: String,
+    parts: Vec<String>,
+}
+
+impl NormalizedPath {
+    fn new(path: &str) -> Self {
+        let path = path.replace('\\', "/");
+        let path = if let Some(rest) = path.strip_prefix("//?/UNC/") {
+            format!("//{rest}")
+        } else if let Some(rest) = path.strip_prefix("//?/") {
+            rest.to_owned()
+        } else {
+            path
+        };
+        let bytes = path.as_bytes();
+        let (root, rest) = if path.starts_with("//") {
+            // The host and share are the root, not components that `..` can pop.
+            let names: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+            let split = names.len().min(2);
+            (
+                format!("//{}", names[..split].join("/")),
+                names[split..].join("/"),
+            )
+        } else if path.starts_with('/') {
+            ("/".to_owned(), path.clone())
+        } else if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            let rooted = path[2..].starts_with('/');
+            let separator = if rooted { "/" } else { "" };
+            (format!("{}{separator}", &path[..2]), path[2..].to_owned())
+        } else {
+            (String::new(), path.clone())
+        };
+        let mut parts: Vec<String> = Vec::new();
+        for part in rest.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if parts.last().is_some_and(|last| last != "..") {
+                        parts.pop();
+                    } else if root.is_empty() {
+                        parts.push("..".to_owned());
+                    }
+                }
+                _ => parts.push(part.to_owned()),
+            }
+        }
+        NormalizedPath { root, parts }
     }
 }
 
@@ -407,6 +488,7 @@ mod tests {
 
     const UNIX_ROOT: Option<&str> = Some("/srv/build/gust/crates/demo");
     const DRIVE_ROOT: Option<&str> = Some(r"C:\build_gust\crates\demo");
+    const REPO: Option<&str> = Some("/repo");
 
     #[test]
     fn recorded_path_keeps_relative_paths_and_normalises_separators() {
@@ -419,7 +501,6 @@ mod tests {
             "crates/demo/src/lib.rs"
         );
         assert_eq!(recorded_path("src/lib.rs", None), "src/lib.rs");
-        assert_eq!(recorded_path("./src/lib.rs", None), "./src/lib.rs");
     }
 
     #[test]
@@ -476,6 +557,78 @@ mod tests {
     }
 
     #[test]
+    fn recorded_path_collapses_separators_and_dot_segments_before_the_containment_check() {
+        // Cases the manifest dir `/repo` and the reported path must agree on once
+        // both are normalised: a doubled separator used to leave `/src/lib.rs`.
+        for (reported, manifest_dir, expected) in [
+            ("/repo//src/lib.rs", REPO, "src/lib.rs"),
+            ("/repo/./src/lib.rs", REPO, "src/lib.rs"),
+            ("/repo/src/../src/lib.rs", REPO, "src/lib.rs"),
+            ("/repo/../repo/src/lib.rs", REPO, "src/lib.rs"),
+            ("/../repo/src/lib.rs", REPO, "src/lib.rs"),
+            ("/repo/src/.//lib.rs", Some("/repo//"), "src/lib.rs"),
+            (r"C:\repo\src\lib.rs", Some(r"C:\repo"), "src/lib.rs"),
+            (r"C:\repo\\src\.\lib.rs", Some(r"C:\repo"), "src/lib.rs"),
+            (r"c:\REPO\src\lib.rs", Some(r"C:\repo"), "src/lib.rs"),
+            (
+                r"C:\repo\src\..\src\lib.rs",
+                Some(r"C:\repo\."),
+                "src/lib.rs",
+            ),
+            // Relative paths lose their `.` and repeated separators, and resolve `..`.
+            ("./src/lib.rs", None, "src/lib.rs"),
+            ("src//a/./lib.rs", None, "src/a/lib.rs"),
+            ("src/a/../lib.rs", None, "src/lib.rs"),
+        ] {
+            assert_eq!(
+                recorded_path(reported, manifest_dir),
+                expected,
+                "{reported}"
+            );
+            // The final guard never has to fire for these.
+            assert!(
+                is_safe_record(&contained_record(reported, manifest_dir)),
+                "{reported}"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_path_never_follows_dot_dot_out_of_the_manifest_dir_or_a_relative_root() {
+        for (reported, manifest_dir, expected) in [
+            // Leaves the manifest dir by way of `..` into a sibling tree.
+            ("/repo/../home/alice/kernel.rs", REPO, "kernel.rs"),
+            ("/repo/src/../../x.rs", REPO, "x.rs"),
+            ("/repo/..", REPO, ""),
+            (r"C:\repo\..\other\lib.rs", Some(r"C:\repo"), "lib.rs"),
+            // A relative path that leaves its root.
+            ("../other/src/lib.rs", REPO, "lib.rs"),
+            ("../other/src/lib.rs", None, "lib.rs"),
+            ("src/../../lib.rs", None, "lib.rs"),
+            (r"..\..\lib.rs", None, "lib.rs"),
+            ("..", None, ""),
+        ] {
+            assert_eq!(
+                recorded_path(reported, manifest_dir),
+                expected,
+                "{reported}"
+            );
+            assert!(
+                is_safe_record(&contained_record(reported, manifest_dir)),
+                "{reported}"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_path_guard_replaces_a_relative_result_that_looks_absolute() {
+        // `c:` as the first component of a relative path is a drive on Windows.
+        assert_eq!(contained_record("./c:/x.rs", None), "c:/x.rs");
+        assert!(!is_safe_record("c:/x.rs"));
+        assert_eq!(recorded_path("./c:/x.rs", None), "x.rs");
+    }
+
+    #[test]
     fn recorded_path_is_never_absolute() {
         for reported in [
             "/a/b.rs",
@@ -485,6 +638,13 @@ mod tests {
             r"\\?\C:\a\b.rs",
             r"\\?\UNC\h\s\b.rs",
             "relative/b.rs",
+            "../a/b.rs",
+            r"a\..\..\b.rs",
+            "/a/../../b.rs",
+            "/a//b/./../c.rs",
+            r"C:\a\..\..\b.rs",
+            "C:..\\b.rs",
+            r"\\h\s\..\..\b.rs",
         ] {
             for manifest_dir in [None, UNIX_ROOT, DRIVE_ROOT, Some("/a"), Some(r"C:\a")] {
                 let stored = recorded_path(reported, manifest_dir);

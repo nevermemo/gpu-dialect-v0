@@ -96,11 +96,14 @@ runtime contract.
 `KernelDescriptor::source` (a `SourceOrigin`, new in M1.1) is diagnostic metadata
 only (the Rust file and a Slang-to-Rust line table) and never affects the emitted
 Slang, the pipeline cache identity or the runtime ABI. Its file is never an absolute
-path: a relative path stays as rustc reports it, an absolute path under the expanding
-crate's `CARGO_MANIFEST_DIR` is stored relative to it, and any other absolute path is
-reduced to its file name, always with `/` separators. Adding the field is a public API
-change: hand-written `KernelDescriptor` literals add `source: SourceOrigin::UNKNOWN`,
-and the derived equality now includes the source metadata.
+path: both paths are first normalised lexically (repeated separators collapsed, `.`
+dropped, `..` resolved), then a relative path is kept as its normalised components, an
+absolute path under the expanding crate's `CARGO_MANIFEST_DIR` is stored relative to
+it, and any other absolute path, or a relative path that climbs out of its root with
+`..`, is reduced to its file name, always with `/` separators. Adding the field is a
+public API change: hand-written `KernelDescriptor` literals add
+`source: SourceOrigin::UNKNOWN`, and the derived equality now includes the source
+metadata.
 
 ## Struct ABI
 
