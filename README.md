@@ -112,7 +112,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-ui` | Diagnostic text for misuse (D27) | compiles each crate of the separate `tests/ui` workspace; a crate with `expected.txt` must fail with every listed substring, one without it must compile |
 | `cargo xtask bless` | Update reviewed Slang goldens | reruns the golden tests with `BLESS_GOLDEN=1`, which rewrites changed `tests/fixtures/*.slang`, prints a line diff and fails the test; lists changed fixtures with `git diff --stat`. Exits non-zero whenever a fixture changed: review the diff, then run `cargo xtask check-feature macro` |
 | `cargo xtask test --suite Unit\|Slangc\|Spirv\|Reflect\|Gpu\|Full` | One evidence tier as one command | Unit: macro and xtask tests, lint, docs-check, check-arch, check-ui. Slangc: Unit plus `gust` library tests. Spirv: `check-artifacts`. Reflect: `check-feature reflection`. Gpu: all `gust-wgpu` tests. Full: `check-full`. Each suite prints what it does not cover; a missing tool or adapter fails it |
-| `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
+| `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, check-ui, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
 | `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | ignored example tests plus example binaries |
 | `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation |
