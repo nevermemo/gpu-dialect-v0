@@ -207,15 +207,14 @@ fn env_dump_refuses_a_forged_duplicate_in_any_casing() {
 
 #[test]
 fn utf16le_dump_keeps_non_ascii_directories() {
-    let text =
-        "Path=C:\\caf\u{e9}\\\u{6771}\u{4eac};C:\\bin\r\nTEMP=C:\\Users\\\u{fc}ser\\Temp\r\n";
+    let text = "Path=C:\\caf\u{e9}\\\u{6771}\u{4eac};C:\\bin\r\nTEMP=D:\\T\u{fc}r\\Temp\r\n";
     let decoded = decode_utf16le(&utf16le(text)).unwrap();
     assert_eq!(decoded, text);
     assert_eq!(
         parse_env_dump(&decoded).unwrap(),
         pairs(&[
             ("Path", "C:\\caf\u{e9}\\\u{6771}\u{4eac};C:\\bin"),
-            ("TEMP", "C:\\Users\\\u{fc}ser\\Temp"),
+            ("TEMP", "D:\\T\u{fc}r\\Temp"),
         ])
     );
     // A byte order mark is dropped; an odd byte count is not UTF-16.

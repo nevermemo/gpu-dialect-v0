@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,7 +20,9 @@ fn run(mode: VerifyMode, git: &GitStamp) -> RunInfo<'_> {
 }
 
 /// A fresh root under the cargo target directory (`<target>/<profile>/deps/<test binary>`).
+/// The counter keeps parallel tests apart when the clock gives them the same stamp.
 fn temp_root() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let base = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.ancestors().nth(3).map(Path::to_path_buf))
@@ -27,9 +30,11 @@ fn temp_root() -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
-    let root = base
-        .join("xtask-tests")
-        .join(format!("validation-{}-{stamp}", std::process::id()));
+    let root = base.join("xtask-tests").join(format!(
+        "validation-{}-{stamp}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     fs::create_dir_all(root.join(".ai")).unwrap();
     root
 }
