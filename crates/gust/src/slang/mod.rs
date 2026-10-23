@@ -574,6 +574,20 @@ mod tests {
     }
 
     #[test]
+    fn match_label_uses_the_emitted_marker_number_not_the_map_ordinal() {
+        // The map would count this match as construct #1; the emitter numbered it 7.
+        let source = match_kernel(VALID_SIGNATURE, "undefined_symbol", "h")
+            .replace("match_1", "match_7")
+            .replace("match #1", "match #7");
+        let diagnostics = failure_diagnostics(&source, Target::Wgsl);
+        assert!(diagnostics.contains("undefined_symbol"), "{diagnostics}");
+        assert!(
+            diagnostics.contains("originating Rust construct: match #7"),
+            "{diagnostics}"
+        );
+    }
+
+    #[test]
     fn failure_in_a_user_statement_inside_a_match_arm_reports_that_statement() {
         let source = match_kernel(VALID_SIGNATURE, "pick()", "total + undefined_symbol");
         let diagnostics = failure_diagnostics(&source, Target::Wgsl);

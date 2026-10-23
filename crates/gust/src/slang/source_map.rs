@@ -85,7 +85,11 @@ impl SourceMap {
                         depth += 1;
                         if let Some(kernel) = state.as_mut().filter(|_| !statement) {
                             for open in &mut kernel.open {
-                                if depth > open.base {
+                                // A header that starts on this line is judged once the
+                                // whole line is counted: `if (f({ 1, 2 }))` stays open.
+                                if depth > open.base
+                                    && map.segments[open.index].start_line != number
+                                {
                                     open.entered = true;
                                 }
                             }
@@ -95,12 +99,19 @@ impl SourceMap {
                     _ => {}
                 }
             }
+            if let Some(kernel) = state.as_mut().filter(|_| !statement) {
+                for open in &mut kernel.open {
+                    if depth > open.base && map.segments[open.index].start_line == number {
+                        open.entered = true;
+                    }
+                }
+            }
             let Some(kernel) = state.as_mut() else {
                 continue;
             };
             let next_is_else = lines
                 .get(index + 1)
-                .is_some_and(|next| next.trim().starts_with("else"));
+                .is_some_and(|next| is_else(next.split("//").next().unwrap_or("").trim()));
             // Only a closing brace can end a segment; a line such as `else` between
             // two blocks must not close the conditional it continues.
             while let Some(top) = kernel.open.last().filter(|_| code.contains('}')) {
@@ -161,7 +172,7 @@ impl SourceMap {
         number: usize,
         depth: usize,
     ) {
-        if trimmed.starts_with("// @gust construct: match #") {
+        if let Some(marker) = trimmed.strip_prefix("// @gust construct: match #") {
             // A marker at the same depth ends an earlier marker that opened no block.
             let mut kept = Vec::new();
             for open in std::mem::take(&mut kernel.open) {
@@ -176,7 +187,8 @@ impl SourceMap {
                 }
             }
             kernel.open = kept;
-            self.open_block(kernel, number, "match", depth);
+            // The label is the marker's own statement index, as the emitter wrote it.
+            self.open_block(kernel, number, "match", depth, marker.trim().parse().ok());
             return;
         }
         if is_prologue(code) {
@@ -208,9 +220,11 @@ impl SourceMap {
         let Some(construct) = construct_kind(code) else {
             return;
         };
-        let balanced = code.matches('{').count() == code.matches('}').count();
-        if matches!(construct, "conditional" | "loop") && !(balanced && code.contains('{')) {
-            self.open_block(kernel, number, construct, depth);
+        // A header opens a block unless the whole construct sits on this line, which
+        // then ends with its own `}`. Braces inside the condition (array literals)
+        // do not make it a one-liner.
+        if matches!(construct, "conditional" | "loop") && !code.ends_with('}') {
+            self.open_block(kernel, number, construct, depth, None);
         } else {
             let ordinal = kernel.ordinal;
             kernel.ordinal += 1;
@@ -224,8 +238,11 @@ impl SourceMap {
         number: usize,
         construct: &'static str,
         depth: usize,
+        label: Option<usize>,
     ) {
-        let ordinal = kernel.ordinal;
+        // A marked construct keeps the emitter's number; the per-kernel counter
+        // still advances so unmarked constructs number the same as before.
+        let ordinal = label.unwrap_or(kernel.ordinal);
         kernel.ordinal += 1;
         let index = self.push(number, &kernel.name, construct, ordinal);
         kernel.open.push(OpenSegment {
@@ -291,8 +308,13 @@ fn is_prologue(code: &str) -> bool {
     (declaration || code.contains(".GetDimensions(__gpu_len_")) && code.ends_with(';')
 }
 
+/// The `else` keyword, not an identifier such as `elsewhere` that starts with it.
+fn is_else(code: &str) -> bool {
+    code == "else" || code.starts_with("else ") || code.starts_with("else{")
+}
+
 fn construct_kind(line: &str) -> Option<&'static str> {
-    if line.starts_with("else") {
+    if is_else(line) {
         // Continues the preceding conditional's range.
         None
     } else if line.starts_with("var ") || line.starts_with("uint ") || line.starts_with("int ") {
@@ -301,7 +323,7 @@ fn construct_kind(line: &str) -> Option<&'static str> {
         Some("conditional")
     } else if line.starts_with("for (") {
         Some("loop")
-    } else if line.starts_with("return ") {
+    } else if line == "return;" || line.starts_with("return ") {
         Some("return")
     } else if line.contains('=')
         && !line.contains("==")
@@ -504,6 +526,88 @@ mod tests {
         let map = SourceMap::from_slang(source);
         assert_eq!(segment(&map, "match", 4).end_line, 5);
         assert_eq!(segment(&map, "match", 6).end_line, 7);
+    }
+
+    #[test]
+    fn identifier_starting_with_else_does_not_continue_a_conditional() {
+        let source = concat!(
+            "// @rust kernel: m::a\n",                  // 1
+            "void a(uint3 id : SV_DispatchThreadID)\n", // 2
+            "{\n",                                      // 3
+            "    if ((flag > uint(0)))\n",              // 4
+            "    {\n",                                  // 5
+            "        flag = uint(1);\n",                // 6
+            "    }\n",                                  // 7
+            "    elsewhere = uint(2);\n",               // 8
+            "}\n",                                      // 9
+        );
+        let map = SourceMap::from_slang(source);
+        assert_eq!(segment(&map, "conditional", 4).end_line, 7);
+        let user = segment(&map, "assignment", 8);
+        assert_eq!((user.start_line, user.end_line), (8, 8));
+        assert_eq!(map.origin_at(8).unwrap().construct, "assignment");
+    }
+
+    #[test]
+    fn braces_inside_a_header_condition_do_not_make_it_a_single_line() {
+        let source = concat!(
+            "// @rust kernel: m::a\n",                             // 1
+            "void a(uint3 id : SV_DispatchThreadID)\n",            // 2
+            "{\n",                                                 // 3
+            "    if ((sum({ 1, 2 }) > uint(0)))\n",                // 4
+            "    {\n",                                             // 5
+            "        flag = uint(1);\n",                           // 6
+            "    }\n",                                             // 7
+            "    for (var k = uint(0); k < len({ 3, 4 }); k++)\n", // 8
+            "    {\n",                                             // 9
+            "        flag = uint(2);\n",                           // 10
+            "    }\n",                                             // 11
+            "    flag = uint(3);\n",                               // 12
+            "    if ((flag > uint(0))) { flag = uint(4); }\n",     // 13
+            "}\n",                                                 // 14
+        );
+        let map = SourceMap::from_slang(source);
+        assert_eq!(segment(&map, "conditional", 4).end_line, 7);
+        assert_eq!(segment(&map, "loop", 8).end_line, 11);
+        assert_eq!(map.origin_at(5).unwrap().construct, "conditional");
+        assert_eq!(map.origin_at(9).unwrap().construct, "loop");
+        let after = segment(&map, "assignment", 12);
+        assert_eq!((after.start_line, after.end_line), (12, 12));
+        // A construct that really sits on one line still ends on it.
+        let one_line = segment(&map, "conditional", 13);
+        assert_eq!((one_line.start_line, one_line.end_line), (13, 13));
+    }
+
+    #[test]
+    fn match_ordinal_is_the_markers_own_number_and_bare_return_is_a_return() {
+        let source = concat!(
+            "// @rust kernel: m::a\n",                  // 1
+            "void a(uint3 id : SV_DispatchThreadID)\n", // 2
+            "{\n",                                      // 3
+            "    var x = uint(0);\n",                   // 4
+            "    var y = uint(1);\n",                   // 5
+            "    // @gust construct: match #7\n",       // 6
+            "    var __gust_match_7 = pick();\n",       // 7
+            "    if (__gust_match_7.isOk)\n",           // 8
+            "    {\n",                                  // 9
+            "        x = uint(1);\n",                   // 10
+            "    }\n",                                  // 11
+            "    else\n",                               // 12
+            "    {\n",                                  // 13
+            "        x = uint(2);\n",                   // 14
+            "    }\n",                                  // 15
+            "    var z = uint(3);\n",                   // 16
+            "    return;\n",                            // 17
+            "}\n",                                      // 18
+        );
+        let map = SourceMap::from_slang(source);
+        // The map would have numbered this construct 2; the emitter called it 7.
+        assert_eq!(segment(&map, "match", 6).ordinal, 7);
+        assert!(map.json().contains("\"construct\":\"match\",\"ordinal\":7"));
+        // Other constructs keep the per-kernel count, which the marker still advances.
+        assert_eq!(segment(&map, "assignment", 10).ordinal, 3);
+        assert_eq!(segment(&map, "local", 16).ordinal, 5);
+        assert_eq!(segment(&map, "return", 17).end_line, 17);
     }
 
     #[test]

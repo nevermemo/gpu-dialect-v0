@@ -23,6 +23,14 @@ and use it to enrich Slang errors with a stable generated construct label.
   `__gpu_stride_*`, `GetDimensions`) is one `prologue` segment per kernel and
   does not consume construct ordinals; construct ordinals restart at 0 for each
   kernel.
+- The map is a text heuristic, valid only for GUST's own emitter output (Allman
+  braces, one statement per line, `//` comments only, reserved `__gpu_` and
+  `__gust_` temporaries). Lines before the first `// @rust kernel:` marker
+  (structs, helpers, resources) get no attribution.
+- A `match` segment's ordinal is the number in its `// @gust construct: match #N`
+  marker, which is the emitter's own statement index; every other construct
+  uses the per-kernel map ordinal, and the diagnostic label prints the segment
+  ordinal either way.
 - The compiler bridge writes `kernel.map.json` into its exclusively owned
   temporary directory before invoking `slangc`.
 - Error mapping selects the innermost segment containing the reported Slang
