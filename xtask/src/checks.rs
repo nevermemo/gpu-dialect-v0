@@ -352,10 +352,22 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         "format" => "format: rustfmt only",
         "lints" => "lints: strict Clippy over workspace/all targets",
         "lint" => {
-            "lint: no tracked shell scripts (D27) and no machine-specific paths in tracked text; also part of check-fast"
+            "lint: no tracked shell scripts (D27) and no machine-specific paths in tracked text (home paths include WSL spellings); also part of check-fast"
+        }
+        "docs-check" => {
+            "docs-check: relative Markdown links resolve to project files (anchors and external links are not checked), no merge-conflict markers, DECISIONS ids unique and increasing; also part of check-fast"
+        }
+        "check-arch" => {
+            "check-arch: per-crate dependency allow-list (D02), no IR module or file outside future/, no SPIR-V library in the compiler crates; also part of check-fast"
+        }
+        "bless" => {
+            "bless: reruns the Slang golden tests with BLESS_GOLDEN=1, which rewrites changed fixtures and fails with the diff; review before committing"
+        }
+        "test" => {
+            "test: `cargo xtask test --suite Unit|Slangc|Spirv|Reflect|Gpu|Full` runs one evidence tier of VALIDATION.md"
         }
         "all" => {
-            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints, lint"
+            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, bless, test"
         }
         _ => return Err(format!("unknown check area `{area}`")),
     };

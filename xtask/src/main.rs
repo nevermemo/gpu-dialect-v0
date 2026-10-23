@@ -1,10 +1,14 @@
 use std::{env, process::ExitCode};
 
+mod arch;
+mod bless;
 mod checks;
+mod docs;
 mod lint;
 mod process;
 mod reflect;
 mod shader;
+mod suite;
 mod test_exact;
 mod time;
 mod validation;
@@ -67,6 +71,25 @@ fn run() -> Result<(), String> {
             }
             lint::lint(&workspace_root()?, &mut Vec::new())?;
         }
+        "docs-check" => {
+            if !args.is_empty() {
+                return Err("docs-check takes no arguments".into());
+            }
+            docs::docs_check(&workspace_root()?, &mut Vec::new())?;
+        }
+        "check-arch" => {
+            if !args.is_empty() {
+                return Err("check-arch takes no arguments".into());
+            }
+            arch::check_arch(&workspace_root()?, &mut Vec::new())?;
+        }
+        "bless" => {
+            if !args.is_empty() {
+                return Err("bless takes no arguments (it sets BLESS_GOLDEN=1 itself)".into());
+            }
+            bless::bless()?;
+        }
+        "test" => suite::test_command(&args)?,
         "slangc" => slangc(&SlangcOptions::parse(&args)?)?,
         "spirv-val" => spirv_val(&SpirvValOptions::parse(&args)?)?,
         "test-exact" => test_exact(&TestExactOptions::parse(&args)?)?,
@@ -84,7 +107,8 @@ fn run() -> Result<(), String> {
 
 fn usage() {
     eprintln!(
-        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  lint\n  slangc <file.slang> --entry NAME --target wgsl|spirv --out PATH [-- SLANGC_ARGS]\n  spirv-val <file.spv> --target-env ENV\n  test-exact -p PACKAGE --test TARGET [--features LIST] NAME\n  status | doctor [--smoke] | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
-        FEATURE_AREAS.join("|")
+        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  lint\n  docs-check   relative Markdown links resolve to project files (anchors and external links are not checked), no conflict markers, DECISIONS ids\n  check-arch   dependency allow-list per crate (D02), no IR module outside future/, no SPIR-V library\n  bless   rewrite reviewed Slang goldens (BLESS_GOLDEN=1); exits non-zero when a fixture changed\n  test --suite <{}>   evidence tier as one command\n  slangc <file.slang> --entry NAME --target wgsl|spirv --out PATH [-- SLANGC_ARGS]\n  spirv-val <file.spv> --target-env ENV\n  test-exact -p PACKAGE --test TARGET [--features LIST] NAME\n  status | doctor [--smoke] | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
+        FEATURE_AREAS.join("|"),
+        suite::Suite::names().join("|")
     );
 }

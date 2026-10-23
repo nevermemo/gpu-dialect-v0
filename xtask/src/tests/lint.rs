@@ -131,10 +131,115 @@ fn problems_report_file_and_line() {
 }
 
 #[test]
-fn only_the_listed_fixtures_may_spell_machine_paths() {
+fn only_the_listed_fixtures_may_spell_placeholder_machine_paths() {
     let text = r"C:\Users\someone\gust";
     assert!(machine_path_problems("xtask/src/tests/lint.rs", text).is_empty());
     assert!(machine_path_problems("xtask/src/tests/validation_redaction.rs", text).is_empty());
     assert_eq!(machine_path_problems("xtask/src/lint.rs", text).len(), 1);
     assert_eq!(machine_path_problems("docs/other.md", text).len(), 1);
+}
+
+#[test]
+fn fixture_files_accept_only_the_placeholder_user_names() {
+    let fixture = "xtask/src/tests/lint.rs";
+    for name in ["someone", "bob.smith", "José", "a_b-c", "some-one"] {
+        for text in [
+            format!(r"C:\Users\{name}\gust"),
+            format!("/home/{name}/gust"),
+            format!("/mnt/c/Users/{name}/gust"),
+            format!(r"\\wsl.localhost\Ubuntu\home\{name}\gust"),
+        ] {
+            assert!(machine_path_problems(fixture, &text).is_empty(), "{text}");
+        }
+    }
+    // Case variants of a placeholder are placeholders too (the redaction tests need them).
+    assert!(machine_path_problems(fixture, &format!(r"c:\USERS\{}", "SOMEONE")).is_empty());
+    // The names below are built at run time so that this file stays clean itself.
+    let real = ["alice", "carol-d"];
+    for name in real {
+        for text in [
+            format!(r"C:\Users\{name}\gust"),
+            format!("/home/{name}/gust"),
+            format!("/mnt/c/Users/{name}"),
+            format!(r"\\wsl.localhost\Ubuntu\home\{name}\gust"),
+        ] {
+            let problems = machine_path_problems(fixture, &text);
+            assert_eq!(problems.len(), 1, "{text}");
+            assert!(
+                problems[0].contains("fixtures may only use"),
+                "{}",
+                problems[0]
+            );
+        }
+    }
+}
+
+#[test]
+fn every_path_on_a_line_is_checked_not_only_the_first() {
+    let mixed = format!(r"C:\Users\someone\a and /home/{}/x", "alice");
+    let problems = machine_path_problems("xtask/src/tests/lint.rs", &mixed);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("/home/alice"), "{}", problems[0]);
+    let two = r"C:\Users\someone\a and D:\Users\bob.smith\b";
+    assert_eq!(machine_path_problems("docs/x.md", two).len(), 2);
+    assert!(machine_path_problems("xtask/src/tests/lint.rs", two).is_empty());
+}
+
+#[test]
+fn wsl_mount_and_network_home_paths_match() {
+    for (line, expected) in [
+        ("cd /mnt/c/Users/someone/Desktop", "/mnt/c/Users/someone"),
+        ("/mnt/d/users/bob.smith", "/mnt/d/users/bob.smith"),
+        ("(/mnt/c/Users/a_b-c/x)", "/mnt/c/Users/a_b-c"),
+        (
+            r"\\wsl.localhost\Ubuntu\home\someone\gust",
+            r"\\wsl.localhost\Ubuntu\home\someone",
+        ),
+        (
+            r"\wsl.localhost\Ubuntu-24.04\home\some-one\",
+            r"\wsl.localhost\Ubuntu-24.04\home\some-one",
+        ),
+        (r"\\WSL$\Ubuntu\home\José\x", r"\\WSL$\Ubuntu\home\José"),
+        (
+            r"\\wsl.localhost\\Ubuntu\\home\\someone\\x",
+            r"\\wsl.localhost\\Ubuntu\\home\\someone",
+        ),
+        (
+            r"//wsl.localhost/Ubuntu/home/someone/x",
+            r"//wsl.localhost/Ubuntu/home/someone",
+        ),
+        (
+            r"\\wsl.localhost\<distro>\home\someone\",
+            r"\\wsl.localhost\<distro>\home\someone",
+        ),
+        (
+            r#"open "\\wsl$\Debian\home\someone""#,
+            r"\\wsl$\Debian\home\someone",
+        ),
+    ] {
+        assert_eq!(find_machine_path(line), Some(expected), "{line}");
+    }
+}
+
+#[test]
+fn wsl_placeholders_and_non_home_paths_are_not_machine_paths() {
+    for line in [
+        "/mnt/c/Users/<name>",
+        "/mnt/c/Users/%USERNAME%/x",
+        "/mnt/c/Users",
+        "/mnt/c/Users/",
+        "/mnt/cc/Users/someone",
+        "/mnt/c/Windows/someone",
+        "docs/mnt/c/Users/someone",
+        r"\\wsl.localhost\<distro>\home\<name>\",
+        r"\\wsl.localhost\Ubuntu\home",
+        r"\\wsl.localhost\Ubuntu\opt\someone",
+        r"\\wsl.localhost\Ubuntu",
+        r"\\wsl.localhost",
+        r"\\wsl.localhost\\home\someone",
+        r"\\wsl.example\Ubuntu\home\someone",
+        r"x\wsl.localhost\Ubuntu\home\someone",
+    ] {
+        assert_eq!(find_machine_path(line), None, "{line}");
+    }
 }

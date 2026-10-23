@@ -7,7 +7,7 @@ This directory holds human-readable operating state and workflow guidance for GU
 - `tasks/` — compact per-task contracts and executable acceptance checks.
 - `NEXT_TASKS.md` — ranked work list and acceptance criteria.
 - `HANDOFF.md` — compact pickup notes for future humans and agents.
-- `CHANGED_FILES.md` — historical baseline inventory.
+- `history/CHANGED_FILES.md` — historical baseline inventory (2026-09-07 takeover hashes; archived).
 - `REPO_STRUCTURE.md` — repository layout and ownership conventions.
 - `VALIDATION.md` — command tiers and evidence rules.
 - `AGENT_WORKFLOW.md` — pickup, claim, review and handoff protocol.

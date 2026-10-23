@@ -1,4 +1,122 @@
+use std::{env, fs, path::Path};
+
 use crate::{expand::kernel_options, slang::emit_kernel, validate::validate_module};
+
+/// Set to `1` to rewrite a reviewed Slang golden with the emitted text. A bless prints a line
+/// diff and still fails the test, so it cannot pass silently; review the diff, then rerun
+/// without the variable. `cargo xtask bless` runs the golden tests this way.
+const BLESS_VARIABLE: &str = "BLESS_GOLDEN";
+
+/// Compares emitted Slang with the reviewed fixture `tests/fixtures/<fixture>`. Both texts are
+/// already normalised to `\n` by the caller. Without `BLESS_GOLDEN=1` this is `assert_eq!`.
+fn assert_golden(actual: &str, fixture: &str, expected: &str) {
+    if actual == expected {
+        return;
+    }
+    if env::var_os(BLESS_VARIABLE).is_some_and(|value| value == "1") {
+        bless_golden(actual, fixture, expected);
+    }
+    assert_eq!(actual, expected);
+}
+
+fn bless_golden(actual: &str, fixture: &str, expected: &str) -> ! {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures")
+        .join(fixture);
+    // Keep the line endings the working tree already uses, so a bless diffs only real changes.
+    let crlf = fs::read_to_string(&path).is_ok_and(|old| old.contains("\r\n"));
+    let text = if crlf {
+        actual.replace('\n', "\r\n")
+    } else {
+        actual.to_owned()
+    };
+    fs::write(&path, text).unwrap_or_else(|error| panic!("could not write {fixture}: {error}"));
+    eprintln!("{}", line_diff(fixture, expected, actual));
+    panic!("golden blessed; review the diff and rerun without BLESS_GOLDEN ({fixture})");
+}
+
+/// A unified line diff (old -> new) with three lines of context.
+fn line_diff(name: &str, old: &str, new: &str) -> String {
+    const CONTEXT: usize = 3;
+    let old: Vec<&str> = old.lines().collect();
+    let new: Vec<&str> = new.lines().collect();
+    // Longest common subsequence table, filled from the ends.
+    let mut common = vec![vec![0usize; new.len() + 1]; old.len() + 1];
+    for i in (0..old.len()).rev() {
+        for j in (0..new.len()).rev() {
+            common[i][j] = if old[i] == new[j] {
+                common[i + 1][j + 1] + 1
+            } else {
+                common[i + 1][j].max(common[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j) = (0, 0);
+    let mut edits: Vec<(char, &str)> = Vec::new();
+    while i < old.len() || j < new.len() {
+        if i < old.len() && j < new.len() && old[i] == new[j] {
+            edits.push((' ', old[i]));
+            i += 1;
+            j += 1;
+        } else if i < old.len() && (j == new.len() || common[i + 1][j] >= common[i][j + 1]) {
+            // Deletions come before insertions, as in `diff -u`.
+            edits.push(('-', old[i]));
+            i += 1;
+        } else {
+            edits.push(('+', new[j]));
+            j += 1;
+        }
+    }
+    let changed: Vec<usize> = (0..edits.len()).filter(|&k| edits[k].0 != ' ').collect();
+    let mut out = format!("--- a/tests/fixtures/{name}\n+++ b/tests/fixtures/{name}\n");
+    let mut next = 0;
+    while next < changed.len() {
+        let start = changed[next].saturating_sub(CONTEXT);
+        let mut end = changed[next];
+        while next < changed.len() && changed[next] <= end + 2 * CONTEXT + 1 {
+            end = changed[next];
+            next += 1;
+        }
+        let end = (end + CONTEXT + 1).min(edits.len());
+        let before = |kind: char| {
+            edits[..start]
+                .iter()
+                .filter(|edit| edit.0 == ' ' || edit.0 == kind)
+                .count()
+        };
+        let span = |kind: char| {
+            edits[start..end]
+                .iter()
+                .filter(|edit| edit.0 == ' ' || edit.0 == kind)
+                .count()
+        };
+        out.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            before('-') + 1,
+            span('-'),
+            before('+') + 1,
+            span('+')
+        ));
+        for (kind, line) in &edits[start..end] {
+            out.push_str(&format!("{kind}{line}\n"));
+        }
+    }
+    out
+}
+
+#[test]
+fn line_diff_reports_changed_lines_with_context() {
+    let old = "a\nb\nc\nd\ne\nf\ng\nh\n";
+    let new = "a\nb\nc\nX\ne\nf\ng\nh\n";
+    assert_eq!(
+        line_diff("t.slang", old, new),
+        "--- a/tests/fixtures/t.slang\n+++ b/tests/fixtures/t.slang\n@@ -1,7 +1,7 @@\n a\n b\n c\n-d\n+X\n e\n f\n g\n"
+    );
+    assert_eq!(
+        line_diff("t.slang", "a\n", "a\n"),
+        "--- a/tests/fixtures/t.slang\n+++ b/tests/fixtures/t.slang\n"
+    );
+}
 
 fn translate(source: &str) -> syn::Result<String> {
     let module: syn::ItemMod = syn::parse_str(source)?;
@@ -21,27 +139,30 @@ fn translate(source: &str) -> syn::Result<String> {
 #[test]
 fn semantics_golden() {
     let source = translate(include_str!("../../../../tests/fixtures/semantics.rs")).unwrap();
-    assert_eq!(
-        source.replace("\r\n", "\n"),
-        include_str!("../../../../tests/fixtures/semantics.slang").replace("\r\n", "\n")
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "semantics.slang",
+        &include_str!("../../../../tests/fixtures/semantics.slang").replace("\r\n", "\n"),
     );
 }
 
 #[test]
 fn numeric_golden() {
     let source = translate(include_str!("../../../../tests/fixtures/numeric.rs")).unwrap();
-    assert_eq!(
-        source.replace("\r\n", "\n"),
-        include_str!("../../../../tests/fixtures/numeric.slang").replace("\r\n", "\n")
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "numeric.slang",
+        &include_str!("../../../../tests/fixtures/numeric.slang").replace("\r\n", "\n"),
     );
 }
 
 #[test]
 fn option_golden() {
     let source = translate(include_str!("../../../../tests/fixtures/option.rs")).unwrap();
-    assert_eq!(
-        source.replace("\r\n", "\n"),
-        include_str!("../../../../tests/fixtures/option.slang").replace("\r\n", "\n")
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "option.slang",
+        &include_str!("../../../../tests/fixtures/option.slang").replace("\r\n", "\n"),
     );
 }
 
@@ -64,14 +185,15 @@ fn result_lowering_emits_tagged_representation() {
 #[test]
 fn result_golden() {
     let source = translate(include_str!("../../../../tests/fixtures/result.rs")).unwrap();
-    assert_eq!(
-        source.replace("\r\n", "\n"),
-        format!(
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "result.slang",
+        &format!(
             "{}\n",
             include_str!("../../../../tests/fixtures/result.slang")
                 .replace("\r\n", "\n")
                 .trim_end()
-        )
+        ),
     );
 }
 
@@ -234,18 +356,20 @@ fn result_match_accepts_a_result_parameter() {
 #[test]
 fn loops_golden() {
     let source = translate(include_str!("../../../../tests/fixtures/loops.rs")).unwrap();
-    assert_eq!(
-        source.replace("\r\n", "\n"),
-        include_str!("../../../../tests/fixtures/loops.slang").replace("\r\n", "\n")
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "loops.slang",
+        &include_str!("../../../../tests/fixtures/loops.slang").replace("\r\n", "\n"),
     );
 }
 
 #[test]
 fn atomics_golden() {
     let source = translate(include_str!("../../../../tests/fixtures/atomics.rs")).unwrap();
-    assert_eq!(
-        source.replace("\r\n", "\n"),
-        include_str!("../../../../tests/fixtures/atomics.slang").replace("\r\n", "\n")
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "atomics.slang",
+        &include_str!("../../../../tests/fixtures/atomics.slang").replace("\r\n", "\n"),
     );
 }
 

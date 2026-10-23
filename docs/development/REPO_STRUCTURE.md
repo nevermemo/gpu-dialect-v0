@@ -25,7 +25,7 @@ Human-readable operating state lives in `docs/development/`:
 - `STATUS.md` — current owner, active claim, current contracts, and latest evidence.
 - `NEXT_TASKS.md` — active, deferred, and claimable work only.
 - `HANDOFF.md` — compact pickup notes for future humans and agents.
-- `CHANGED_FILES.md` — historical baseline inventory.
+- `history/CHANGED_FILES.md` — historical baseline inventory (2026-09-07 takeover hashes; archived).
 - `tasks/` — compact task contracts with source/API boundaries and exact checks.
 - `history/` — completed-task and superseded-handoff history.
 

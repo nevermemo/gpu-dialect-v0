@@ -1,6 +1,8 @@
 use std::{fs, path::Path};
 
 use crate::{
+    arch::check_arch,
+    docs::docs_check,
     lint::lint,
     process::{CheckRecord, require_command, run_checked, run_checked_owned},
     reflect::{BuildOptions, build_slang_reflect},
@@ -104,12 +106,14 @@ fn verify_inner(
     checks: &mut Vec<CheckRecord>,
     artifacts: &mut Vec<ArtifactRecord>,
 ) -> Result<(), String> {
-    // Cheapest check first; it needs only git.
+    // Cheapest checks first; they need only git.
     if matches!(
         mode,
         VerifyMode::Smoke | VerifyMode::Fast | VerifyMode::Full
     ) {
         lint(root, checks)?;
+        docs_check(root, checks)?;
+        check_arch(root, checks)?;
     }
     require_command("cargo")?;
     require_command("rustc")?;
@@ -145,11 +149,31 @@ fn verify_inner(
     }
     match mode {
         VerifyMode::Fast => {
-            run_checked(root, checks, "cargo", &["test", "-p", "gust-macros"])?;
-            run_checked(root, checks, "cargo", &["test", "-p", "gust", "--lib"])?;
-            run_checked(root, checks, "cargo", &["test", "-p", "gust-wgpu"])?;
+            run_checked(
+                root,
+                checks,
+                "cargo",
+                &["test", "--locked", "-p", "gust-macros"],
+            )?;
+            run_checked(
+                root,
+                checks,
+                "cargo",
+                &["test", "--locked", "-p", "gust", "--lib"],
+            )?;
+            run_checked(
+                root,
+                checks,
+                "cargo",
+                &["test", "--locked", "-p", "gust-wgpu"],
+            )?;
         }
-        VerifyMode::Gpu => run_checked(root, checks, "cargo", &["test", "-p", "gust-wgpu"])?,
+        VerifyMode::Gpu => run_checked(
+            root,
+            checks,
+            "cargo",
+            &["test", "--locked", "-p", "gust-wgpu"],
+        )?,
         VerifyMode::Smoke | VerifyMode::Full => {
             run_checked_owned(root, checks, "cargo", &workspace_test_args())?
         }

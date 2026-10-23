@@ -123,3 +123,32 @@ pub(crate) fn command_exists(program: &str) -> bool {
         .status()
         .is_ok()
 }
+
+/// Prints the outcome of an in-process check and records it like a command run, so lint-style
+/// checks appear in `.ai/VALIDATION.json` beside the cargo steps. `Ok` carries the summary,
+/// `Err` one line per problem; the returned error is a one-line count.
+pub(crate) fn report_check(
+    checks: &mut Vec<CheckRecord>,
+    subcommand: &str,
+    outcome: Result<String, Vec<String>>,
+) -> Result<(), String> {
+    let (stdout, stderr, exit_code, result) = match outcome {
+        Ok(summary) => (summary, String::new(), 0, Ok(())),
+        Err(problems) => {
+            let message = format!("{subcommand} found {} problem(s)", problems.len());
+            (String::new(), problems.join("\n"), 1, Err(message))
+        }
+    };
+    print!("{stdout}");
+    if !stderr.is_empty() {
+        eprintln!("{stderr}");
+    }
+    checks.push(CheckRecord {
+        program: "cargo".to_owned(),
+        arguments: vec!["xtask".to_owned(), subcommand.to_owned()],
+        exit_code: Some(exit_code),
+        stdout,
+        stderr,
+    });
+    result
+}

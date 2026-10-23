@@ -117,3 +117,42 @@ pub(crate) fn changed_paths() -> Result<Vec<String>, String> {
     paths.sort();
     Ok(paths)
 }
+
+/// Repository-relative paths (forward slashes) of the files the next commit would contain:
+/// tracked files plus untracked files that are not ignored, limited to files that exist.
+pub(crate) fn project_files(root: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("could not launch git: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let mut files = String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .filter(|path| root.join(path).is_file())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+/// The file's text, or `None` for binary or non-UTF-8 content.
+pub(crate) fn read_text(path: &Path) -> Result<Option<String>, std::io::Error> {
+    let bytes = std::fs::read(path)?;
+    Ok(String::from_utf8(bytes)
+        .ok()
+        .filter(|text| !text.contains('\0')))
+}
