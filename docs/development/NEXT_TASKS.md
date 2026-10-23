@@ -8,7 +8,7 @@ Claim one bounded task in [STATUS.md](STATUS.md) before editing. A task is not
 active until its owner, scope, and focused check appear there.
 
 The ordered plan is [ROADMAP.md](../ROADMAP.md). Its "Now and next" table lists the
-claimable M0 items (M0.1 to M0.15); this file keeps deferred work and task detail
+claimable items of the current milestone; this file keeps deferred work and task detail
 that does not fit there.
 
 ## Deferred
@@ -21,15 +21,6 @@ git stash `WIP T13 active count deferred`, based on `59a5c3c`. Its code changes
 cleanly to `63769fb` in a 2026-10-22 dry run; its doc renames are superseded by
 that commit and conflict. Do not apply, continue, or drop the stash unless the owner
 explicitly requests it. Contract: [tasks/T13-active-count.md](tasks/T13-active-count.md).
-
-## Release evidence pending
-
-### DX19: Sidecar diagnostic maps
-
-Implemented and committed in `63769fb` with focused evidence (see
-[STATUS.md](STATUS.md)). The contract's remaining completion items, a fresh
-`cargo xtask check-full` and an independent review, are not yet recorded.
-Contract: [tasks/DX19-sidecar-diagnostic-maps.md](tasks/DX19-sidecar-diagnostic-maps.md).
 
 ## Claimable DX
 

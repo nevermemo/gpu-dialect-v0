@@ -48,7 +48,7 @@ framework, and Hurricane, the game engine (today's
 | M0.11 | Thin `CLAUDE.md`: read AGENTS.md first, role mapping, compaction instructions, skills list | done (docs) |
 | M0.12 | Skill fixes: GUST does not use trybuild; "host reference" instead of "CPU oracle"; vertical-slice skill points at `check-artifacts`/`check-full` | done (Unit, 3ae37e2) |
 | M0.13 | DECISIONS tidy: header with next id, trailing prose moved under a heading | done (docs) |
-| M0.14 | Independent review of the 2026-10-23 `xtask` redaction and CI changes | in progress |
+| M0.14 | Independent review of the 2026-10-23 `xtask` redaction and CI changes | done (Fable review: keep, three should-fixes landed in 3ae37e2) |
 | M0.16 | Bounded retry for a transient Vulkan `NoAdapter` in `HeadlessDevice::new`; `NoAdapter` stays a failure, never a skip (seen twice in parallel atomics tests, 2026-10-23) | done (Gpu: check-fast RTX 5090; review keep) |
 | M0.17 | DX19 scanner follow-ups: `else` prefix matching, balanced braces in conditions, `match` label numbering, contract note on the heuristic | done (Gpu: check-fast RTX 5090; review keep) |
 | M0.18 | Slice B review fixes: check-arch reads root `[workspace.dependencies]` renames; `--locked` wording in VALIDATION.md or flags on Reflect/Spirv suites; xtask `rust-version`; nits | done (Unit, 5503e5a; Codex review: keep after fixes -> M0.20) |
@@ -56,7 +56,12 @@ framework, and Hurricane, the game engine (today's
 | M0.20 | check-arch: quoted TOML keys and basic-string escapes (Codex review of M0.18) | done (Gpu: check-full RTX 5090 2026-10-23T13:24Z at 8200431; Codex review keep) |
 | M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | planned |
 
-**Next: M1, diagnostics.**
+**Next: M1, diagnostics** (plan adopted 2026-10-23; slices m1.0, then m1.a1 and m1.c,
+then m1.a2, m1.d, m1.b). M0 closed with a two-reviewer sanity check (D28); only M0.15
+remains, gated to 2026-10-30.
+
+Parking lot addition (M0 sanity check): replace the hand-written TOML reading in
+`xtask/src/arch.rs` with `cargo metadata` (planned inside m1.0).
 
 ## Milestones
 

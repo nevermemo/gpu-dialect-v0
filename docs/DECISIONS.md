@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D28**. Add a row for every owner decision or durable
+Append-only log. Next id: **D30**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -35,6 +35,8 @@ input, not proof of code state.
 | D25 | Crate naming waits until publication (owner, 2026-10-23) | `gust`, `breeze` and `hurricane` are taken on crates.io. A package can publish under another name (for example `gust-gpu`) while its library stays `gust`. Decide in M10 |
 | D26 | Test builds may contain both pipelines (owner, 2026-10-23) | CPU twins are emitted under `cfg(test)`, which the expanding crate evaluates, and under `--cfg gust_dual` for cross-crate tests and benchmarks; never through a Cargo feature, because features unify across the dependency graph and would leak both pipelines into production builds (D21). A kernel that uses a construct without CPU semantics must opt out explicitly. Same-source CPU-versus-GPU comparisons supplement, and do not replace, independent host references for semantics fixtures |
 | D27 | Workflow commands live in `cargo xtask`; no shell or PowerShell scripts are tracked (owner, 2026-10-23) | One cross-platform command surface. A lint enforces it. Native toolchain calls inside xtask (for example MSVC's environment setup on Windows) are allowed in their platform branch |
+| D28 | M0 closed with "proceed with fixes" from two independent sanity reviews (Fable and Codex, 2026-10-23); coordinator decision, owner-delegated | Scope added during M0 by coordinator decision: M0.16 (adapter retry), M0.17 (DX19 scanner follow-ups), M0.18 and M0.20 (review fixes), M0.19 (no silent GPU skips in examples). M0.15 (required CI check) is date-gated to 2026-10-30 and does not hold M0 open. Follow-ups: sync state docs, stamp validation records with the commit, replace check-arch's TOML reading with `cargo metadata` (m1.0). Process rule from the review: no push while a must-fix is open, and review reports are kept on disk. The full delegated-decisions log is kept outside the repository by the coordinator |
+| D29 | The workspace minimum Rust version becomes 1.88; coordinator decision, owner-delegated, 2026-10-23, implemented in M1 slice m1.0 | The declared 1.87 was already false (let chains, stable in 1.88), and `proc_macro::Span::line`/`file` for M1 diagnostics need 1.88. Every locked dependency allows 1.88. An `msrv` CI job will check the claim instead of asserting it |
 
 ## Notes
 

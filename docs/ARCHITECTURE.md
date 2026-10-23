@@ -61,7 +61,9 @@ buffers, and owns the per-device pipeline cache. On a cache miss it asks Slang f
 WGSL and creates the shader module and pipeline. On a cache hit no compiler process
 or pipeline creation occurs. `HeadlessDevice::new` retries a missing Vulkan adapter
 up to three times with a short backoff, then returns `NoAdapter` with the attempt
-count; it never skips and never falls back to a software or CPU path. A request that
+count; it never skips a test and GUST never falls back to a CPU path. Adapter
+selection prefers high performance but does not exclude a software Vulkan driver;
+the adapter name is part of every Gpu evidence record. A request that
 succeeds after a failed attempt prints one line to stderr, so a transient loader failure
 stays visible.
 

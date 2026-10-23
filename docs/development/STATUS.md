@@ -1,20 +1,17 @@
 # Current status
 
-## Active: roadmap M0 (2026-10-23)
+## Active: roadmap M1 (2026-10-23)
 
-The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md) (decisions
-D21–D27). M0 is in progress; its items and their status are in the roadmap's "Now and
-next" table.
-
-The DX context reduction, DX19 sidecar diagnostic maps, and the `slang/source_map.rs`
-ownership split are committed (`63769fb`). DX19 still needs the full validation and
-independent review its contract requires. T13 remains deferred by owner; its work in
-progress is the git stash `WIP T13 active count deferred`, not the working tree. Do
-not apply, continue, validate, commit, or drop it without explicit direction.
+The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
+2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done except M0.15,
+which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) starts with
+slice m1.0. T13 remains deferred by owner; its work in progress is the git stash
+`WIP T13 active count deferred`, not the working tree. Do not apply, continue,
+validate, commit, or drop it without explicit direction.
 
 ```text
-owner: none
-claim: none
+owner: Claude Code coordinator (monitored autonomy)
+claim: roadmap M1, slice by slice (see the roadmap's Now and next)
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```
@@ -23,16 +20,15 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed at 2026-10-23T02:39:12Z on
-  NVIDIA GeForce RTX 5090 / Vulkan at `71f8d71`, through the shared cargo slot
-  wrapper; all 8 examples ran and 13 SPIR-V artifacts passed `spirv-val`. The local
-  `.ai/VALIDATION.json` record contains no machine paths. This closes DX19's
-  full-validation item; its independent review is still pending.
-- Latest routine check: `cargo xtask check-fast` exited 0 ("GUST verification
-  passed") on 2026-10-22 at `63769fb` with no tracked changes (untracked `.kilo/`
-  only). Routine modes write no `.ai/VALIDATION.json` record.
-- Open task queue: select and claim a bounded task from
-  [NEXT_TASKS.md](NEXT_TASKS.md)
+- Last full validation: `cargo xtask check-full` passed at 2026-10-23T13:24:07Z on
+  NVIDIA GeForce RTX 5090 / Vulkan at `8200431`, through the shared cargo slot
+  wrapper: workspace tests, release-mode slang tests, all 8 examples, and 13 SPIR-V
+  artifacts through `spirv-val`. The local `.ai/VALIDATION.json` record contains no
+  machine paths; it does not yet record the commit (fixed in M1 slice m1.0).
+- DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,
+  `08a4843`, `3296885`).
+- CI (`unit` job: fmt, clippy, Unit suite) has passed on every push to main on
+  2026-10-23.
 
 ## Current contracts
 
