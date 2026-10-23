@@ -35,7 +35,7 @@ framework, and Hurricane, the game engine (today's
 
 | Item | Work | Status |
 | --- | --- | --- |
-| M0.1 | DX19 close-out: `cargo xtask check-full` and an independent review | in progress: `check-full` passed (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.13.1, `71f8d71`); review pending |
+| M0.1 | DX19 close-out: `cargo xtask check-full` and an independent review | done (Gpu: check-full RTX 5090 at `71f8d71`; review fixes `027eef7` with check-fast; two Fable reviews) |
 | M0.2 | Replace the six PowerShell skill scripts with xtask commands (`slangc`, `spirv-val`, `doctor --smoke`, `test-exact`; `--locked` on existing checks); delete `Test-VerticalSlice.ps1`; fix the stale `.ps1` reference in `crates/gust/src/reflect/mod.rs` | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
 | M0.3 | Lint that fails when a `.ps1`, `.bat`, `.cmd` or `.sh` file is tracked (D27) | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
 | M0.4 | `cargo xtask doctor` exits non-zero when a required tool is missing | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
@@ -50,6 +50,7 @@ framework, and Hurricane, the game engine (today's
 | M0.13 | DECISIONS tidy: header with next id, trailing prose moved under a heading | done (docs) |
 | M0.14 | Independent review of the 2026-10-23 `xtask` redaction and CI changes | in progress |
 | M0.16 | Bounded retry for a transient Vulkan `NoAdapter` in `HeadlessDevice::new`; `NoAdapter` stays a failure, never a skip (seen twice in parallel atomics tests, 2026-10-23) | ready |
+| M0.17 | DX19 scanner follow-ups: `else` prefix matching, balanced braces in conditions, `match` label numbering, contract note on the heuristic | ready |
 | M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | planned |
 
 **Next: M1, diagnostics.**
