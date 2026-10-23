@@ -36,19 +36,20 @@ framework, and Hurricane, the game engine (today's
 | Item | Work | Status |
 | --- | --- | --- |
 | M0.1 | DX19 close-out: `cargo xtask check-full` and an independent review | in progress: `check-full` passed (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.13.1, `71f8d71`); review pending |
-| M0.2 | Replace the six PowerShell skill scripts with xtask commands (`slangc`, `spirv-val`, `doctor --smoke`, `test-exact`; `--locked` on existing checks); delete `Test-VerticalSlice.ps1`; fix the stale `.ps1` reference in `crates/gust/src/reflect/mod.rs` | ready |
-| M0.3 | Lint that fails when a `.ps1`, `.bat`, `.cmd` or `.sh` file is tracked (D27) | ready |
-| M0.4 | `cargo xtask doctor` exits non-zero when a required tool is missing | ready |
-| M0.5 | Artifact check compares expected file names, not a count | ready |
+| M0.2 | Replace the six PowerShell skill scripts with xtask commands (`slangc`, `spirv-val`, `doctor --smoke`, `test-exact`; `--locked` on existing checks); delete `Test-VerticalSlice.ps1`; fix the stale `.ps1` reference in `crates/gust/src/reflect/mod.rs` | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
+| M0.3 | Lint that fails when a `.ps1`, `.bat`, `.cmd` or `.sh` file is tracked (D27) | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
+| M0.4 | `cargo xtask doctor` exits non-zero when a required tool is missing | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
+| M0.5 | Artifact check compares expected file names, not a count | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
 | M0.6 | `cargo xtask docs-check`: relative links, conflict markers, decision ids | ready |
-| M0.7 | Machine-path lint for tracked files | ready |
+| M0.7 | Machine-path lint for tracked files | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
 | M0.8 | Explicit `BLESS_GOLDEN=1` for reviewed goldens, never automatic | ready |
 | M0.9 | `cargo xtask check-arch`: no custom shader IR (dependency allowlist, no IR modules outside a `future/` path) | ready |
 | M0.10 | Suites named by evidence tier: `cargo xtask test --suite Unit\|Slangc\|Spirv\|Reflect\|Gpu\|Full` over existing commands | ready |
 | M0.11 | Thin `CLAUDE.md`: read AGENTS.md first, role mapping, compaction instructions, skills list | done (docs) |
-| M0.12 | Skill fixes: GUST does not use trybuild; "host reference" instead of "CPU oracle"; vertical-slice skill points at `check-artifacts`/`check-full` | ready |
+| M0.12 | Skill fixes: GUST does not use trybuild; "host reference" instead of "CPU oracle"; vertical-slice skill points at `check-artifacts`/`check-full` | done (Unit, 3ae37e2) |
 | M0.13 | DECISIONS tidy: header with next id, trailing prose moved under a heading | done (docs) |
 | M0.14 | Independent review of the 2026-10-23 `xtask` redaction and CI changes | in progress |
+| M0.16 | Bounded retry for a transient Vulkan `NoAdapter` in `HeadlessDevice::new`; `NoAdapter` stays a failure, never a skip (seen twice in parallel atomics tests, 2026-10-23) | ready |
 | M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | planned |
 
 **Next: M1, diagnostics.**
