@@ -21,7 +21,8 @@
 //! | E09xx | reserved names and shadowing |
 //!
 //! Every error the crate creates goes through [`error`] (or [`wrap`] for a `syn` parse
-//! error); a guard test rejects any other `syn::Error` constructor in the crate.
+//! error); a guard test rejects any other `syn::Error` construction in the crate, and any
+//! `syn` parse entry point outside tests that is not wrapped in the same statement.
 
 use std::fmt::Display;
 
@@ -215,8 +216,8 @@ codes! {
     // E06xx: atomics.
     /// An atomic operation with the wrong number of arguments.
     AtomicArgumentCount = 601 => "GUST-E0601";
-    /// An atomic operation whose first argument is not `&mut buffer[index]`.
-    AtomicArgumentShape = 602 => "GUST-E0602";
+    /// An atomic operation whose first argument is not a reference.
+    AtomicNotReference = 602 => "GUST-E0602";
     /// An atomic operation on something other than a read-write buffer parameter.
     AtomicBufferParameter = 603 => "GUST-E0603";
     /// An atomic operation on an element type other than `u32` or `i32`.
@@ -227,6 +228,12 @@ codes! {
     AtomicAsValue = 606 => "GUST-E0606";
     /// Ordinary indexing of a buffer that is also used atomically.
     AtomicDirectAccess = 607 => "GUST-E0607";
+    /// An atomic operation whose first argument is `&buffer[index]`, not `&mut`.
+    AtomicReferenceNotMutable = 608 => "GUST-E0608";
+    /// An atomic operation whose reference is not to an indexed element.
+    AtomicOperandNotElement = 609 => "GUST-E0609";
+    /// An atomic operation on an element of something other than a named buffer.
+    AtomicReceiverNotBuffer = 610 => "GUST-E0610";
 
     // E07xx: macro entry and `#[kernel]` options.
     /// Arguments on `#[gpu]`.
@@ -637,17 +644,262 @@ mod tests {
         Some(chars.len())
     }
 
-    /// Constructors of an uncoded `syn::Error`, as they appear in code.
-    const UNCODED_ERRORS: &[&str] = &["Error::new", "Error::from", "meta.error(", "Error as "];
+    // The scans below work on `code_only` text, normalised so that spacing and line breaks
+    // inside a path or a call do not hide a pattern.
 
-    /// The forbidden constructors `source` uses in code (comments and literals ignored).
-    fn uncoded_error_uses(source: &str) -> Vec<&'static str> {
-        let code = code_only(source);
-        UNCODED_ERRORS
-            .iter()
-            .copied()
-            .filter(|pattern| code.contains(pattern))
+    /// `code` with whitespace runs collapsed and the space around `.`, `::`, `(` and `!`
+    /// removed, so `syn :: Error\n::new (` reads `syn::Error::new(`.
+    fn normalize(code: &str) -> String {
+        let mut text = code.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (from, to) in [
+            (" .", "."),
+            (". ", "."),
+            (" ::", "::"),
+            (":: ", "::"),
+            (" (", "("),
+            ("( ", "("),
+            (" !", "!"),
+        ] {
+            text = text.replace(from, to);
+        }
+        text
+    }
+
+    fn is_identifier_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+
+    /// The byte offsets of `pattern` in `code` that do not continue a longer identifier on
+    /// the left (`my_parse2(` does not match `parse2(`).
+    fn word_starts(code: &str, pattern: &str) -> Vec<usize> {
+        code.match_indices(pattern)
+            .map(|(at, _)| at)
+            .filter(|&at| at == 0 || !is_identifier_byte(code.as_bytes()[at - 1]))
             .collect()
+    }
+
+    /// Whether `text` has `word` as a whole identifier.
+    fn has_word(text: &str, word: &str) -> bool {
+        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|part| part == word)
+    }
+
+    /// `code` without items marked `#[cfg(test)]` (a `mod tests { .. }` block or a
+    /// `mod tests;` declaration, with attributes between).
+    fn strip_test_items(code: &str) -> String {
+        let marker = "#[cfg(test)]";
+        let bytes = code.as_bytes();
+        let mut out = String::new();
+        let mut rest = 0;
+        while let Some(found) = code[rest..].find(marker) {
+            let start = rest + found;
+            out.push_str(&code[rest..start]);
+            let mut i = start + marker.len();
+            // Further attributes on the same item, such as `#[path = ..]`.
+            loop {
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                if !code[i..].starts_with("#[") {
+                    break;
+                }
+                let mut depth = 0;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'[' => depth += 1,
+                        b']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                i += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            // The item: up to `;`, or through the matching `}` of its first `{`.
+            while i < bytes.len() && bytes[i] != b';' && bytes[i] != b'{' {
+                i += 1;
+            }
+            if bytes.get(i) == Some(&b'{') {
+                let mut depth = 0;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            rest = (i + 1).min(code.len());
+        }
+        out.push_str(&code[rest..]);
+        out
+    }
+
+    /// The statement around byte `at`: back to the previous `;` or the `{` or `}` that
+    /// opens or ends the enclosing block, forward to the next `;` or the `}` that ends the
+    /// block. An enclosing call's parentheses are part of the statement, so a parse inside
+    /// `wrap(.., parse(..))` sees the `wrap`.
+    fn statement_around(code: &str, at: usize) -> &str {
+        let bytes = code.as_bytes();
+        let mut start = 0;
+        let mut depth = 0_i32;
+        for i in (0..at).rev() {
+            match bytes[i] {
+                b')' | b']' => depth += 1,
+                b'}' if depth == 0 => {
+                    start = i + 1;
+                    break;
+                }
+                b'}' => depth += 1,
+                b'{' if depth == 0 => {
+                    start = i + 1;
+                    break;
+                }
+                b'(' | b'[' | b'{' if depth > 0 => depth -= 1,
+                b';' if depth == 0 => {
+                    start = i + 1;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let mut end = code.len();
+        depth = 0;
+        for (i, &byte) in bytes.iter().enumerate().skip(at) {
+            match byte {
+                b'(' | b'[' | b'{' => depth += 1,
+                b'}' if depth == 0 => {
+                    end = i;
+                    break;
+                }
+                b')' | b']' | b'}' if depth > 0 => depth -= 1,
+                b';' if depth == 0 => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        &code[start..end]
+    }
+
+    /// The text from `at` to the next `;`.
+    fn through_semicolon(code: &str, at: usize) -> &str {
+        &code[at..at + code[at..].find(';').unwrap_or(code.len() - at)]
+    }
+
+    /// The `use` statements of normalised `code`.
+    fn use_statements(code: &str) -> Vec<&str> {
+        word_starts(code, "use ")
+            .into_iter()
+            .map(|at| through_semicolon(code, at))
+            .collect()
+    }
+
+    /// Whether the file brings syn's `Error` into scope by name (`use syn::Error`,
+    /// `use syn::{.., Error}`, `use syn::parse::Error`, or a `syn` glob).
+    fn imports_syn_error(code: &str) -> bool {
+        use_statements(code).iter().any(|statement| {
+            has_word(statement, "syn") && (has_word(statement, "Error") || statement.contains('*'))
+        })
+    }
+
+    /// Ways to create a `syn::Error` that carries no code, found in normalised `code`.
+    fn syn_error_constructions(code: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        let bare_is_syn = imports_syn_error(code);
+        for pattern in ["Error::new", "Error::from"] {
+            for at in word_starts(code, pattern) {
+                let is_syn = match code[..at].strip_suffix("::") {
+                    Some(path) => {
+                        let segment = path
+                            .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                            .next()
+                            .unwrap_or("");
+                        segment == "syn" || (segment == "parse" && path.ends_with("syn::parse"))
+                    }
+                    None => bare_is_syn,
+                };
+                if is_syn {
+                    found.push(format!("syn's {pattern}"));
+                }
+            }
+        }
+        for statement in use_statements(code) {
+            if has_word(statement, "syn") && statement.contains("Error as") {
+                found.push("syn::Error imported under another name".to_owned());
+            }
+        }
+        for at in word_starts(code, "type ") {
+            if let Some((_, target)) = through_semicolon(code, at).split_once('=')
+                && (target.contains("syn::Error")
+                    || target.contains("syn::parse::Error")
+                    || (bare_is_syn && has_word(target, "Error")))
+            {
+                found.push("type alias of syn::Error".to_owned());
+            }
+        }
+        if code.contains(".error(") {
+            found.push(".error( on a receiver".to_owned());
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// `syn` parse entry points: each can return a `syn::Error` of syn's own making.
+    const PARSE_ENTRIES: &[&str] = &[
+        "parse_args",
+        "parse_nested_meta",
+        "parse2",
+        "parse_str",
+        "parse_macro_input!",
+    ];
+
+    /// Parse entry points in normalised `code` outside a `diagnostics::wrap(` call in the
+    /// same statement. An entry point matches as a call (`name(`, `name::<`, `name_with(`)
+    /// or as the `parse_macro_input!` macro.
+    fn unwrapped_parse_entries(code: &str) -> Vec<String> {
+        let mut found = Vec::new();
+        for entry in PARSE_ENTRIES {
+            for at in word_starts(code, entry) {
+                let after = &code[at + entry.len()..];
+                let is_call = entry.ends_with('!')
+                    || after.starts_with('(')
+                    || after.starts_with("::<")
+                    || (*entry == "parse_args" && after.starts_with("_with("));
+                if is_call && !statement_around(code, at).contains("diagnostics::wrap(") {
+                    found.push(format!("{entry} outside diagnostics::wrap"));
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// Everything the guard forbids in `source`: uncoded error constructions anywhere, and,
+    /// when `scan_parse_entries` is set (non-test files), unwrapped parse entry points
+    /// outside `#[cfg(test)]` items.
+    fn uncoded_error_uses(source: &str, scan_parse_entries: bool) -> Vec<String> {
+        let code = code_only(source);
+        let mut found = syn_error_constructions(&normalize(&code));
+        if scan_parse_entries {
+            found.extend(unwrapped_parse_entries(&normalize(&strip_test_items(
+                &code,
+            ))));
+        }
+        found
     }
 
     #[test]
@@ -665,26 +917,147 @@ mod tests {
             ("let s = br\"syn::Error::new(\";", false),
             ("let q = '\"'; let s = \"x\";", false),
             ("let q = '\\''; // syn::Error::new", false),
+            ("let s = \"parse2(\"; // syn::parse2(x)?", false),
             (
                 "fn f<'a>(x: &'a str) { syn::Error::new_spanned(x, \"m\") }",
                 true,
             ),
             ("let e = syn::Error::new_spanned(a, \"m\");", true),
-            ("let e = Error::new(span, \"m\");", true),
-            ("return Err(meta.error(\"m\"));", true),
-            ("use syn::Error as E;", true),
             // Code after a comment on the same line, and after a string, is still code.
             ("let s = \"a\"; syn::Error::new(s, \"m\"); // x", true),
             ("/* c */ syn::Error::new(a, \"m\")", true),
             ("let q = '\"'; syn::Error::new(a, \"m\");", true),
         ] {
             assert_eq!(
-                !uncoded_error_uses(source).is_empty(),
+                !uncoded_error_uses(source, true).is_empty(),
                 forbidden,
                 "{source:?} -> {:?}",
                 code_only(source)
             );
         }
+    }
+
+    #[test]
+    fn error_constructions_are_found_on_syn_paths_only() {
+        for (source, forbidden) in [
+            // syn's Error by any path.
+            ("let e = syn::Error::new(s, \"m\");", true),
+            ("let e = ::syn::Error::new_spanned(s, \"m\");", true),
+            ("let e = syn :: Error\n    :: new(s, \"m\");", true),
+            ("let e = syn::parse::Error::new(s, \"m\");", true),
+            ("let e = syn::Error::from(other);", true),
+            // A bare `Error` is syn's when the file imports it from syn.
+            ("use syn::Error;\nfn f() { Error::new(s, \"m\") }", true),
+            ("use syn::{Result, Error};\nfn f() { Error::from(x) }", true),
+            ("use syn::*;\nfn f() { Error::new(s, \"m\") }", true),
+            (
+                "use syn::parse::Error;\nfn f() { Error::new(s, \"m\") }",
+                true,
+            ),
+            // The receiver does not matter for `.error(`.
+            ("return Err(meta.error(\"m\"));", true),
+            ("return Err(input.error(\"m\"));", true),
+            ("lookahead\n    .error()", true),
+            // Aliases.
+            ("use syn::Error as E;", true),
+            ("use syn::{Result, Error as SynError};", true),
+            ("type E = syn::Error;", true),
+            ("type E = syn::parse::Error;", true),
+            ("use syn::Error;\ntype E = Error;", true),
+            // Other `Error` types are not syn's.
+            ("let e = std::io::Error::new(kind, \"m\");", false),
+            ("let e = io::Error::from(kind);", false),
+            (
+                "use std::io::Error;\nfn f() { Error::new(kind, \"m\") }",
+                false,
+            ),
+            ("let e = fmt::Error::default();", false),
+            ("let e = MyError::new(\"m\");", false),
+            ("fn f() { Error::new(kind, \"m\") }", false),
+            ("use std::error::Error as _;", false),
+            ("use std::io::{self, Error as IoError};", false),
+            ("type E = std::io::Error;", false),
+            ("use syn::visit::Visit;\ntype E = Error;", false),
+            ("let kind = value.error_kind();", false),
+            ("let e = syn::Error;", false),
+        ] {
+            assert_eq!(
+                !uncoded_error_uses(source, false).is_empty(),
+                forbidden,
+                "{source:?} -> {:?}",
+                uncoded_error_uses(source, false)
+            );
+        }
+    }
+
+    #[test]
+    fn parse_entry_points_must_sit_under_wrap_in_the_same_statement() {
+        for (source, forbidden) in [
+            // Propagated or kept unwrapped.
+            ("let m = syn::parse2::<syn::ItemMod>(tokens)?;", true),
+            ("let m = parse2::<syn::ItemMod>(tokens);", true),
+            ("let t = syn::parse_str::<syn::Type>(\"u32\")?;", true),
+            ("let n = attribute.parse_args::<syn::LitInt>()?;", true),
+            ("let n = attribute.parse_args_with(parser)?;", true),
+            ("attribute.parse_nested_meta(|meta| Ok(()))?;", true),
+            ("let m = parse_macro_input!(input as ItemMod);", true),
+            // The wrap is in another statement: the same expression is the rule.
+            (
+                "let p = syn::parse2::<syn::Item>(t); let e = diagnostics::wrap(Code::X, err);",
+                true,
+            ),
+            (
+                "fn f() { diagnostics::wrap(Code::X, e); }\nfn g() { let p = syn::parse2::<T>(t)?; }",
+                true,
+            ),
+            // Wrapped in the same statement, on one line or several, or around the call.
+            (
+                "let m = syn::parse2::<syn::Item>(t).map_err(|e| diagnostics::wrap(Code::X, e))?;",
+                false,
+            ),
+            (
+                "attribute\n    .parse_nested_meta(|meta| {\n        let a = 1;\n        Ok(())\n    })\n    .map_err(|error| diagnostics::wrap(Code::X, error))?;",
+                false,
+            ),
+            (
+                "let n = attribute.parse_args_with(parser)\n    .map_err(|e| crate::diagnostics::wrap(Code::X, e))?;",
+                false,
+            ),
+            (
+                "let x = diagnostics::wrap(Code::X, parse_str::<T>(\"u\").unwrap_err());",
+                false,
+            ),
+            // Not entry points.
+            ("let n = my_parse2(tokens);", false),
+            ("let n = tokens.parse2_len();", false),
+            ("let n = parse_args_len;", false),
+            ("let n: u32 = text.parse().unwrap();", false),
+            ("let s = \"parse2(x)\"; // parse_str(x)", false),
+            // Items marked cfg(test) are exempt, and only those.
+            (
+                "#[cfg(test)]\nmod tests { fn t() { syn::parse_str::<syn::Type>(\"u32\").unwrap(); } }",
+                false,
+            ),
+            (
+                "#[cfg(test)]\n#[path = \"tests/x.rs\"]\nmod x;\nfn f() { syn::parse2::<T>(t)?; }",
+                true,
+            ),
+            (
+                "fn f() { syn::parse2::<T>(t)?; }\n#[cfg(test)]\nmod tests { fn t() {} }",
+                true,
+            ),
+        ] {
+            assert_eq!(
+                !uncoded_error_uses(source, true).is_empty(),
+                forbidden,
+                "{source:?} -> {:?}",
+                uncoded_error_uses(source, true)
+            );
+        }
+        // A test file is scanned for constructions only.
+        let source = "fn t() { syn::parse_str::<T>(\"x\").unwrap(); }";
+        assert!(uncoded_error_uses(source, false).is_empty());
+        assert!(!uncoded_error_uses(source, true).is_empty());
     }
 
     /// The `.rs` files below `dir`, relative to `root` with `/` separators.
@@ -709,7 +1082,9 @@ mod tests {
     }
 
     /// Guard (iii): every `syn::Error` of this crate is created by `diagnostics::error`
-    /// (or its siblings in this file), so none can be added without a code.
+    /// (or its siblings in this file), and every `syn` parse entry point outside tests is
+    /// wrapped, so none can be added without a code. The exact limit is stated in
+    /// `docs/DIAGNOSTICS.md`.
     #[test]
     fn only_this_file_creates_syn_errors() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -725,13 +1100,279 @@ mod tests {
         for file in files.iter().filter(|file| *file != "diagnostics.rs") {
             let source = fs::read_to_string(root.join(file))
                 .unwrap_or_else(|error| panic!("could not read {file}: {error}"));
-            for pattern in uncoded_error_uses(&source) {
+            for pattern in uncoded_error_uses(&source, !file.starts_with("tests/")) {
                 offenders.push(format!("{file}: {pattern}"));
             }
         }
         assert!(
             offenders.is_empty(),
-            "create errors with diagnostics::error so they carry a code: {offenders:?}"
+            "create errors with diagnostics::error and wrap syn's parse errors with diagnostics::wrap so they carry a code: {offenders:?}"
         );
+    }
+
+    // --- Reachability: which codes a `#[gpu]` input can produce ---
+
+    /// Codes no `#[gpu]` input can produce, each with the reason. The emitter and the
+    /// expander keep these checks as a second line of defence: the validator rejects the
+    /// same shape first, so they fire only when a module skips validation. Each has a unit
+    /// test that calls the emitter or expander directly. `docs/DIAGNOSTICS.md` marks the
+    /// same codes "Unreachable through `#[gpu]`"; a test compares the two.
+    const UNREACHABLE: &[(Code, &str)] = &[
+        (
+            Code::PodStructNamedFields,
+            "the validator rejects a struct without named fields (E0104) before the host side is generated",
+        ),
+        (
+            Code::EntryPointDispatchParameter,
+            "the validator requires exactly one dispatch-thread parameter on a kernel (E0109)",
+        ),
+        (
+            Code::LetBindingForm,
+            "the validator applies the same pattern check to every `let` (E0319)",
+        ),
+        (
+            Code::AtomicEmitterReference,
+            "the validator checks the first argument of every atomic call (E0602, E0608)",
+        ),
+        (
+            Code::AtomicEmitterElement,
+            "the validator checks the first argument of every atomic call (E0609)",
+        ),
+        (
+            Code::ResultPayloadMissing,
+            "the validator accepts `Result` only as `Result<T, T>` (E0504)",
+        ),
+        (
+            Code::ResourceElementPath,
+            "the emitter rejects a resource type that is not a path as E0813 first",
+        ),
+    ];
+
+    fn is_listed_unreachable(code: Code) -> bool {
+        UNREACHABLE.iter().any(|(listed, _)| *listed == code)
+    }
+
+    /// Whether `text` (comments and literals already removed) names `Code::<variant>`.
+    fn mentions_code(text: &str, code: Code) -> bool {
+        let name = format!("Code::{code:?}");
+        word_starts(text, &name).into_iter().any(|at| {
+            text.as_bytes()
+                .get(at + name.len())
+                .is_none_or(|&byte| !is_identifier_byte(byte))
+        })
+    }
+
+    /// The test code of the crate, comments and literals removed: `tests/` files whole,
+    /// other files from their first `#[cfg(test)]`. `diagnostics.rs` is left out, since its
+    /// own tests name codes to test the mechanism, not a rejection.
+    fn test_sources() -> Vec<(String, String)> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_files(&root, &root, &mut files);
+        files
+            .into_iter()
+            .filter(|file| file != "diagnostics.rs")
+            .filter_map(|file| {
+                let source = fs::read_to_string(root.join(&file))
+                    .unwrap_or_else(|error| panic!("could not read {file}: {error}"));
+                let code = code_only(&source);
+                if file.starts_with("tests/") {
+                    return Some((file, code));
+                }
+                let at = code.find("#[cfg(test)]")?;
+                Some((file, code[at..].to_owned()))
+            })
+            .collect()
+    }
+
+    /// Every code is asserted by a test that runs the validator or the validator and emitter
+    /// together as `#[gpu]` does (`tests/regression.rs` and the validator's own tests), or is
+    /// listed in `UNREACHABLE`; and a listed code is asserted directly by some test, so it
+    /// cannot rot unseen.
+    #[test]
+    fn every_code_is_asserted_by_a_test_or_listed_unreachable_with_a_reason() {
+        let sources = test_sources();
+        let pipeline: String = sources
+            .iter()
+            .filter(|(file, _)| file == "tests/regression.rs" || file == "validate/mod.rs")
+            .map(|(_, text)| text.as_str())
+            .collect();
+        assert!(!pipeline.is_empty(), "no pipeline tests were scanned");
+        let mut untested = Vec::new();
+        for &code in ALL {
+            if is_listed_unreachable(code) {
+                if !sources.iter().any(|(_, text)| mentions_code(text, code)) {
+                    untested.push(format!(
+                        "{code:?} is listed UNREACHABLE but no test names it"
+                    ));
+                }
+            } else if !mentions_code(&pipeline, code) {
+                untested.push(format!(
+                    "{code:?} has no row in tests/regression.rs or the validator tests: add an assert_rejected row, or list it in UNREACHABLE with a reason"
+                ));
+            }
+        }
+        assert!(untested.is_empty(), "{untested:#?}");
+    }
+
+    #[test]
+    fn the_unreachable_list_names_each_code_once_with_a_reason() {
+        let mut seen = HashSet::new();
+        for (code, reason) in UNREACHABLE {
+            assert!(seen.insert(*code as u16), "{code:?} is listed twice");
+            assert!(ALL.contains(code), "{code:?} is not a code");
+            assert!(reason.len() > 20, "{code:?} needs a reason");
+        }
+    }
+
+    #[test]
+    fn mentions_code_matches_whole_names_in_code_only() {
+        let text = code_only("assert_rejected(s, Code::Closure); // Code::Await\nCode::LetElseX");
+        assert!(mentions_code(&text, Code::Closure));
+        assert!(!mentions_code(&text, Code::Await));
+        assert!(!mentions_code(&text, Code::LetElse));
+        assert!(!mentions_code("MyCode::Closure", Code::Closure));
+    }
+
+    /// One `### GUST-E....` section of the doc page.
+    struct DocSection {
+        code: String,
+        body: Vec<String>,
+    }
+
+    /// The sections of the doc page: each heading with exactly one code starts one, and any
+    /// other heading ends it. Fenced lines are never headings.
+    fn doc_sections(text: &str) -> Vec<DocSection> {
+        let mut sections: Vec<DocSection> = Vec::new();
+        let mut open = false;
+        let mut in_fence = false;
+        for line in text.lines() {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+            }
+            if !in_fence && line.starts_with('#') {
+                open = false;
+                if let [code] = heading_codes(line).as_slice() {
+                    sections.push(DocSection {
+                        code: code.clone(),
+                        body: Vec::new(),
+                    });
+                    open = true;
+                }
+            } else if open {
+                sections
+                    .last_mut()
+                    .expect("an open section")
+                    .body
+                    .push(line.to_owned());
+            }
+        }
+        sections
+    }
+
+    const REACHED: &str = "Reached through `#[gpu]`";
+    const NOT_REACHED: &str = "Unreachable through `#[gpu]`";
+
+    fn doc_text() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/DIAGNOSTICS.md");
+        fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("could not read docs/DIAGNOSTICS.md: {error}"))
+    }
+
+    /// Problems with the reachability statement and the opening line of each section.
+    fn section_problems(
+        sections: &[DocSection],
+        unreachable: &dyn Fn(&str) -> bool,
+    ) -> Vec<String> {
+        let mut problems = Vec::new();
+        for section in sections {
+            let body = section.body.join("\n");
+            let reached = body.matches(REACHED).count();
+            let not_reached = body.matches(NOT_REACHED).count();
+            if reached + not_reached != 1 {
+                problems.push(format!(
+                    "{}: must say exactly once whether it is reached through `#[gpu]` ({reached} + {not_reached})",
+                    section.code
+                ));
+            } else if (not_reached == 1) != unreachable(&section.code) {
+                problems.push(format!(
+                    "{}: the doc says {} but the UNREACHABLE list says the opposite",
+                    section.code,
+                    if not_reached == 1 {
+                        "unreachable"
+                    } else {
+                        "reached"
+                    }
+                ));
+            }
+            let first = section
+                .body
+                .iter()
+                .map(|line| line.trim())
+                .find(|line| !line.is_empty())
+                .unwrap_or("");
+            if [
+                "Rejected:",
+                REACHED,
+                NOT_REACHED,
+                "Write instead:",
+                "Decision:",
+            ]
+            .iter()
+            .any(|label| first.starts_with(label))
+            {
+                problems.push(format!(
+                    "{}: needs a one-line meaning before `Rejected:`",
+                    section.code
+                ));
+            }
+        }
+        problems
+    }
+
+    /// Each section of the doc page says whether `#[gpu]` can reach its code, matching
+    /// `UNREACHABLE`, and opens with a line saying what the code means.
+    #[test]
+    fn the_doc_marks_reachability_as_the_unreachable_list_does_and_opens_with_a_meaning() {
+        let sections = doc_sections(&doc_text());
+        assert_eq!(sections.len(), ALL.len(), "one section per code");
+        let unreachable: HashSet<&str> = UNREACHABLE.iter().map(|(code, _)| code.text()).collect();
+        let problems = section_problems(&sections, &|code| unreachable.contains(code));
+        assert!(problems.is_empty(), "{problems:#?}");
+    }
+
+    #[test]
+    fn section_problems_finds_missing_conflicting_and_misplaced_statements() {
+        let sample = "## E01xx\n\
+            ### GUST-E0101 ok\n\nMeans a thing.\nReached through `#[gpu]`.\nRejected: x.\n\n\
+            ### GUST-E0102 unreachable ok\n\nMeans a thing.\nUnreachable through `#[gpu]`: defence in depth.\nRejected: x.\n\n\
+            ### GUST-E0103 no statement\n\nMeans a thing.\nRejected: x.\n\n\
+            ### GUST-E0104 both\n\nMeans.\nReached through `#[gpu]`. Unreachable through `#[gpu]`.\n\n\
+            ### GUST-E0105 wrong\n\nMeans.\nReached through `#[gpu]`.\n\n\
+            ### GUST-E0106 no meaning\n\nReached through `#[gpu]`.\nRejected: x.\n\n\
+            ### GUST-E0107 fenced\n\n```text\n### GUST-E0199 not a heading\n```\nMeans.\nReached through `#[gpu]`.\n\
+            ## Next family\nReached through `#[gpu]`.\n";
+        let sections = doc_sections(sample);
+        let codes: Vec<&str> = sections.iter().map(|s| s.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            [
+                "GUST-E0101",
+                "GUST-E0102",
+                "GUST-E0103",
+                "GUST-E0104",
+                "GUST-E0105",
+                "GUST-E0106",
+                "GUST-E0107"
+            ]
+        );
+        let problems = section_problems(&sections, &|code| {
+            matches!(code, "GUST-E0102" | "GUST-E0105")
+        });
+        assert_eq!(problems.len(), 4, "{problems:#?}");
+        assert!(problems[0].starts_with("GUST-E0103: must say exactly once"));
+        assert!(problems[1].starts_with("GUST-E0104: must say exactly once"));
+        assert!(problems[2].starts_with("GUST-E0105: the doc says reached"));
+        assert!(problems[3].starts_with("GUST-E0106: needs a one-line meaning"));
     }
 }

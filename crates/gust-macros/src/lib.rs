@@ -31,7 +31,9 @@ pub(crate) fn gpu_impl(
     attribute: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    let parsed = syn::parse2::<syn::ItemMod>(item.clone());
+    // `syn` words the parse failure itself; the code is added in front.
+    let parsed = syn::parse2::<syn::ItemMod>(item.clone())
+        .map_err(|error| diagnostics::wrap(Code::ItemNotModule, error));
     if !attribute.is_empty() {
         let error = diagnostics::error_at(
             Code::GpuArguments,
@@ -42,11 +44,7 @@ pub(crate) fn gpu_impl(
     }
     let module = match parsed {
         Ok(module) => module,
-        // `syn` words the parse failure itself; the code is added in front.
-        Err(error) => {
-            let error = diagnostics::wrap(Code::ItemNotModule, error);
-            return recover::beside_error(error, &item, None);
-        }
+        Err(error) => return recover::beside_error(error, &item, None),
     };
     match expand::expand(module.clone()) {
         Ok(tokens) => tokens,

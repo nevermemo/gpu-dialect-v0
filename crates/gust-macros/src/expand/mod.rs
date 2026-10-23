@@ -540,6 +540,17 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
 mod tests {
     use super::*;
 
+    /// Not reachable through `#[gpu]`: the validator rejects a struct without named fields
+    /// (E0104) before the host side is generated. Listed in the guard's `UNREACHABLE`.
+    #[test]
+    fn pod_struct_without_named_fields_is_coded_when_validation_is_skipped() {
+        let item: syn::ItemStruct = syn::parse_quote! { struct P(u32, u32); };
+        crate::diagnostics::testing::assert_code(
+            &gpu_pod_impl(&item).unwrap_err(),
+            Code::PodStructNamedFields,
+        );
+    }
+
     #[test]
     fn descriptor_contains_slang_not_custom_ir_or_spirv() {
         let module: syn::ItemMod = syn::parse_quote! {

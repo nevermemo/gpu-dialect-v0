@@ -673,23 +673,23 @@ impl RestrictedVisitor {
         }
         let syn::Expr::Reference(ref reference) = call.args[0] else {
             self.reject(
-                Code::AtomicArgumentShape,
+                Code::AtomicNotReference,
                 &call.args[0],
-                &format!("`{op_name}` requires a mutable reference to a buffer element: `&mut buffer[index]`"),
+                &format!("`{op_name}` requires a mutable reference to a buffer element:`&mut buffer[index]`"),
             );
             return;
         };
         if reference.mutability.is_none() {
             self.reject(
-                Code::AtomicArgumentShape,
+                Code::AtomicReferenceNotMutable,
                 &call.args[0],
-                &format!("`{op_name}` requires a mutable reference: `&mut buffer[index]`"),
+                &format!("`{op_name}` requires a mutable reference:`&mut buffer[index]`"),
             );
             return;
         }
         let syn::Expr::Index(index) = reference.expr.as_ref() else {
             self.reject(
-                Code::AtomicArgumentShape,
+                Code::AtomicOperandNotElement,
                 &reference.expr,
                 &format!("`{op_name}` requires a read-write buffer element: `&mut buffer[index]`"),
             );
@@ -697,7 +697,7 @@ impl RestrictedVisitor {
         };
         let syn::Expr::Path(buffer_path) = index.expr.as_ref() else {
             self.reject(
-                Code::AtomicArgumentShape,
+                Code::AtomicReceiverNotBuffer,
                 &index.expr,
                 &format!("`{op_name}` requires a direct buffer receiver: `&mut buffer[index]`"),
             );

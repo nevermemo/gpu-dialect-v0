@@ -800,6 +800,38 @@ fn unsupported_numeric_width_is_diagnosed() {
     );
 }
 
+/// A kernel `run` whose body is `body`, with a dispatch-thread parameter `id`, a read-write
+/// buffer `out` and a local `x`.
+fn kernel_with_body(body: &str) -> String {
+    format!(
+        "mod bad {{ #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {{ let x = 7u32; {body} }} }}"
+    )
+}
+
+#[test]
+fn expression_and_binding_rejections_carry_their_codes() {
+    for (body, code) in [
+        ("let y = foo(1u32);", Code::UnknownCall),
+        ("let y = id.global_id::<u32>();", Code::BuiltinTypeArguments),
+        ("let y = x.abs();", Code::UnsupportedMethod),
+        ("let y = out.global_id();", Code::GlobalIdReceiver),
+        ("let f = |a: u32| a;", Code::Closure),
+        ("let y = x.await;", Code::Await),
+        ("let y = &x;", Code::Reference),
+        ("let (a, b) = x;", Code::LetNeedsIdentifier),
+        ("let v = x else { return; };", Code::LetElse),
+        ("for i in 0u32..4u32 { break 3u32; }", Code::BreakWithValue),
+        ("let r = Ok(1u32, 2u32);", Code::OkErrArguments),
+        ("let f = Some;", Code::VariantAsValue),
+        (
+            "let o = Some(1u32); let b = o.is_some(1u32);",
+            Code::PredicateArguments,
+        ),
+    ] {
+        assert_rejected(&kernel_with_body(body), code);
+    }
+}
+
 #[test]
 fn emitter_only_rejections_are_coded() {
     for (source, code) in [
@@ -823,9 +855,54 @@ fn emitter_only_rejections_are_coded() {
             "mod bad { fn f(self) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
             Code::SelfParameter,
         ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let t = (1u32, 2u32); } }",
+            Code::UnsupportedExpression,
+        ),
+        (
+            "mod bad { fn f(a: (u32, u32)) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            Code::TypeNeedsPath,
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, b: StructuredBuffer) {} }",
+            Code::ResourceElementArity,
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, b: StructuredBuffer<'a>) {} }",
+            Code::ResourceElementMissing,
+        ),
     ] {
         assert_rejected(source, code);
     }
+}
+
+/// Codes the emitter keeps as a second line of defence: the validator rejects the same
+/// shape first, so these are reached only when a module skips validation. Each is
+/// asserted directly against the emitter or expander, and listed in `UNREACHABLE`.
+#[test]
+fn unreachable_emitter_rejections_are_coded_when_validation_is_skipped() {
+    let module: syn::ItemMod = syn::parse_quote! { mod bad { #[kernel] fn run() {} } };
+    let kernel = module
+        .content
+        .as_ref()
+        .unwrap()
+        .1
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Fn(function) => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    let options = kernel_options(kernel).unwrap().unwrap();
+    let error = emit_kernel(&module, kernel, options)
+        .err()
+        .expect("the emitter rejects a kernel without a dispatch parameter");
+    assert_code(&error, Code::EntryPointDispatchParameter);
+    // And the validator stops the same module first, with its own code.
+    assert_code(
+        &validate_module(&module).unwrap_err(),
+        Code::KernelDispatchParameter,
+    );
 }
 
 #[test]
@@ -1206,15 +1283,23 @@ fn atomic_ops_reject_unsupported_receivers() {
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { let mut local = 0u32; atomic_add(&mut local, 1u32); } }",
-            Code::AtomicArgumentShape,
+            Code::AtomicOperandNotElement,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter, 1u32); } }",
-            Code::AtomicArgumentShape,
+            Code::AtomicOperandNotElement,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&counter[0], 1u32); } }",
-            Code::AtomicArgumentShape,
+            Code::AtomicReferenceNotMutable,
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(counter, 1u32); } }",
+            Code::AtomicNotReference,
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter.items[0], 1u32); } }",
+            Code::AtomicReceiverNotBuffer,
         ),
         (
             "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut counter: RWStructuredBuffer<uint>) { atomic_add(&mut counter[0]); } }",
@@ -1521,6 +1606,11 @@ fn output_items(output: proc_macro2::TokenStream) -> Vec<syn::Item> {
         .items
 }
 
+/// `code` as it appears in a message, for example `[GUST-E0401]`.
+fn bracketed(code: Code) -> String {
+    format!("[{}]", code.text())
+}
+
 /// Asserts the first item is a `compile_error!` whose message contains `message`.
 fn assert_leading_compile_error(items: &[syn::Item], message: &str) {
     let syn::Item::Macro(item) = &items[0] else {
@@ -1551,7 +1641,7 @@ const REJECTED_MODULE: &str = "mod demo { \
 fn rejected_module_is_returned_beside_the_error_without_kernel_attributes() {
     let item: proc_macro2::TokenStream = REJECTED_MODULE.parse().unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
-    assert_leading_compile_error(&items, "[GUST-E0510]");
+    assert_leading_compile_error(&items, &bracketed(Code::UnwrapPanics));
     let module = recovered_module(&items);
     assert_eq!(module.ident, "demo");
     let content = &module.content.as_ref().unwrap().1;
@@ -1634,11 +1724,11 @@ fn recovery_keeps_the_users_module_attributes_and_visibility() {
 #[test]
 fn module_without_inline_content_gets_the_error_alone() {
     // `mod m;` would make rustc look for a file; nothing may be re-emitted.
-    for (attribute, code) in [("", "[GUST-E0101]"), ("x", "[GUST-E0701]")] {
+    for (attribute, code) in [("", Code::InlineModuleRequired), ("x", Code::GpuArguments)] {
         let item: proc_macro2::TokenStream = "mod m;".parse().unwrap();
         let items = output_items(crate::gpu_impl(attribute.parse().unwrap(), item));
         assert_eq!(items.len(), 1, "{items:?}");
-        assert_leading_compile_error(&items, code);
+        assert_leading_compile_error(&items, &bracketed(code));
     }
 }
 
@@ -1646,7 +1736,7 @@ fn module_without_inline_content_gets_the_error_alone() {
 fn attribute_arguments_error_keeps_the_module() {
     let item: proc_macro2::TokenStream = "mod m {}".parse().unwrap();
     let items = output_items(crate::gpu_impl("x".parse().unwrap(), item));
-    assert_leading_compile_error(&items, "[GUST-E0701]");
+    assert_leading_compile_error(&items, &bracketed(Code::GpuArguments));
     let module = recovered_module(&items);
     assert_eq!(module.ident, "m");
     let expected: syn::Item = syn::parse_quote!(
@@ -1660,7 +1750,7 @@ fn non_module_item_is_returned_unchanged_beside_the_error() {
     let item: proc_macro2::TokenStream = "fn f() {}".parse().unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
     assert_eq!(items.len(), 2);
-    assert_leading_compile_error(&items, "[GUST-E0702]");
+    assert_leading_compile_error(&items, &bracketed(Code::ItemNotModule));
     let expected: syn::Item = syn::parse_quote!(
         fn f() {}
     );
@@ -1674,7 +1764,7 @@ fn unparsable_item_tokens_are_returned_verbatim_after_the_error() {
     let output = crate::gpu_impl(proc_macro2::TokenStream::new(), item.clone()).to_string();
     let item = item.to_string();
     assert!(output.starts_with(":: core :: compile_error !"), "{output}");
-    assert!(output.contains("[GUST-E0702]"), "{output}");
+    assert!(output.contains(&bracketed(Code::ItemNotModule)), "{output}");
     assert!(output.ends_with(&item), "{output}");
 }
 
