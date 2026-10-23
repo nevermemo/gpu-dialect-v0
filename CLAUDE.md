@@ -13,7 +13,7 @@ AGENTS.md names three worker roles. In Claude Code they map to:
 | Coordinator | The main session | Plans, lanes, commits, pushes, and the durable state files (roadmap, decisions, status). Avoids implementation. |
 | Scout | Agent tool, `model: "sonnet"` (or `"haiku"` for narrow lookups) | Read-only discovery; returns paths, symbols and line references. |
 | Builder | Agent tool, `model: "sonnet"` | One bounded slice with a written plan and an allowed-file list; runs the gates the plan names; no commits. |
-| Verifier / reviewer | Agent tool, `model: "fable"`, or Codex | Read-only; never the author of the diff it reviews. Verdict plus findings ranked must-fix, should-fix, nit. |
+| Verifier / reviewer | Agent tool, `model: "opus"` (owner, 2026-10-23), or Codex | Read-only; never the author of the diff it reviews. Verdict plus findings ranked must-fix, should-fix, nit. |
 
 Set `model` explicitly on every subagent. Use the user-level `fable-planner` skill only when the owner asks for it.
 After each slice, check usage; usage is shared with another project on the owner's account.
