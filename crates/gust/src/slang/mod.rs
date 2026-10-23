@@ -127,9 +127,20 @@ fn compile_in_directory(
     entry: &str,
     target: Target,
 ) -> Result<Vec<u8>, Error> {
-    let source_path = directory.0.join("kernel.slang");
-    let map_path = directory.0.join("kernel.map.json");
-    let output_path = directory.0.join(format!("kernel.{}", target.extension()));
+    // The guard removes the directory when this returns, on every path.
+    compile_at(&directory.0, source, entry, target)
+}
+
+/// Compile inside `directory`, which the caller owns and removes.
+fn compile_at(
+    directory: &Path,
+    source: &str,
+    entry: &str,
+    target: Target,
+) -> Result<Vec<u8>, Error> {
+    let source_path = directory.join("kernel.slang");
+    let map_path = directory.join("kernel.map.json");
+    let output_path = directory.join(format!("kernel.{}", target.extension()));
     let source_map = SourceMap::from_slang(source);
     fs::write(&source_path, source)?;
     fs::write(&map_path, source_map.json())?;
@@ -180,9 +191,11 @@ fn compile_in_directory(
     Ok(artifact)
 }
 
-/// Map a `slangc` diagnostic to a generated construct segment. The map is a
-/// temporary sidecar next to `kernel.slang`; kernel-marker fallback preserves
-/// attribution for unmapped declaration lines.
+/// Map a `slangc` diagnostic to a generated construct segment. The sidecar
+/// `kernel.map.json` is written for inspection and is never parsed back; the
+/// in-memory map built from the same source does the lookup. A line outside
+/// every construct segment maps to the nearest preceding kernel marker, so a
+/// missing or unreadable segment degrades to kernel attribution.
 fn map_slang_diagnostic(
     source_map: &SourceMap,
     slang_source: &str,
@@ -192,25 +205,7 @@ fn map_slang_diagnostic(
     if target_line > slang_source.lines().count() {
         return None;
     }
-    if let Some(segment) = source_map.origin_at(target_line) {
-        return Some(segment.clone());
-    }
-    let mut kernel = None;
-    for (index, line) in slang_source.lines().enumerate() {
-        if index + 1 > target_line {
-            break;
-        }
-        if let Some(name) = line.trim().strip_prefix("// @rust kernel: ") {
-            kernel = (!name.trim().is_empty()).then(|| name.trim().to_owned());
-        }
-    }
-    kernel.map(|kernel| SourceMapSegment {
-        start_line: target_line,
-        end_line: target_line,
-        kernel,
-        construct: "kernel",
-        ordinal: 0,
-    })
+    source_map.origin_at(target_line)
 }
 
 /// Select an error in this compilation unit, not an earlier warning or a filename
@@ -431,53 +426,176 @@ mod tests {
         assert_eq!(origin.construct, "local");
     }
 
+    /// Output shaped like the emitter's: a Result helper, the resource prologue
+    /// and a lowered `match`. `scrutinee` and `arm` inject the failing text.
+    fn match_kernel(signature: &str, scrutinee: &str, arm: &str) -> String {
+        format!(
+            concat!(
+                "struct R {{ bool isOk; uint value; }};\n",
+                "R pick() {{ R r; r.isOk = true; r.value = uint(1); return r; }}\n",
+                "RWStructuredBuffer<uint> values;\n",
+                "\n",
+                "// @rust kernel: example::broken\n",
+                "[shader(\"compute\")]\n",
+                "[numthreads(1, 1, 1)]\n",
+                "void broken({signature})\n",
+                "{{\n",
+                "    uint __gpu_len_values;\n",
+                "    uint __gpu_stride_values;\n",
+                "    values.GetDimensions(__gpu_len_values, __gpu_stride_values);\n",
+                "    var total = uint(0);\n",
+                "    // @gust construct: match #1\n",
+                "    var __gust_match_1 = {scrutinee};\n",
+                "    if (__gust_match_1.isOk)\n",
+                "    {{\n",
+                "        var h = __gust_match_1.value;\n",
+                "        total = ({arm});\n",
+                "    }}\n",
+                "    else\n",
+                "    {{\n",
+                "        var e = __gust_match_1.value;\n",
+                "        total = (total + e);\n",
+                "    }}\n",
+                "    values[id.x] = total;\n",
+                "}}\n",
+            ),
+            signature = signature,
+            scrutinee = scrutinee,
+            arm = arm,
+        )
+    }
+
+    const VALID_SIGNATURE: &str = "uint3 id : SV_DispatchThreadID";
+
+    fn failure_diagnostics(source: &str, target: Target) -> String {
+        let error = compile_source(source, "broken", target).unwrap_err();
+        let Error::CompilationFailed { diagnostics, .. } = error else {
+            panic!("expected actual compiler failure for {target:?}: {error}");
+        };
+        diagnostics
+    }
+
     #[test]
-    fn sidecar_map_serializes_stable_construct_segments() {
+    fn sidecar_map_file_is_written_before_slangc_runs_and_has_the_documented_schema() {
+        let source = concat!(
+            "RWStructuredBuffer<uint> values;\n",
+            "\n",
+            "// @rust kernel: example::ok\n",
+            "[shader(\"compute\")]\n",
+            "[numthreads(1, 1, 1)]\n",
+            "void ok(uint3 id : SV_DispatchThreadID)\n",
+            "{\n",
+            "    uint __gpu_len_values;\n",
+            "    uint __gpu_stride_values;\n",
+            "    values.GetDimensions(__gpu_len_values, __gpu_stride_values);\n",
+            "    var i = id.x;\n",
+            "    if ((i < __gpu_len_values))\n",
+            "    {\n",
+            "        values[i] = uint(1);\n",
+            "    }\n",
+            "}\n",
+        );
+        let expected = concat!(
+            "{\n  \"schema_version\": 1,\n  \"segments\": [\n",
+            "    {\"slang_start\":3,\"slang_end\":16,\"kernel\":\"example::ok\",\"construct\":\"kernel\",\"ordinal\":0},\n",
+            "    {\"slang_start\":8,\"slang_end\":10,\"kernel\":\"example::ok\",\"construct\":\"prologue\",\"ordinal\":0},\n",
+            "    {\"slang_start\":11,\"slang_end\":11,\"kernel\":\"example::ok\",\"construct\":\"local\",\"ordinal\":0},\n",
+            "    {\"slang_start\":12,\"slang_end\":15,\"kernel\":\"example::ok\",\"construct\":\"conditional\",\"ordinal\":1},\n",
+            "    {\"slang_start\":14,\"slang_end\":14,\"kernel\":\"example::ok\",\"construct\":\"assignment\",\"ordinal\":2}\n",
+            "  ]\n}\n",
+        );
+        // A successful compile and a failing one both leave the sidecar behind
+        // until the owner removes the directory.
+        let directory = TemporaryDirectory::create().unwrap();
+        compile_at(directory.path(), source, "ok", Target::Wgsl).unwrap();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("kernel.map.json")).unwrap(),
+            expected
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("kernel.slang")).unwrap(),
+            source
+        );
+
+        let failing = TemporaryDirectory::create().unwrap();
+        let broken = match_kernel(VALID_SIGNATURE, "undefined_symbol", "h");
+        assert!(compile_at(failing.path(), &broken, "broken", Target::Wgsl).is_err());
+        let sidecar = fs::read_to_string(failing.path().join("kernel.map.json")).unwrap();
+        assert_eq!(sidecar, SourceMap::from_slang(&broken).json());
+        assert!(sidecar.contains("\"construct\":\"match\""), "{sidecar}");
+    }
+
+    #[test]
+    fn sidecar_map_segments_follow_nested_blocks() {
         let source = concat!(
             "// @rust kernel: example::run\n",
-            "void run(uint3 id : SV_DispatchThreadID) {\n",
-            "    // @gust construct: match #0\n",
+            "void run(uint3 id : SV_DispatchThreadID)\n",
+            "{\n",
             "    var value = id.x;\n",
-            "    if (value > 0) {\n",
+            "    if (value > 0)\n",
+            "    {\n",
             "        value = value - 1;\n",
             "    }\n",
             "}\n",
         );
-        let map = SourceMap::from_slang(source);
+        let mut kinds: Vec<_> = SourceMap::from_slang(source)
+            .segments()
+            .iter()
+            .map(|segment| (segment.construct, segment.start_line, segment.end_line))
+            .collect();
+        kinds.sort_unstable();
         assert_eq!(
-            map.segments(),
+            kinds,
             vec![
-                SourceMapSegment {
-                    start_line: 3,
-                    end_line: 3,
-                    kernel: "example::run".into(),
-                    construct: "match",
-                    ordinal: 0
-                },
-                SourceMapSegment {
-                    start_line: 4,
-                    end_line: 4,
-                    kernel: "example::run".into(),
-                    construct: "local",
-                    ordinal: 1
-                },
-                SourceMapSegment {
-                    start_line: 5,
-                    end_line: 5,
-                    kernel: "example::run".into(),
-                    construct: "conditional",
-                    ordinal: 2
-                },
-                SourceMapSegment {
-                    start_line: 6,
-                    end_line: 6,
-                    kernel: "example::run".into(),
-                    construct: "assignment",
-                    ordinal: 3
-                },
+                ("assignment", 7, 7),
+                ("conditional", 5, 8),
+                ("kernel", 1, 9),
+                ("local", 4, 4),
             ]
         );
-        assert!(map.json().contains("\"construct\":\"conditional\""));
+    }
+
+    #[test]
+    fn failure_inside_a_lowered_match_reports_the_match_on_each_target() {
+        let source = match_kernel(VALID_SIGNATURE, "undefined_symbol", "h");
+        for target in [Target::Wgsl, Target::Spirv] {
+            let diagnostics = failure_diagnostics(&source, target);
+            assert!(diagnostics.contains("undefined_symbol"), "{diagnostics}");
+            assert!(
+                diagnostics.contains("originating Rust kernel: example::broken"),
+                "{target:?}: {diagnostics}"
+            );
+            // `total` is local #0, so the match is construct #1.
+            assert!(
+                diagnostics.contains("originating Rust construct: match #1"),
+                "{target:?}: {diagnostics}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_in_a_user_statement_inside_a_match_arm_reports_that_statement() {
+        let source = match_kernel(VALID_SIGNATURE, "pick()", "total + undefined_symbol");
+        let diagnostics = failure_diagnostics(&source, Target::Wgsl);
+        assert!(diagnostics.contains("undefined_symbol"), "{diagnostics}");
+        assert!(
+            diagnostics.contains("originating Rust construct: assignment #2"),
+            "{diagnostics}"
+        );
+    }
+
+    #[test]
+    fn failure_on_an_unsegmented_kernel_line_falls_back_to_the_kernel() {
+        let source = match_kernel("unknown_type id : SV_DispatchThreadID", "pick()", "h");
+        let diagnostics = failure_diagnostics(&source, Target::Wgsl);
+        assert!(
+            diagnostics.contains("originating Rust kernel: example::broken"),
+            "{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("originating Rust construct: kernel #0"),
+            "{diagnostics}"
+        );
     }
 
     #[test]

@@ -1,3 +1,9 @@
+//! Sidecar diagnostic map derived directly from emitted Slang text (DX19).
+//!
+//! The map is a line-range index over the generated source, not an IR. Emission
+//! is Allman style with one statement per line, so brace depth is enough to turn
+//! a construct's first line into a range that ends at its closing brace.
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SourceMapSegment {
     pub(crate) start_line: usize,
@@ -9,49 +15,247 @@ pub(crate) struct SourceMapSegment {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SourceMap {
+    /// In order of first line, so a later segment containing a line is always
+    /// nested inside every earlier segment that also contains it.
     segments: Vec<SourceMapSegment>,
+    /// One `// @rust kernel:` marker per named kernel: line number and name.
+    markers: Vec<(usize, String)>,
+}
+
+/// A segment whose closing line is not known yet.
+#[derive(Debug)]
+struct OpenSegment {
+    index: usize,
+    /// Brace depth on the segment's first line, before that line's braces.
+    base: usize,
+    /// Whether a brace deeper than `base` has been seen since the segment began.
+    entered: bool,
+}
+
+struct KernelState {
+    name: String,
+    /// Next ordinal for a construct segment; prologue and kernel do not use it.
+    ordinal: usize,
+    prologue_ordinal: usize,
+    open: Vec<OpenSegment>,
 }
 
 impl SourceMap {
     pub(crate) fn from_slang(source: &str) -> Self {
+        let lines: Vec<&str> = source.lines().collect();
         let mut map = Self::default();
-        let mut kernel = None;
-        let mut ordinal = 0;
-        for (index, line) in source.lines().enumerate() {
-            let line_number = index + 1;
-            if let Some(name) = line.trim().strip_prefix("// @rust kernel: ") {
-                kernel = (!name.trim().is_empty()).then(|| name.trim().to_owned());
-                ordinal = 0;
+        let mut state: Option<KernelState> = None;
+        let mut depth = 0usize;
+        for (index, raw) in lines.iter().enumerate() {
+            let number = index + 1;
+            let trimmed = raw.trim();
+            if let Some(name) = trimmed.strip_prefix("// @rust kernel: ") {
+                // A marker ends a kernel that never closed.
+                if let Some(previous) = state.take() {
+                    map.close_all(previous.open, number - 1);
+                }
+                let name = name.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                map.markers.push((number, name.to_owned()));
+                let segment = map.push(number, name, "kernel", 0);
+                state = Some(KernelState {
+                    name: name.to_owned(),
+                    ordinal: 0,
+                    prologue_ordinal: 0,
+                    open: vec![OpenSegment {
+                        index: segment,
+                        base: depth,
+                        entered: false,
+                    }],
+                });
                 continue;
             }
-            let Some(kernel) = &kernel else {
+            let code = trimmed.split("//").next().unwrap_or("").trim();
+            let depth_before = depth;
+            if let Some(kernel) = state.as_mut() {
+                map.classify(kernel, trimmed, code, number, depth_before);
+            }
+            // Braces inside a statement (array literals) do not open a block.
+            let statement = code.ends_with(';');
+            for character in code.chars() {
+                match character {
+                    '{' => {
+                        depth += 1;
+                        if let Some(kernel) = state.as_mut().filter(|_| !statement) {
+                            for open in &mut kernel.open {
+                                if depth > open.base {
+                                    open.entered = true;
+                                }
+                            }
+                        }
+                    }
+                    '}' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            let Some(kernel) = state.as_mut() else {
                 continue;
             };
-            let Some(construct) = construct_kind(line.trim()) else {
-                continue;
-            };
-            map.segments.push(SourceMapSegment {
-                start_line: line_number,
-                end_line: line_number,
-                kernel: kernel.clone(),
-                construct,
-                ordinal,
-            });
-            ordinal += 1;
+            let next_is_else = lines
+                .get(index + 1)
+                .is_some_and(|next| next.trim().starts_with("else"));
+            // Only a closing brace can end a segment; a line such as `else` between
+            // two blocks must not close the conditional it continues.
+            while let Some(top) = kernel.open.last().filter(|_| code.contains('}')) {
+                let construct = map.segments[top.index].construct;
+                let continues_with_else =
+                    next_is_else && matches!(construct, "conditional" | "match");
+                if top.entered && depth <= top.base && !continues_with_else {
+                    map.segments[top.index].end_line = number;
+                } else if !top.entered && depth < top.base {
+                    // The enclosing block ended before this segment opened a block.
+                    let start = map.segments[top.index].start_line;
+                    map.segments[top.index].end_line = (number - 1).max(start);
+                } else {
+                    break;
+                }
+                kernel.open.pop();
+            }
+            if kernel.open.is_empty() {
+                state = None;
+            }
+        }
+        if let Some(kernel) = state {
+            map.close_all(kernel.open, lines.len());
         }
         map
     }
 
-    pub(crate) fn origin_at(&self, line: usize) -> Option<&SourceMapSegment> {
-        self.segments
+    fn push(
+        &mut self,
+        line: usize,
+        kernel: &str,
+        construct: &'static str,
+        ordinal: usize,
+    ) -> usize {
+        self.segments.push(SourceMapSegment {
+            start_line: line,
+            end_line: line,
+            kernel: kernel.to_owned(),
+            construct,
+            ordinal,
+        });
+        self.segments.len() - 1
+    }
+
+    fn close_all(&mut self, open: Vec<OpenSegment>, end: usize) {
+        for open in open {
+            let segment = &mut self.segments[open.index];
+            segment.end_line = end.max(segment.start_line);
+        }
+    }
+
+    /// Record the construct that starts on this line, if any.
+    fn classify(
+        &mut self,
+        kernel: &mut KernelState,
+        trimmed: &str,
+        code: &str,
+        number: usize,
+        depth: usize,
+    ) {
+        if trimmed.starts_with("// @gust construct: match #") {
+            // A marker at the same depth ends an earlier marker that opened no block.
+            let mut kept = Vec::new();
+            for open in std::mem::take(&mut kernel.open) {
+                let stale = !open.entered
+                    && open.base == depth
+                    && self.segments[open.index].construct == "match";
+                if stale {
+                    let segment = &mut self.segments[open.index];
+                    segment.end_line = (number - 1).max(segment.start_line);
+                } else {
+                    kept.push(open);
+                }
+            }
+            kernel.open = kept;
+            self.open_block(kernel, number, "match", depth);
+            return;
+        }
+        if is_prologue(code) {
+            let extends = self.segments.last().is_some_and(|last| {
+                last.construct == "prologue"
+                    && last.kernel == kernel.name
+                    && last.end_line + 1 == number
+            });
+            if extends {
+                if let Some(last) = self.segments.last_mut() {
+                    last.end_line = number;
+                }
+            } else {
+                self.push(number, &kernel.name, "prologue", kernel.prologue_ordinal);
+                kernel.prologue_ordinal += 1;
+            }
+            return;
+        }
+        // Lowered `match` scaffolding (scrutinee temporary, branch test and arm
+        // bindings) belongs to the enclosing match segment; user statements inside
+        // the arms still get their own nested segments.
+        let in_match = kernel
+            .open
+            .iter()
+            .any(|open| self.segments[open.index].construct == "match");
+        if in_match && code.contains("__gust_match_") {
+            return;
+        }
+        let Some(construct) = construct_kind(code) else {
+            return;
+        };
+        let balanced = code.matches('{').count() == code.matches('}').count();
+        if matches!(construct, "conditional" | "loop") && !(balanced && code.contains('{')) {
+            self.open_block(kernel, number, construct, depth);
+        } else {
+            let ordinal = kernel.ordinal;
+            kernel.ordinal += 1;
+            self.push(number, &kernel.name, construct, ordinal);
+        }
+    }
+
+    fn open_block(
+        &mut self,
+        kernel: &mut KernelState,
+        number: usize,
+        construct: &'static str,
+        depth: usize,
+    ) {
+        let ordinal = kernel.ordinal;
+        kernel.ordinal += 1;
+        let index = self.push(number, &kernel.name, construct, ordinal);
+        kernel.open.push(OpenSegment {
+            index,
+            base: depth,
+            entered: false,
+        });
+    }
+
+    /// The innermost segment containing `line`; failing that, the nearest
+    /// preceding kernel marker as a `kernel` segment.
+    pub(crate) fn origin_at(&self, line: usize) -> Option<SourceMapSegment> {
+        if let Some(segment) = self
+            .segments
             .iter()
             .rev()
             .find(|segment| segment.start_line <= line && line <= segment.end_line)
-            .or_else(|| {
-                self.segments
-                    .iter()
-                    .rev()
-                    .find(|segment| segment.start_line <= line)
+        {
+            return Some(segment.clone());
+        }
+        self.markers
+            .iter()
+            .rev()
+            .find(|(marker, _)| *marker <= line)
+            .map(|(marker, name)| SourceMapSegment {
+                start_line: *marker,
+                end_line: line,
+                kernel: name.clone(),
+                construct: "kernel",
+                ordinal: 0,
             })
     }
 
@@ -80,9 +284,17 @@ impl SourceMap {
     }
 }
 
+/// The generated resource-length prologue (`__gpu_len_*`, `__gpu_stride_*`,
+/// `GetDimensions`). `__gpu_` names are reserved, so user code cannot match.
+fn is_prologue(code: &str) -> bool {
+    let declaration = code.starts_with("uint __gpu_len_") || code.starts_with("uint __gpu_stride_");
+    (declaration || code.contains(".GetDimensions(__gpu_len_")) && code.ends_with(';')
+}
+
 fn construct_kind(line: &str) -> Option<&'static str> {
-    if line.starts_with("// @gust construct: match #") {
-        Some("match")
+    if line.starts_with("else") {
+        // Continues the preceding conditional's range.
+        None
     } else if line.starts_with("var ") || line.starts_with("uint ") || line.starts_with("int ") {
         Some("local")
     } else if line.starts_with("if (") {
@@ -106,4 +318,222 @@ fn construct_kind(line: &str) -> Option<&'static str> {
 
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shape of the real emitter: prologue, a lowered `match`, a loop, an else chain.
+    const KERNEL: &str = concat!(
+        "// Generated by GUST\n",                                    // 1
+        "// @rust kernel: example::run\n",                           // 2
+        "[shader(\"compute\")]\n",                                   // 3
+        "[numthreads(64, 1, 1)]\n",                                  // 4
+        "void gpu_example_run(uint3 id : SV_DispatchThreadID)\n",    // 5
+        "{\n",                                                       // 6
+        "    uint __gpu_len_out;\n",                                 // 7
+        "    uint __gpu_stride_out;\n",                              // 8
+        "    out.GetDimensions(__gpu_len_out, __gpu_stride_out);\n", // 9
+        "    var i = id.x;\n",                                       // 10
+        "    // @gust construct: match #1\n",                        // 11
+        "    var __gust_match_1 = pick(i);\n",                       // 12
+        "    if (__gust_match_1.isOk)\n",                            // 13
+        "    {\n",                                                   // 14
+        "        var half = __gust_match_1.value;\n",                // 15
+        "        out[i] = half;\n",                                  // 16
+        "    }\n",                                                   // 17
+        "    else\n",                                                // 18
+        "    {\n",                                                   // 19
+        "        var error = __gust_match_1.value;\n",               // 20
+        "        out[i] = error;\n",                                 // 21
+        "    }\n",                                                   // 22
+        "    var __gust_end_2 = uint(4);\n",                         // 23
+        "    for (var k = uint(0); k < __gust_end_2; k++)\n",        // 24
+        "    {\n",                                                   // 25
+        "        if ((k == uint(2)))\n",                             // 26
+        "        {\n",                                               // 27
+        "            continue;\n",                                   // 28
+        "        }\n",                                               // 29
+        "        else if ((k == uint(3)))\n",                        // 30
+        "        {\n",                                               // 31
+        "            break;\n",                                      // 32
+        "        }\n",                                               // 33
+        "        else\n",                                            // 34
+        "        {\n",                                               // 35
+        "            out[k] = k;\n",                                 // 36
+        "        }\n",                                               // 37
+        "    }\n",                                                   // 38
+        "    return i;\n",                                           // 39
+        "}\n",                                                       // 40
+        "uint after_kernel() { return 1; }\n",                       // 41
+    );
+
+    fn segment(map: &SourceMap, construct: &str, start: usize) -> SourceMapSegment {
+        map.segments()
+            .iter()
+            .find(|segment| segment.construct == construct && segment.start_line == start)
+            .unwrap_or_else(|| panic!("no {construct} segment at {start}: {:?}", map.segments()))
+            .clone()
+    }
+
+    #[test]
+    fn kernel_segment_covers_the_entry_point_and_prologue_takes_no_ordinal() {
+        let map = SourceMap::from_slang(KERNEL);
+        let kernel = segment(&map, "kernel", 2);
+        assert_eq!((kernel.end_line, kernel.ordinal), (40, 0));
+        assert_eq!(kernel.kernel, "example::run");
+        let prologue = segment(&map, "prologue", 7);
+        assert_eq!(prologue.end_line, 9);
+        // The first user `let` is construct #0 although nine lines precede it.
+        let first = segment(&map, "local", 10);
+        assert_eq!(first.ordinal, 0);
+        assert_eq!(segment(&map, "match", 11).ordinal, 1);
+    }
+
+    #[test]
+    fn match_is_one_range_over_the_lowered_block() {
+        let map = SourceMap::from_slang(KERNEL);
+        let lowered = segment(&map, "match", 11);
+        assert_eq!((lowered.start_line, lowered.end_line), (11, 22));
+        // Scaffolding lines inside the match carry no segment of their own...
+        for line in [12, 13, 14, 15, 17, 18, 19, 20, 22] {
+            assert_eq!(
+                map.origin_at(line).unwrap().construct,
+                "match",
+                "line {line}"
+            );
+        }
+        // ...while user statements in the arms are nested and more precise.
+        assert_eq!(map.origin_at(16).unwrap().construct, "assignment");
+        assert_eq!(map.origin_at(21).unwrap().construct, "assignment");
+        // The line after the block is no longer in the match.
+        assert_eq!(map.origin_at(23).unwrap().construct, "local");
+    }
+
+    #[test]
+    fn loop_conditional_else_chain_return_and_expression_have_their_own_ranges() {
+        let map = SourceMap::from_slang(KERNEL);
+        let lp = segment(&map, "loop", 24);
+        assert_eq!(lp.end_line, 38);
+        let conditional = segment(&map, "conditional", 26);
+        // `else if` and `else` continue the same conditional through line 37.
+        assert_eq!(conditional.end_line, 37);
+        assert_eq!(map.origin_at(30).unwrap().construct, "conditional");
+        assert_eq!(map.origin_at(35).unwrap().construct, "conditional");
+        assert_eq!(segment(&map, "expression", 28).end_line, 28);
+        assert_eq!(segment(&map, "expression", 32).end_line, 32);
+        let ret = segment(&map, "return", 39);
+        assert_eq!((ret.start_line, ret.end_line), (39, 39));
+        // The loop braces map to the loop; statements to the innermost construct.
+        assert_eq!(map.origin_at(25).unwrap().construct, "loop");
+        assert_eq!(map.origin_at(38).unwrap().construct, "loop");
+        assert_eq!(map.origin_at(36).unwrap().construct, "assignment");
+    }
+
+    #[test]
+    fn origin_at_prefers_innermost_and_falls_back_to_the_kernel() {
+        let map = SourceMap::from_slang(KERNEL);
+        assert_eq!(map.origin_at(28).unwrap().construct, "expression");
+        assert_eq!(map.origin_at(26).unwrap().construct, "conditional");
+        // Unsegmented lines inside the entry point: signature and braces.
+        for line in [3, 4, 5, 6, 40] {
+            let origin = map.origin_at(line).unwrap();
+            assert_eq!(
+                (origin.construct, origin.kernel.as_str()),
+                ("kernel", "example::run"),
+                "line {line}"
+            );
+        }
+        // After the entry point closes: the nearest preceding kernel marker.
+        let after = map.origin_at(41).unwrap();
+        assert_eq!(
+            (after.construct, after.kernel.as_str()),
+            ("kernel", "example::run")
+        );
+        // Before any marker nothing is attributed.
+        assert!(map.origin_at(1).is_none());
+        assert!(
+            SourceMap::from_slang("void f() {}\n")
+                .origin_at(1)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn each_kernel_has_its_own_ordinals_and_fallback_marker() {
+        let source = concat!(
+            "// @rust kernel: m::a\n",
+            "void a() { }\n",
+            "// @rust kernel: m::b\n",
+            "void b()\n",
+            "{\n",
+            "    var x = uint(1);\n",
+            "}\n",
+            "uint tail;\n",
+        );
+        let map = SourceMap::from_slang(source);
+        let local = segment(&map, "local", 6);
+        assert_eq!((local.kernel.as_str(), local.ordinal), ("m::b", 0));
+        assert_eq!(map.origin_at(2).unwrap().kernel, "m::a");
+        assert_eq!(map.origin_at(8).unwrap().kernel, "m::b");
+    }
+
+    #[test]
+    fn unterminated_kernel_and_unclosed_marker_are_closed_at_the_end() {
+        let source = "// @rust kernel: m::a\nvoid a()\n{\n    // @gust construct: match #0\n    var x = 1;\n";
+        let map = SourceMap::from_slang(source);
+        assert_eq!(segment(&map, "kernel", 1).end_line, 5);
+        // A marker without a block ends at the end of its enclosing block or file.
+        assert_eq!(segment(&map, "match", 4).end_line, 5);
+        assert_eq!(map.origin_at(5).unwrap().construct, "local");
+    }
+
+    #[test]
+    fn marker_without_block_ends_at_the_next_marker_at_the_same_depth() {
+        let source = concat!(
+            "// @rust kernel: m::a\n",
+            "void a()\n",
+            "{\n",
+            "    // @gust construct: match #0\n",
+            "    var x = uint(1);\n",
+            "    // @gust construct: match #1\n",
+            "    var y = uint(2);\n",
+            "}\n",
+        );
+        let map = SourceMap::from_slang(source);
+        assert_eq!(segment(&map, "match", 4).end_line, 5);
+        assert_eq!(segment(&map, "match", 6).end_line, 7);
+    }
+
+    #[test]
+    fn sidecar_json_has_stable_schema_fields_and_kinds() {
+        let map = SourceMap::from_slang(KERNEL);
+        let json = map.json();
+        assert!(json.starts_with("{\n  \"schema_version\": 1,\n  \"segments\": ["));
+        assert!(json.ends_with("\n  ]\n}\n"));
+        assert!(json.contains(
+            "{\"slang_start\":2,\"slang_end\":40,\"kernel\":\"example::run\",\"construct\":\"kernel\",\"ordinal\":0}"
+        ));
+        assert!(json.contains(
+            "{\"slang_start\":7,\"slang_end\":9,\"kernel\":\"example::run\",\"construct\":\"prologue\",\"ordinal\":0}"
+        ));
+        for kind in [
+            "kernel",
+            "prologue",
+            "local",
+            "conditional",
+            "loop",
+            "match",
+            "assignment",
+            "return",
+            "expression",
+        ] {
+            assert!(
+                json.contains(&format!("\"construct\":\"{kind}\"")),
+                "missing {kind}: {json}"
+            );
+        }
+        assert_eq!(json, SourceMap::from_slang(KERNEL).json(), "deterministic");
+    }
 }
