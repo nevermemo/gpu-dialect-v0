@@ -93,6 +93,15 @@ now exists for the StorageV1 subset only; textures, samplers, parameter blocks,
 multiple groups, and specialization still need their own evidence before entering the
 runtime contract.
 
+`KernelDescriptor::source` (a `SourceOrigin`, new in M1.1) is diagnostic metadata
+only (the Rust file and a Slang-to-Rust line table) and never affects the emitted
+Slang, the pipeline cache identity or the runtime ABI. Its file is never an absolute
+path: a relative path stays as rustc reports it, an absolute path under the expanding
+crate's `CARGO_MANIFEST_DIR` is stored relative to it, and any other absolute path is
+reduced to its file name, always with `/` separators. Adding the field is a public API
+change: hand-written `KernelDescriptor` literals add `source: SourceOrigin::UNKNOWN`,
+and the derived equality now includes the source metadata.
+
 ## Struct ABI
 
 The runtime still needs a concrete agreement for uploading Rust values. Annotated

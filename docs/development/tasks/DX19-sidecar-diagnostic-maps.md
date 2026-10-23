@@ -44,9 +44,13 @@ and use it to enrich Slang errors with a stable generated construct label.
 - Error mapping selects the innermost segment containing the reported Slang
   line, then falls back to the nearest preceding kernel marker.
 - Schema version 2 (M1.1) adds the Rust location. The top level carries
-  `"rust_file"`: the kernel's Rust source path as rustc reports it, with `/`
-  separators, or `null` when no location is known (hand-written descriptors,
-  probes, any compile outside a real macro expansion). A segment carries
+  `"rust_file"`: the kernel's Rust source path with `/` separators, or `null` when
+  no location is known (hand-written descriptors, probes, any compile outside a
+  real macro expansion). The path is never absolute (the descriptor ships in public
+  binaries): a relative path is kept as rustc reports it; an absolute path under the
+  expanding crate's `CARGO_MANIFEST_DIR` is stored relative to it (for example
+  `src/kernels/a.rs`); any other absolute path (Unix root, drive, UNC, `\\?\`) is
+  reduced to its file name (for example `lib.rs`). A segment carries
   `"rust_line"` (after `"ordinal"`) when the innermost line record containing the
   segment's first Slang line exists; the key is omitted otherwise, so the
   kernel and prologue segments never have it.
@@ -66,8 +70,11 @@ and use it to enrich Slang errors with a stable generated construct label.
   or struct above the first kernel marker `slang::compile*` omits both and the
   reflection path still names the kernel) and, new,
   `originating Rust source: <file>:<rust_line>` when the descriptor carries a
-  table. A descriptor without a table gets exactly the old text. Compiler output
-  still names `kernel.slang` coordinates; `#line` markers are a later slice.
+  table. A descriptor without a table (`SourceOrigin::UNKNOWN`) gets exactly the
+  old text on both paths: on the reflection path that is the compiler output, then
+  `originating Rust kernel: <module>::<kernel>` as the last line, with no construct
+  and no source line. Compiler output still names `kernel.slang` coordinates;
+  `#line` markers are a later slice.
 - The sidecar is written for inspection and is never parsed back; the lookup
   uses the same map held in memory. "Malformed or missing map" therefore means
   a line with no containing segment, which falls back to kernel attribution.

@@ -5,7 +5,7 @@
 //! must be the generated `SV_DispatchThreadID` system value, not resources/uniforms.
 
 use crate::{
-    GpuPod, KernelDescriptor, ScalarKind, TypeLayout, TypeLayoutKind,
+    GpuPod, KernelDescriptor, ScalarKind, SourceOrigin, TypeLayout, TypeLayoutKind,
     slang::{self, Target, TemporaryDirectory},
 };
 use std::{
@@ -187,7 +187,17 @@ pub fn compile_reflected_with_helper(
 
 /// Attribute a failed compile to its Rust origin, as `slang::compile` does. A
 /// diagnostic whose error location cannot be mapped still names the kernel.
+///
+/// A descriptor with [`SourceOrigin::UNKNOWN`] (hand-written, or built outside a
+/// macro expansion) gets exactly the text this path produced before the line
+/// table existed: the kernel name only, with no construct line (DX19).
 fn annotated_failure(kernel: &KernelDescriptor, diagnostics: String) -> String {
+    if kernel.source == SourceOrigin::UNKNOWN {
+        return format!(
+            "{diagnostics}\noriginating Rust kernel: {}",
+            kernel.qualified_name()
+        );
+    }
     let annotated = slang::annotate_kernel_diagnostics(kernel, &diagnostics);
     // A helper above the first kernel marker maps to a Rust line but to no kernel.
     if annotated.contains("\noriginating Rust kernel: ") {
