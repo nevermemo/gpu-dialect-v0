@@ -1,5 +1,9 @@
 use super::{Step, Suite};
-use crate::verify::VerifyMode;
+use crate::{
+    checks::REFLECTION_TESTS,
+    verify::{VerifyMode, example_run_args},
+    workspace::EXAMPLES,
+};
 
 const UNIT: [Step; 5] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
@@ -63,15 +67,47 @@ fn the_other_tiers_alias_existing_commands() {
     );
 }
 
+/// The cargo calls a step makes, as argument lists. Steps that call cargo through another
+/// xtask command are listed by that command's data, so that no call hides behind a step.
+/// The Full suite is not expanded: it runs `cargo fmt` (which has no `--locked`) and the
+/// examples' `--ignored` tests, which are not locked, so it is not checked here.
+fn cargo_calls(step: Step) -> Vec<Vec<String>> {
+    let owned = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    match step {
+        Step::Cargo(args) => vec![owned(args)],
+        Step::Feature("reflection") => REFLECTION_TESTS.iter().map(|args| owned(args)).collect(),
+        Step::Verify(VerifyMode::Artifacts, _) => EXAMPLES
+            .iter()
+            .map(|example| owned(&example_run_args(example)))
+            .collect(),
+        Step::Verify(VerifyMode::Full, _)
+        | Step::RequireTool(_)
+        | Step::Lint
+        | Step::DocsCheck
+        | Step::CheckArch => Vec::new(),
+        other => panic!("{other:?}: list the cargo calls of this step in cargo_calls"),
+    }
+}
+
 #[test]
-fn every_cargo_test_step_is_locked() {
+fn every_cargo_step_is_locked() {
+    let mut seen = Vec::new();
     for suite in Suite::names().into_iter().map(|n| Suite::parse(n).unwrap()) {
         for step in suite.steps() {
-            if let Step::Cargo(args) = step {
-                assert!(args.contains(&"--locked"), "{suite:?}: {args:?}");
+            for args in cargo_calls(step) {
+                assert!(
+                    args.iter().any(|arg| arg == "--locked"),
+                    "{suite:?}: cargo {args:?}"
+                );
+                seen.push((suite, args));
             }
         }
     }
+    // The nested calls of Reflect and Spirv are really among the calls checked.
+    let count = |wanted: Suite| seen.iter().filter(|(suite, _)| *suite == wanted).count();
+    assert_eq!(count(Suite::Reflect), 2);
+    assert_eq!(count(Suite::Spirv), EXAMPLES.len());
+    assert!(count(Suite::Unit) >= 2 && count(Suite::Gpu) >= 1);
 }
 
 #[test]

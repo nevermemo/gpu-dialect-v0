@@ -1,4 +1,4 @@
-use super::{changed_fixtures, outcome};
+use super::{changed_fixtures, outcome, with_stat_result};
 
 fn snapshot(items: &[(&str, &str)]) -> Vec<(String, String)> {
     items
@@ -29,4 +29,21 @@ fn only_an_unchanged_passing_run_succeeds() {
     assert!(outcome(true, &changed).is_err());
     let failed = outcome(false, &[]).unwrap_err();
     assert!(failed.contains("real failure"), "{failed}");
+}
+
+#[test]
+fn a_failed_diff_listing_is_reported_beside_the_bless_outcome() {
+    let changed = ["loops.slang".to_owned()];
+    let blessed = outcome(false, &changed);
+    // A good listing leaves the outcome alone.
+    assert_eq!(with_stat_result(blessed.clone(), Ok(())), blessed);
+    assert!(with_stat_result(Ok(()), Ok(())).is_ok());
+    // A failed listing keeps the bless message and adds its own.
+    let both =
+        with_stat_result(blessed, Err("git diff --stat failed (exit 128)".to_owned())).unwrap_err();
+    assert!(both.contains("golden blessed"), "{both}");
+    assert!(both.contains("loops.slang"), "{both}");
+    assert!(both.contains("git diff --stat failed (exit 128)"), "{both}");
+    // Even a passing outcome becomes an error when the listing fails.
+    assert!(with_stat_result(Ok(()), Err("boom".to_owned())).is_err());
 }

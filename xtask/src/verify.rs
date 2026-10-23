@@ -195,7 +195,7 @@ fn verify_inner(
         VerifyMode::Fast | VerifyMode::Gpu => &[],
     };
     for example in examples_to_run {
-        run_checked(root, checks, "cargo", &["run", "--quiet", "-p", example])?;
+        run_checked(root, checks, "cargo", &example_run_args(example))?;
     }
     if matches!(mode, VerifyMode::Artifacts | VerifyMode::Full) {
         run_checked(root, checks, "spirv-val", &["--version"])?;
@@ -234,6 +234,11 @@ fn verify_inner(
         }
     }
     Ok(())
+}
+
+/// The cargo call that runs one example binary and exports its SPIR-V (the Spirv suite).
+pub(crate) fn example_run_args(example: &str) -> [&str; 5] {
+    ["run", "--locked", "--quiet", "-p", example]
 }
 
 /// Compares the exported SPIR-V file names with the expected kernels and names the

@@ -145,8 +145,9 @@ fn user_name(found: &str) -> &str {
 }
 
 /// The first absolute user-home path in `line`: `X:\Users\<name>` or `X:/Users/<name>` in any
-/// slash style (doubled backslashes included), `/home/<name>/`, `/Users/<name>/`, the WSL
-/// spelling `/mnt/<letter>/Users/<name>`, and a WSL network path such as
+/// slash style (doubled backslashes included), `/home/<name>` and `/Users/<name>` (followed
+/// by `/`, a quote or the end of the line), the WSL spelling `/mnt/<letter>/Users/<name>`,
+/// and a WSL network path such as
 /// `\\wsl.localhost\<distro>\home\<name>` (also `\\wsl$\...`).
 /// Placeholders such as `<name>`, `%USERNAME%`, `~` and `<workspace>` do not match.
 #[cfg(test)]
@@ -195,7 +196,12 @@ fn home_path_end(line: &str, start: usize) -> Option<usize> {
             .find(|prefix| line[start..].starts_with(*prefix))
             .map(|prefix| start + prefix.len())?;
         let end = name_end(line, name)?;
-        return (bytes.get(end) == Some(&b'/')).then_some(end);
+        // The name must end the path: a `/`, the end of the line, or a closing quote.
+        let ends_name = match bytes.get(end) {
+            None => true,
+            Some(byte) => matches!(byte, b'/' | b'"' | b'\'' | b'`'),
+        };
+        return ends_name.then_some(end);
     }
     None
 }

@@ -17,6 +17,20 @@ use crate::{
     workspace::{EXAMPLES, changed_paths, workspace_root, workspace_test_args},
 };
 
+/// The cargo calls of `check-feature reflection` after the native helper is built (the
+/// Reflect suite). Kept as data so a test can require `--locked` on each.
+pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
+    &["test", "--locked", "-p", "gust", "--test", "reflection"],
+    &[
+        "test",
+        "--locked",
+        "-p",
+        "gust-wgpu",
+        "--test",
+        "reflection",
+    ],
+];
+
 pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
     let root = workspace_root()?;
     let area = area.ok_or("check-feature needs an area")?;
@@ -45,16 +59,10 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
         ),
         "reflection" => {
             build_slang_reflect(BuildOptions::default())?;
-            run_direct(
-                &root,
-                "cargo",
-                &["test", "-p", "gust", "--test", "reflection"],
-            )?;
-            run_direct(
-                &root,
-                "cargo",
-                &["test", "-p", "gust-wgpu", "--test", "reflection"],
-            )
+            for args in REFLECTION_TESTS {
+                run_direct(&root, "cargo", args)?;
+            }
+            Ok(())
         }
         "loops" => {
             run_direct(&root, "cargo", &["test", "-p", "gust-macros", "loops"])?;

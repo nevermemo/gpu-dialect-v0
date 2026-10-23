@@ -30,7 +30,7 @@ fn check_project(root: &Path) -> Result<String, Vec<String>> {
         };
         text_files += 1;
         problems.extend(conflict_marker_problems(relative, &text));
-        if relative.ends_with(".md") {
+        if is_markdown(relative) {
             markdown += 1;
             for link in markdown_links(&text) {
                 match check_link(relative, &link.target, &known) {
@@ -61,6 +61,12 @@ fn check_project(root: &Path) -> Result<String, Vec<String>> {
         decisions.largest,
         decisions.largest + 1
     ))
+}
+
+/// True for a path with a `.md` extension in any case (`README.MD` is Markdown too).
+pub(crate) fn is_markdown(path: &str) -> bool {
+    path.rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("md"))
 }
 
 pub(crate) struct Link {
@@ -171,7 +177,8 @@ fn reference_definition(line: &str) -> Option<String> {
     }
     let rest = line[indent..].strip_prefix('[')?;
     let close = rest.find("]:")?;
-    if rest[..close].is_empty() || rest[..close].contains(']') {
+    // `[^1]: text` defines a footnote; its text is not a link target.
+    if rest[..close].is_empty() || rest[..close].contains(']') || rest.starts_with('^') {
         return None;
     }
     link_destination(rest[close + 2..].trim_start())
@@ -277,7 +284,7 @@ pub(crate) fn conflict_marker_problems(path: &str, text: &str) -> Vec<String> {
         .collect();
     let open_or_close = |line: &str| is_marker(line, '<') || is_marker(line, '>');
     let has_other = lines.iter().any(|line| open_or_close(line));
-    let separator_counts = !path.ends_with(".md") || has_other;
+    let separator_counts = !is_markdown(path) || has_other;
     lines
         .iter()
         .enumerate()
@@ -300,10 +307,12 @@ pub(crate) struct DecisionIds {
     pub(crate) largest: u32,
 }
 
-/// Checks the decision table of `docs/DECISIONS.md`: ids `D<digits>` unique and increasing in
-/// table order, and the header's "Next id" one more than the largest id.
+/// Checks the decision table of `docs/DECISIONS.md`: ids `D<digits>` unique (also when the
+/// repeat is not next to the first) and increasing in table order, and the header's "Next id"
+/// one more than the largest id.
 pub(crate) fn decision_ids(text: &str) -> Result<DecisionIds, Vec<String>> {
     let mut problems = Vec::new();
+    let mut seen = BTreeSet::new();
     let mut previous: Option<u32> = None;
     let mut largest = 0u32;
     let mut count = 0usize;
@@ -314,7 +323,7 @@ pub(crate) fn decision_ids(text: &str) -> Result<DecisionIds, Vec<String>> {
         let number = index + 1;
         count += 1;
         match previous {
-            Some(last) if id == last => {
+            _ if !seen.insert(id) => {
                 problems.push(format!("line {number}: duplicate decision id D{id:02}"))
             }
             Some(last) if id < last => problems.push(format!(

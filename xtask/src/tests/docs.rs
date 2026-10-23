@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use super::{LinkCheck, check_link, conflict_marker_problems, decision_ids, markdown_links};
+use super::{
+    LinkCheck, check_link, conflict_marker_problems, decision_ids, is_markdown, markdown_links,
+};
 
 fn known<'a>(files: &[&'a str]) -> BTreeSet<&'a str> {
     files.iter().copied().collect()
@@ -256,5 +258,56 @@ fn a_missing_header_or_table_is_reported() {
     assert!(
         problems.iter().any(|p| p.contains("no decision rows")),
         "{problems:?}"
+    );
+}
+
+#[test]
+fn a_duplicate_that_is_not_adjacent_is_still_a_duplicate() {
+    let problems = decision_ids(&table(&["D01", "D02", "D03", "D02"], "D04")).unwrap_err();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("duplicate decision id D02"),
+        "{}",
+        problems[0]
+    );
+    // D02 is out of order after D03 and D03 repeats: both are named.
+    let problems = decision_ids(&table(&["D01", "D03", "D02", "D03"], "D04")).unwrap_err();
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems[0].contains("D02 is out of order after D03"),
+        "{}",
+        problems[0]
+    );
+    assert!(
+        problems[1].contains("duplicate decision id D03"),
+        "{}",
+        problems[1]
+    );
+}
+
+#[test]
+fn markdown_extensions_match_in_any_case() {
+    for path in ["a.md", "README.MD", "docs/Notes.Md", "x.mD", ".md"] {
+        assert!(is_markdown(path), "{path}");
+    }
+    for path in ["a.mdx", "md", "a.md.txt", "docs/md/a", "a.markdown", ""] {
+        assert!(!is_markdown(path), "{path}");
+    }
+    // Conflict separators are heading underlines in `.MD` files too.
+    let heading = format!("Title\n{}\nbody\n", marker('=', ""));
+    assert!(conflict_marker_problems("docs/A.MD", &heading).is_empty());
+    assert_eq!(conflict_marker_problems("docs/a.txt", &heading).len(), 1);
+}
+
+#[test]
+fn footnote_definitions_are_not_link_targets() {
+    let text = "Claim.[^1] Another.[^note]\n\
+                [^1]: see docs/missing.md for details\n\
+                [^note]: https://example.com\n\
+                [real]: docs/a.md\n\
+                [^x]: and [a link](docs/b.md) inside\n";
+    assert_eq!(
+        targets(text),
+        vec![(4, "docs/a.md".to_owned()), (5, "docs/b.md".to_owned())]
     );
 }

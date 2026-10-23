@@ -92,7 +92,6 @@ fn placeholders_and_relative_paths_are_not_machine_paths() {
         r"C:\Users",
         r"C:\Users\",
         "/home/",
-        "/home/someone",
         "no paths here",
         "",
     ] {
@@ -179,7 +178,11 @@ fn every_path_on_a_line_is_checked_not_only_the_first() {
     let mixed = format!(r"C:\Users\someone\a and /home/{}/x", "alice");
     let problems = machine_path_problems("xtask/src/tests/lint.rs", &mixed);
     assert_eq!(problems.len(), 1, "{problems:?}");
-    assert!(problems[0].contains("/home/alice"), "{}", problems[0]);
+    assert!(
+        problems[0].contains(&format!("/home/{}", "alice")),
+        "{}",
+        problems[0]
+    );
     let two = r"C:\Users\someone\a and D:\Users\bob.smith\b";
     assert_eq!(machine_path_problems("docs/x.md", two).len(), 2);
     assert!(machine_path_problems("xtask/src/tests/lint.rs", two).is_empty());
@@ -242,4 +245,31 @@ fn wsl_placeholders_and_non_home_paths_are_not_machine_paths() {
     ] {
         assert_eq!(find_machine_path(line), None, "{line}");
     }
+}
+
+#[test]
+fn a_unix_home_directory_is_flagged_at_the_end_of_a_line_or_before_a_quote() {
+    for (line, expected) in [
+        ("/home/someone", "/home/someone"),
+        ("cd /home/someone", "/home/someone"),
+        ("/Users/someone", "/Users/someone"),
+        (r#"HOME="/home/someone""#, "/home/someone"),
+        ("home = '/home/some-one'", "/home/some-one"),
+        ("see `/Users/bob.smith`", "/Users/bob.smith"),
+    ] {
+        assert_eq!(find_machine_path(line), Some(expected), "{line}");
+    }
+    // A bare `/home` or `/home/` names no user, and a relative path is not a home path.
+    for line in [
+        "/home",
+        "/home/",
+        "docs/home/someone",
+        r#""/home/""#,
+        "x/Users/someone",
+    ] {
+        assert_eq!(find_machine_path(line), None, "{line}");
+    }
+    let problems = machine_path_problems("docs/notes.md", "ends here: /home/someone\n");
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("`/home/someone`"), "{}", problems[0]);
 }

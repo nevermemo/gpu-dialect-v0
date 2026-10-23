@@ -28,11 +28,25 @@ pub(crate) fn bless() -> Result<(), String> {
         .status()
         .map_err(|error| format!("could not launch cargo: {error}"))?;
     let changed = changed_fixtures(&before, &fixture_hashes(&root)?);
-    if !changed.is_empty() {
+    // A failing `git diff --stat` must not hide the bless outcome: report both.
+    let stat = if changed.is_empty() {
+        Ok(())
+    } else {
         println!("Changed fixtures:");
-        print_command(&root, "git", &["diff", "--stat", "--", FIXTURE_DIR])?;
+        print_command(&root, "git", &["diff", "--stat", "--", FIXTURE_DIR])
+    };
+    with_stat_result(outcome(status.success(), &changed), stat)
+}
+
+/// The bless outcome, with a failure of the diff listing appended instead of replacing it.
+fn with_stat_result(outcome: Result<(), String>, stat: Result<(), String>) -> Result<(), String> {
+    match (outcome, stat) {
+        (outcome, Ok(())) => outcome,
+        (Ok(()), Err(stat)) => Err(format!("could not list the changed fixtures: {stat}")),
+        (Err(outcome), Err(stat)) => Err(format!(
+            "{outcome}; additionally the diff listing failed: {stat}"
+        )),
     }
-    outcome(status.success(), &changed)
 }
 
 /// `(file name, SHA-256)` of every `tests/fixtures/*.slang`, sorted by name.
