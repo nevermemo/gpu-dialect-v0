@@ -6,6 +6,8 @@ mod recover;
 mod slang;
 mod validate;
 
+use diagnostics::Code;
+
 #[cfg(test)]
 #[path = "tests/regression.rs"]
 mod regression_tests;
@@ -31,7 +33,8 @@ pub(crate) fn gpu_impl(
 ) -> proc_macro2::TokenStream {
     let parsed = syn::parse2::<syn::ItemMod>(item.clone());
     if !attribute.is_empty() {
-        let error = syn::Error::new(
+        let error = diagnostics::error_at(
+            Code::GpuArguments,
             proc_macro2::Span::call_site(),
             "#[gpu] does not accept arguments in the current Rust-to-Slang subset",
         );
@@ -39,7 +42,11 @@ pub(crate) fn gpu_impl(
     }
     let module = match parsed {
         Ok(module) => module,
-        Err(error) => return recover::beside_error(error, &item, None),
+        // `syn` words the parse failure itself; the code is added in front.
+        Err(error) => {
+            let error = diagnostics::wrap(Code::ItemNotModule, error);
+            return recover::beside_error(error, &item, None);
+        }
     };
     match expand::expand(module.clone()) {
         Ok(tokens) => tokens,

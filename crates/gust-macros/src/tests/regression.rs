@@ -1,7 +1,10 @@
 use std::{env, fs, path::Path};
 
 use crate::{
-    diagnostics::{Code, testing::codes_of},
+    diagnostics::{
+        Code,
+        testing::{assert_code, codes_of},
+    },
     expand::kernel_options,
     slang::{EmittedKernel, LineRecord, emit_kernel},
     validate::validate_module,
@@ -461,12 +464,11 @@ fn unbounded_or_unproven_loop_forms_are_rejected() {
     ] {
         assert_rejected(source, code);
     }
-    // Rejected by the emitter, not the validator; coded in the next slice (m1.5 b2).
-    let error = translate(
+    // Rejected by the emitter, not the validator.
+    assert_rejected(
         "mod bad { fn f() -> uint { for i in 0u32..4u32 { fn g() {} } 0u32 } #[kernel] fn run(id: SV_DispatchThreadID) { } }",
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("items inside"), "{error}");
+        Code::NestedItem,
+    );
 }
 
 #[test]
@@ -583,24 +585,45 @@ fn invalid_kernel_signatures_are_rejected_early() {
 
 #[test]
 fn invalid_kernel_options_are_rejected_early() {
-    // Rejected by `kernel_options` in expand/mod.rs; coded in the next slice (m1.5 b2).
-    for (source, message) in [
+    // Rejected by `kernel_options` in expand/mod.rs.
+    for (source, code) in [
         (
             "mod bad { #[kernel(workgroup_size(0, 1, 1))] fn run(id: SV_DispatchThreadID) {} }",
-            "nonzero",
+            Code::WorkgroupDimensionZero,
         ),
         (
             "mod bad { #[kernel] #[kernel] fn run(id: SV_DispatchThreadID) {} }",
-            "duplicate",
+            Code::DuplicateKernelAttribute,
         ),
         (
             "mod bad { #[kernel(workgroup_size(64, 1, 1), workgroup_size(32, 1, 1))] fn run(id: SV_DispatchThreadID) {} }",
-            "duplicate",
+            Code::DuplicateWorkgroupSize,
+        ),
+        (
+            "mod bad { #[kernel(workgroup_size(1, 2, 3, 4))] fn run(id: SV_DispatchThreadID) {} }",
+            Code::WorkgroupDimensionCount,
+        ),
+        (
+            "mod bad { #[kernel(threads(64))] fn run(id: SV_DispatchThreadID) {} }",
+            Code::UnknownKernelOption,
+        ),
+        // Failures `syn` words itself get the malformed-attribute code.
+        (
+            "mod bad { #[kernel(workgroup_size(64, 1))] fn run(id: SV_DispatchThreadID) {} }",
+            Code::MalformedKernelAttribute,
+        ),
+        (
+            "mod bad { #[kernel(workgroup_size(a, 1, 1))] fn run(id: SV_DispatchThreadID) {} }",
+            Code::MalformedKernelAttribute,
+        ),
+        (
+            "mod bad { #[kernel(workgroup_size(99999999999, 1, 1))] fn run(id: SV_DispatchThreadID) {} }",
+            Code::MalformedKernelAttribute,
         ),
     ] {
         let module: syn::ItemMod = syn::parse_str(source).unwrap();
         let error = crate::expand::expand(module).unwrap_err();
-        assert!(error.to_string().contains(message), "{error}: {source}");
+        assert_code(&error, code);
     }
 }
 
@@ -744,15 +767,14 @@ fn struct_constructor_preserves_field_identity_and_source_order() {
 
 #[test]
 fn struct_literal_in_expression_position_is_diagnosed() {
-    let error = translate(
+    assert_rejected(
         "mod constructors {
         struct Pair { first: uint, second: uint }
         fn take(p: Pair) -> uint { p.first }
         #[kernel] fn run(id: SV_DispatchThreadID) { let v = take(Pair { first: 1u32, second: 2u32 }); }
     }",
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("struct literals"), "{error}");
+        Code::StructLiteralPosition,
+    );
 }
 
 #[test]
@@ -770,13 +792,40 @@ fn struct_update_syntax_is_rejected_instead_of_dropping_fields() {
 
 #[test]
 fn unsupported_numeric_width_is_diagnosed() {
-    let error = translate(
+    assert_rejected(
         "mod widths {
         #[kernel] fn run(id: SV_DispatchThreadID) { let wide = 1u64; }
     }",
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("32-bit"), "{error}");
+        Code::UnsupportedLiteral,
+    );
+}
+
+#[test]
+fn emitter_only_rejections_are_coded() {
+    for (source, code) in [
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, x: uint) {} }",
+            Code::EntryPointParameter,
+        ),
+        (
+            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let x: uint; } }",
+            Code::LetNeedsInitializer,
+        ),
+        (
+            "mod bad { struct Pair { first: uint } #[kernel] fn run(id: SV_DispatchThreadID) { let p = Pair { 0: 1u32 }; } }",
+            Code::StructLiteralFieldName,
+        ),
+        (
+            "mod bad { fn f((a, b): uint) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            Code::ParameterNeedsIdentifier,
+        ),
+        (
+            "mod bad { fn f(self) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            Code::SelfParameter,
+        ),
+    ] {
+        assert_rejected(source, code);
+    }
 }
 
 #[test]
@@ -917,12 +966,11 @@ fn unsupported_effects_are_rejected() {
     ] {
         assert_rejected(source, code);
     }
-    // A macro in statement position is rejected by the emitter; coded in the next slice
-    // (m1.5 b2).
-    let error =
-        translate("mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { asm!(\"nop\"); } }")
-            .unwrap_err();
-    assert!(error.to_string().contains("macros"), "{error}");
+    // A macro in statement position is rejected by the emitter, under its own code.
+    assert_rejected(
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { asm!(\"nop\"); } }",
+        Code::MacroStatement,
+    );
 }
 
 #[test]
@@ -1503,7 +1551,7 @@ const REJECTED_MODULE: &str = "mod demo { \
 fn rejected_module_is_returned_beside_the_error_without_kernel_attributes() {
     let item: proc_macro2::TokenStream = REJECTED_MODULE.parse().unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
-    assert_leading_compile_error(&items, "unwrap");
+    assert_leading_compile_error(&items, "[GUST-E0510]");
     let module = recovered_module(&items);
     assert_eq!(module.ident, "demo");
     let content = &module.content.as_ref().unwrap().1;
@@ -1586,11 +1634,11 @@ fn recovery_keeps_the_users_module_attributes_and_visibility() {
 #[test]
 fn module_without_inline_content_gets_the_error_alone() {
     // `mod m;` would make rustc look for a file; nothing may be re-emitted.
-    for attribute in ["", "x"] {
+    for (attribute, code) in [("", "[GUST-E0101]"), ("x", "[GUST-E0701]")] {
         let item: proc_macro2::TokenStream = "mod m;".parse().unwrap();
         let items = output_items(crate::gpu_impl(attribute.parse().unwrap(), item));
         assert_eq!(items.len(), 1, "{items:?}");
-        assert_leading_compile_error(&items, "");
+        assert_leading_compile_error(&items, code);
     }
 }
 
@@ -1598,7 +1646,7 @@ fn module_without_inline_content_gets_the_error_alone() {
 fn attribute_arguments_error_keeps_the_module() {
     let item: proc_macro2::TokenStream = "mod m {}".parse().unwrap();
     let items = output_items(crate::gpu_impl("x".parse().unwrap(), item));
-    assert_leading_compile_error(&items, "does not accept arguments");
+    assert_leading_compile_error(&items, "[GUST-E0701]");
     let module = recovered_module(&items);
     assert_eq!(module.ident, "m");
     let expected: syn::Item = syn::parse_quote!(
@@ -1612,7 +1660,7 @@ fn non_module_item_is_returned_unchanged_beside_the_error() {
     let item: proc_macro2::TokenStream = "fn f() {}".parse().unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
     assert_eq!(items.len(), 2);
-    assert_leading_compile_error(&items, "");
+    assert_leading_compile_error(&items, "[GUST-E0702]");
     let expected: syn::Item = syn::parse_quote!(
         fn f() {}
     );
@@ -1626,6 +1674,7 @@ fn unparsable_item_tokens_are_returned_verbatim_after_the_error() {
     let output = crate::gpu_impl(proc_macro2::TokenStream::new(), item.clone()).to_string();
     let item = item.to_string();
     assert!(output.starts_with(":: core :: compile_error !"), "{output}");
+    assert!(output.contains("[GUST-E0702]"), "{output}");
     assert!(output.ends_with(&item), "{output}");
 }
 

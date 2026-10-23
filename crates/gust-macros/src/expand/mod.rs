@@ -1,7 +1,10 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 
-use crate::slang::ParameterFlavor;
+use crate::{
+    diagnostics::{self, Code},
+    slang::ParameterFlavor,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct KernelOptions {
@@ -134,9 +137,16 @@ fn origin_tokens(
 /// The path stored in a descriptor, or `""` when no safe path can be derived. The
 /// result is a whitelist, not a best effort: it is accepted only if it is relative
 /// and every `/`-separated component is valid (see [`is_valid_record`]: non-empty,
-/// not `.` or `..`, only ASCII letters and digits, `_ . + -` and non-ASCII
-/// letters), so it can neither leak a build machine's layout nor break out of a
-/// Slang string literal. Both paths are first normalised lexically (see
+/// not `.` or `..`, only ASCII letters and digits, `_ . + -` and Unicode
+/// Alphabetic characters), so it can neither leak a build machine's layout nor
+/// break out of a Slang string literal.
+///
+/// The whitelist is lexical sanitisation, not a proof of anonymity. A relative
+/// path that passes it is kept exactly as rustc reported it: if rustc's path prefix
+/// remapping already turned a location into something like
+/// `home/<name>/shared/kernel.rs`, that is what is recorded, because nothing here
+/// can tell a remapped prefix from a real directory. Both paths are first
+/// normalised lexically (see
 /// [`NormalizedPath`]: repeated separators collapsed, `.` dropped, `..` resolved),
 /// then:
 /// - a relative path is kept as its normalised components, unless it climbs out
@@ -204,8 +214,10 @@ fn is_valid_record(record: &str) -> bool {
 }
 
 /// A non-empty name of ASCII letters and digits, `_`, `.`, `+`, `-` and non-ASCII
-/// letters; never `.` or `..` (nor any other name made of dots only, which
-/// Windows does not keep as a distinct name).
+/// characters with the Unicode Alphabetic property (`char::is_alphabetic`); never
+/// `.` or `..` (nor any other name made of dots only, which Windows does not keep
+/// as a distinct name). Alphabetic includes combining marks such as U+0345; a
+/// decomposed accent such as U+0301 is not Alphabetic and is rejected.
 fn is_valid_component(part: &str) -> bool {
     !part.is_empty()
         && !part.chars().all(|c| c == '.')
@@ -327,7 +339,8 @@ pub fn kernel_options(function: &syn::ItemFn) -> syn::Result<Option<KernelOption
         .count()
         > 1
     {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::DuplicateKernelAttribute,
             &function.sig,
             "duplicate #[kernel] attribute",
         ));
@@ -346,31 +359,51 @@ pub fn kernel_options(function: &syn::ItemFn) -> syn::Result<Option<KernelOption
     }
 
     let mut result = None;
-    attribute.parse_nested_meta(|meta| {
-        if meta.path.is_ident("workgroup_size") {
-            if result.is_some() {
-                return Err(meta.error("duplicate workgroup_size option"));
+    // The options below report their own coded errors. Failures `syn` words itself (a
+    // missing comma, a literal that is not an integer) get the malformed-attribute code.
+    attribute
+        .parse_nested_meta(|meta| {
+            if meta.path.is_ident("workgroup_size") {
+                if result.is_some() {
+                    return Err(diagnostics::meta_error(
+                        &meta,
+                        Code::DuplicateWorkgroupSize,
+                        "duplicate workgroup_size option",
+                    ));
+                }
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let x: syn::LitInt = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                let y: syn::LitInt = content.parse()?;
+                content.parse::<syn::Token![,]>()?;
+                let z: syn::LitInt = content.parse()?;
+                if !content.is_empty() {
+                    return Err(diagnostics::meta_error(
+                        &meta,
+                        Code::WorkgroupDimensionCount,
+                        "expected exactly three workgroup dimensions",
+                    ));
+                }
+                let dimensions = [x.base10_parse()?, y.base10_parse()?, z.base10_parse()?];
+                if dimensions.contains(&0) {
+                    return Err(diagnostics::meta_error(
+                        &meta,
+                        Code::WorkgroupDimensionZero,
+                        "workgroup dimensions must be nonzero",
+                    ));
+                }
+                result = Some(dimensions);
+                Ok(())
+            } else {
+                Err(diagnostics::meta_error(
+                    &meta,
+                    Code::UnknownKernelOption,
+                    "expected `workgroup_size(x, y, z)`",
+                ))
             }
-            let content;
-            syn::parenthesized!(content in meta.input);
-            let x: syn::LitInt = content.parse()?;
-            content.parse::<syn::Token![,]>()?;
-            let y: syn::LitInt = content.parse()?;
-            content.parse::<syn::Token![,]>()?;
-            let z: syn::LitInt = content.parse()?;
-            if !content.is_empty() {
-                return Err(meta.error("expected exactly three workgroup dimensions"));
-            }
-            let dimensions = [x.base10_parse()?, y.base10_parse()?, z.base10_parse()?];
-            if dimensions.contains(&0) {
-                return Err(meta.error("workgroup dimensions must be nonzero"));
-            }
-            result = Some(dimensions);
-            Ok(())
-        } else {
-            Err(meta.error("expected `workgroup_size(x, y, z)`"))
-        }
-    })?;
+        })
+        .map_err(|error| diagnostics::wrap(Code::MalformedKernelAttribute, error))?;
     Ok(Some(KernelOptions {
         workgroup_size: result.unwrap_or([64, 1, 1]),
     }))
@@ -384,13 +417,15 @@ fn parameter_descriptors(
         .iter()
         .map(|input| {
             let syn::FnArg::Typed(input) = input else {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::SelfParameter,
                     input,
                     "GPU functions cannot use self",
                 ));
             };
             let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::ParameterNeedsIdentifier,
                     &input.pat,
                     "GPU parameters need identifier names",
                 ));
@@ -461,7 +496,8 @@ fn parameter_descriptors(
 fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
     let ident = &item.ident;
     let syn::Fields::Named(fields) = &item.fields else {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::PodStructNamedFields,
             item,
             "GPU POD structs require named fields",
         ));
@@ -768,6 +804,38 @@ mod tests {
         ] {
             assert_eq!(recorded_path(reported, None), expected, "{reported:?}");
         }
+    }
+
+    #[test]
+    fn recorded_path_unicode_boundary_follows_the_alphabetic_property() {
+        // U+0345 COMBINING GREEK YPOGEGRAMMENI is a combining mark that is Alphabetic.
+        assert!('\u{345}'.is_alphabetic());
+        // U+0301 COMBINING ACUTE ACCENT (the decomposed form of an accent) is not.
+        assert!(!'\u{301}'.is_alphabetic());
+        for (reported, expected) in [
+            // An Alphabetic combining mark survives, inside a component and on its own.
+            ("src/a\u{345}b/lib.rs", "src/a\u{345}b/lib.rs"),
+            ("src/\u{345}/lib.rs", "src/\u{345}/lib.rs"),
+            // A decomposed accent falls back to the file name.
+            ("src/e\u{301}/lib.rs", "lib.rs"),
+            ("src/\u{301}/lib.rs", "lib.rs"),
+            // ... and to no origin when the file name carries it.
+            ("src/e\u{301}.rs", ""),
+            // The precomposed letter is Alphabetic and survives.
+            ("src/\u{e9}/lib.rs", "src/\u{e9}/lib.rs"),
+        ] {
+            assert_eq!(recorded_path(reported, None), expected, "{reported:?}");
+        }
+    }
+
+    #[test]
+    fn recorded_path_keeps_a_remapped_relative_prefix_as_reported() {
+        // rustc `--remap-path-prefix` can leave a relative path naming a home
+        // directory; the lexical whitelist cannot tell and keeps it.
+        assert_eq!(
+            recorded_path("home/alice/shared/kernel.rs", Some("/repo")),
+            "home/alice/shared/kernel.rs"
+        );
     }
 
     #[test]

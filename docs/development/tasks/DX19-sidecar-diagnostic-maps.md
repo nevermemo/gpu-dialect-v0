@@ -55,7 +55,7 @@ and use it to enrich Slang errors with a stable generated construct label.
   `..`) and any relative path that starts with `..` after normalisation is reduced
   to its file name (for example `lib.rs`). The result is a whitelist: relative, every
   component non-empty, not `.` or `..`, and made of ASCII letters and digits, `_ . + -`
-  and non-ASCII letters (so no `:`, `\`, spaces or control characters). A result that
+  and Unicode Alphabetic characters (so no `:`, `\`, spaces or control characters). A result that
   fails is replaced by the file name; if that fails too (for example `C:..`) the
   origin is unknown, `rust_file` is `null` and the line table is dropped. Of the
   `\\?\` forms only `\\?\X:\` and `\\?\UNC\` count as drive and UNC paths; any other

@@ -6,16 +6,24 @@ Every rejection `#[gpu]` reports starts with a stable code:
 error: [GUST-E0401] `loop` is not supported: its trip count is not fixed at entry, ...
 ```
 
+## Stability
+
 **Codes are stable; messages are not.** A code keeps its meaning and is never reused for
 something else. The message text after it may be reworded, so match on the code, not on
 the words. Renumbering or retiring a code needs a row in [DECISIONS.md](DECISIONS.md).
 Search this page for the code to find what it rejects and what to write instead.
+Decision: D31.
+
+Tests assert the code, not the wording. Every code appears once on this page and once in
+the macro's code list; unit tests fail if the two disagree or if a source file outside
+`diagnostics.rs` builds a `syn::Error` directly.
 
 The subset is deliberately small: the macro translates Rust syntax directly to Slang
 without an intermediate representation (D02), and rejects what it cannot lower with a
 proven meaning rather than guessing. Each entry names the decision or task that
-records why. The same code is used wherever the same rule is enforced, whether the
-validator or the emitter finds it.
+records why. The same code is used wherever the same message is produced, whether the
+validator or the emitter finds it; a message only the emitter produces has its own code
+in E08xx.
 
 | Family | Area |
 | --- | --- |
@@ -133,6 +141,26 @@ Allowed attributes: `doc`, `allow`, `warn`, `deny`, `forbid`, `derive` (on struc
 and `kernel`.
 Rejected: `#[cfg(..)]`, `#[inline]`, `#[must_use]` and every other attribute.
 Write instead: remove the attribute.
+Decision: D02.
+
+### GUST-E0116 `self` parameter
+
+GPU functions are free functions; there is no receiver to lower.
+Rejected: `fn f(&self) -> u32`.
+Write instead: pass the value as an ordinary parameter.
+Decision: D02.
+
+### GUST-E0117 parameter needs an identifier
+
+Rejected: `fn f((a, b): (u32, u32))`, `fn f(_: u32)`.
+Write instead: a plain `name: Type` parameter.
+Decision: D02.
+
+### GUST-E0118 POD struct needs named fields
+
+Every struct in a `#[gpu]` module becomes a plain-old-data GPU type, laid out field by field, so every field needs a name.
+Rejected: `struct P(u32, u32);`.
+Write instead: `struct P { a: u32, b: u32 }`.
 Decision: D02.
 
 ## E02xx: types
@@ -576,6 +604,176 @@ In a kernel that uses a buffer atomically, ordinary reads and writes of it are r
 Rejected: `out[id.x] = c[0];` after `atomic_add(&mut c[0], 1u32);`.
 Write instead: use a separate non-atomic buffer, or read after the dispatch on the host.
 Decision: T10.
+
+## E07xx: macro entry and `#[kernel]` options
+
+### GUST-E0701 `#[gpu]` takes no arguments
+
+Rejected: `#[gpu(debug)] mod shaders { ... }`.
+Write instead: `#[gpu] mod shaders { ... }`.
+Decision: D02.
+
+### GUST-E0702 item is not a module
+
+`#[gpu]` goes on an inline module. The message after the code is `syn`'s own parse error.
+Rejected: `#[gpu] fn f() {}`, or tokens that do not parse as an item.
+Write instead: put the function inside `#[gpu] mod shaders { ... }`.
+Decision: D02.
+
+### GUST-E0703 duplicate `#[kernel]`
+
+Rejected: two `#[kernel]` attributes on one function.
+Write instead: one `#[kernel]` or `#[kernel(workgroup_size(x, y, z))]`.
+Decision: D02.
+
+### GUST-E0704 duplicate `workgroup_size`
+
+Rejected: `#[kernel(workgroup_size(8, 8, 1), workgroup_size(4, 4, 1))]`.
+Write instead: state `workgroup_size` once.
+Decision: D02.
+
+### GUST-E0705 wrong workgroup dimension count
+
+Rejected: `#[kernel(workgroup_size(8, 8, 1, 1))]`.
+Write instead: exactly three dimensions; use `1` for unused ones.
+Decision: D02.
+
+### GUST-E0706 zero workgroup dimension
+
+Rejected: `#[kernel(workgroup_size(0, 1, 1))]`.
+Write instead: every dimension at least `1`.
+Decision: D02.
+
+### GUST-E0707 unknown `#[kernel]` option
+
+Rejected: `#[kernel(threads(64))]`.
+Write instead: `#[kernel(workgroup_size(x, y, z))]` is the only option.
+Decision: D02.
+
+### GUST-E0708 malformed `#[kernel]` attribute
+
+Reported for attribute syntax that `syn` rejects before an option is recognised: a
+missing comma, a dimension that is not an integer literal, fewer than three dimensions.
+The message after the code is `syn`'s own.
+Rejected: `#[kernel(workgroup_size(8, 8))]`, `#[kernel(workgroup_size(a, 1, 1))]`.
+Write instead: `#[kernel(workgroup_size(8, 8, 1))]`.
+Decision: D02.
+
+## E08xx: emitter-only rejections
+
+These are checked by the Slang emitter after the validator has accepted the module. The
+validator catches the same shapes first in normal use, so most are a second line of
+defence that keeps the emitter from producing wrong Slang if the validator ever lets one
+through; they are exercised by unit tests that call the emitter directly. A rule that the
+validator and the emitter both enforce with the same message shares the validator's code
+(for example E0116, E0117 and E0511); the codes below are for messages only the emitter
+has.
+
+### GUST-E0801 unsupported entry point parameter
+
+Slang compute entry points accept resources and the dispatch thread id only.
+Rejected: a kernel parameter whose type is not a resource or `SV_DispatchThreadID`.
+Write instead: pass data through a buffer.
+Decision: D02.
+
+### GUST-E0802 kernel needs a dispatch id parameter
+
+Rejected: a `#[kernel]` function with no `SV_DispatchThreadID` (or legacy `Invocation`) parameter.
+Write instead: add `id: SV_DispatchThreadID`.
+Decision: D02.
+
+### GUST-E0803 `let` needs an initializer
+
+Rejected: `let x: u32;`.
+Write instead: `let x: u32 = 0;`.
+Decision: D02.
+
+### GUST-E0804 item inside a function
+
+Rejected: a `fn`, `struct` or `const` declared inside a kernel body.
+Write instead: declare it in the module.
+Decision: D02.
+
+### GUST-E0805 macro statement
+
+The emitter's own check for a macro used as a statement (`asm!(..);`). The validator
+reports the same shape as E0313, so this code is reached only if validation is bypassed.
+Rejected: `asm!("...");`.
+Write instead: plain Rust statements.
+Decision: D02.
+
+### GUST-E0806 struct literal field needs a name
+
+Rejected: a tuple-style struct literal field.
+Write instead: `Pair { first: a, second: b }`.
+Decision: D02.
+
+### GUST-E0807 unsupported `let` binding form
+
+Rejected: `let (a, b) = pair;`.
+Write instead: one identifier, optionally typed: `let a: u32 = pair.first;`.
+Decision: D02.
+
+### GUST-E0808 atomic operand is not a mutable reference
+
+Rejected: `atomic_add(counter, 1u32)`.
+Write instead: `atomic_add(&mut counter[0], 1u32)`.
+Decision: T10.
+
+### GUST-E0809 atomic operand is not a buffer element
+
+Rejected: `atomic_add(&mut counter, 1u32)`.
+Write instead: `atomic_add(&mut counter[0], 1u32)`.
+Decision: T10.
+
+### GUST-E0810 struct literal in an unsupported position
+
+Rejected: passing `Pair { first: 1, second: 2 }` directly as an argument.
+Write instead: bind it to a local first, or copy a buffer element and update its fields.
+Decision: D02.
+
+### GUST-E0811 unsupported expression
+
+Rejected: closures such as `|x| x`, and any other expression with no lowering yet.
+Write instead: the supported expression forms listed in the validator codes above.
+Decision: D02.
+
+### GUST-E0812 unsupported literal
+
+GPU literals are booleans and 32-bit numbers.
+Rejected: `'a'`, `"text"`, `1u64`.
+Write instead: `bool`, `i32`, `u32` or `f32` literals.
+Decision: D02.
+
+### GUST-E0813 type must be a named path
+
+Rejected: tuple and reference types in a position that needs a named type, such as `(u32, u32)`.
+Write instead: a named type such as `u32` or a struct from the module.
+Decision: D02.
+
+### GUST-E0814 `Result` needs a payload type
+
+Rejected: `Result<>`.
+Write instead: `Result<u32>`.
+Decision: D02.
+
+### GUST-E0815 resource element type must be a path
+
+Rejected: `StructuredBuffer<*const u32>`.
+Write instead: `StructuredBuffer<u32>`.
+Decision: D02.
+
+### GUST-E0816 resource needs one element type
+
+Rejected: `StructuredBuffer` with no generic arguments.
+Write instead: `StructuredBuffer<u32>`.
+Decision: D02.
+
+### GUST-E0817 resource element type missing
+
+Rejected: `StructuredBuffer<'a>`, a resource with only a lifetime argument.
+Write instead: `StructuredBuffer<u32>`.
+Decision: D02.
 
 ## E09xx: reserved names and shadowing
 

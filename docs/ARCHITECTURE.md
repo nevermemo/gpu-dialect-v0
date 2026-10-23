@@ -102,7 +102,7 @@ absolute path under the expanding crate's `CARGO_MANIFEST_DIR` is stored relativ
 it, and any other absolute path, or a relative path that climbs out of its root with
 `..`, is reduced to its file name, always with `/` separators. The result is checked
 against a whitelist: every component must be non-empty, not `.` or `..`, and made of
-ASCII letters and digits, `_ . + -` and non-ASCII letters. A result that fails is
+ASCII letters and digits, `_ . + -` and Unicode Alphabetic characters. A result that fails is
 replaced by the file name, and if that fails too the origin is unknown (empty file,
 no line table). Of the `\\?\` forms only `\\?\X:\` and `\\?\UNC\` are read as drive
 and UNC paths; any other (GLOBALROOT, `Volume{GUID}`, device) is an absolute path
@@ -347,7 +347,8 @@ statement's position in its block, as for `__gust_struct_N`/`__gust_opt_N`; an i
 loop at the same position legally shadows the outer temporary in its nested scope.
 `break` and `continue` (unlabeled, valueless) and `return` inside the body map
 directly. `while`, `loop`, `..=`, labels, `mut`/tuple patterns, non-range iterables,
-and `break`/`continue` outside a loop are rejected with diagnostics; the reasons are
+and `break`/`continue` outside a loop are rejected with diagnostics (each has a stable
+code, see [DIAGNOSTICS.md](DIAGNOSTICS.md)); the reasons are
 recorded in D18. The `loops` fixture locks the Slang, both targets compile, and a
 real-GPU test matches an independent host reference (closed forms where possible) at
 workgroup boundaries, including a body that shrinks its own end bound.

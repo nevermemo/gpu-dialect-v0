@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D31**. Add a row for every owner decision or durable
+Append-only log. Next id: **D33**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -38,6 +38,8 @@ input, not proof of code state.
 | D28 | M0 closed with "proceed with fixes" from two independent sanity reviews (Fable and Codex, 2026-10-23); coordinator decision, owner-delegated | Scope added during M0 by coordinator decision: M0.16 (adapter retry), M0.17 (DX19 scanner follow-ups), M0.18 and M0.20 (review fixes), M0.19 (no silent GPU skips in examples). M0.15 (required CI check) is date-gated to 2026-10-30 and does not hold M0 open. Follow-ups: sync state docs, stamp validation records with the commit, replace check-arch's TOML reading with `cargo metadata` (m1.0). Process rule from the review: no push while a must-fix is open, and review reports are kept on disk. The full delegated-decisions log is kept outside the repository by the coordinator |
 | D29 | The workspace minimum Rust version becomes 1.88; coordinator decision, owner-delegated, 2026-10-23, implemented in M1 slice m1.0 | The declared 1.87 was already false (let chains, stable in 1.88), and `proc_macro::Span::line`/`file` for M1 diagnostics need 1.88. Every locked dependency allows 1.88. An `msrv` CI job will check the claim instead of asserting it |
 | D30 | The minimum Rust version is 1.90, superseding the number in D29; coordinator decision, owner-delegated, 2026-10-23 | The Codex review of M1.0 found that the locked `ordered-float 5.5.0` (pulled in by wgpu-hal through the Vulkan feature) declares `rust-version = "1.90"`, so a `--locked` build on 1.88 fails. It is the only locked package above 1.88. Pinning an older `ordered-float` in GUST's lockfile would not help users of the published crate, who resolve their own lockfile, so the honest minimum is 1.90. The `msrv` CI job installs 1.90.0 |
+| D31 | Diagnostic codes: every `#[gpu]` rejection carries a stable code in its message, `[GUST-E0401] message`, in families E01xx module and item shape, E02xx types, E03xx expressions and calls, E04xx control flow, E05xx Option/Result, E06xx atomics, E07xx macro entry and `#[kernel]` options, E08xx emitter-only, E09xx names; coordinator decision, owner-delegated, 2026-10-23 (M1.5) | `syn::Error` carries only a message, so the code lives in the text and survives `compile_error!`. The bracketed prefix is greppable and distinct from rustc's `[E0277]`. Codes are a compatibility surface: a code keeps its meaning once published, messages may be reworded, and renumbering needs a new decision row. Identical messages share a code; different messages get different codes. `docs/DIAGNOSTICS.md` lists every code, and tests guard that the list, the enum and the doc agree |
+| D32 | `#line` directives go only into the copy of the Slang source that is compiled; exported `.slang` files and `KernelDescriptor::slang_source` stay clean; coordinator decision, owner-delegated, 2026-10-23 (M1.3) | Errors then name the Rust file and line on both compile paths (CLI and the reflection helper), while exported artifacts stay readable (an invariant). The reflection identity check hashes the compiled copy, so D17 still compares reflection against the exact source that produced the pipeline. Columns stay Slang columns; only lines are mapped |
 
 ## Notes
 
@@ -46,7 +48,7 @@ recorded in D01. Still rejected: rebuilding the shader backend, automatic
 CPU fallback, presenting manual metadata as Slang reflection, unrestricted Rust
 acceptance, and using copied research examples as untested portable engine code.
 
-Open decisions: rustc integration and version pinning; source maps; typed inference
+Open decisions: rustc integration and version pinning; typed inference
 policy (struct construction is now bounded and proven, see D07); layouts after
 reflection; first engine user's unaided acceptance result; entity storage;
 shader/module hygiene; capability manifest schema.

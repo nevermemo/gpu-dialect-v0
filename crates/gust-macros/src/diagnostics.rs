@@ -85,6 +85,12 @@ codes! {
     ExternOrGenericFunction = 114 => "GUST-E0114";
     /// An attribute with no proven Rust-to-Slang meaning.
     UnsupportedAttribute = 115 => "GUST-E0115";
+    /// A `self` parameter.
+    SelfParameter = 116 => "GUST-E0116";
+    /// A parameter whose pattern is not an identifier.
+    ParameterNeedsIdentifier = 117 => "GUST-E0117";
+    /// A POD struct without named fields, found while generating the host side.
+    PodStructNamedFields = 118 => "GUST-E0118";
 
     // E02xx: types.
     /// A primitive type outside the 32-bit scalar subset.
@@ -222,6 +228,60 @@ codes! {
     /// Ordinary indexing of a buffer that is also used atomically.
     AtomicDirectAccess = 607 => "GUST-E0607";
 
+    // E07xx: macro entry and `#[kernel]` options.
+    /// Arguments on `#[gpu]`.
+    GpuArguments = 701 => "GUST-E0701";
+    /// `#[gpu]` on something that does not parse as a module.
+    ItemNotModule = 702 => "GUST-E0702";
+    /// More than one `#[kernel]` on a function.
+    DuplicateKernelAttribute = 703 => "GUST-E0703";
+    /// `workgroup_size` given twice.
+    DuplicateWorkgroupSize = 704 => "GUST-E0704";
+    /// `workgroup_size` without exactly three dimensions.
+    WorkgroupDimensionCount = 705 => "GUST-E0705";
+    /// A workgroup dimension of zero.
+    WorkgroupDimensionZero = 706 => "GUST-E0706";
+    /// A `#[kernel(..)]` option other than `workgroup_size`.
+    UnknownKernelOption = 707 => "GUST-E0707";
+    /// A `#[kernel(..)]` argument list that does not parse.
+    MalformedKernelAttribute = 708 => "GUST-E0708";
+
+    // E08xx: rejections only the emitter makes, after validation passed.
+    /// A kernel parameter that is neither a resource nor the dispatch thread.
+    EntryPointParameter = 801 => "GUST-E0801";
+    /// An emitted kernel without a dispatch-thread parameter.
+    EntryPointDispatchParameter = 802 => "GUST-E0802";
+    /// A `let` without an initializer.
+    LetNeedsInitializer = 803 => "GUST-E0803";
+    /// An item declared inside a function body.
+    NestedItem = 804 => "GUST-E0804";
+    /// A macro invocation in statement position.
+    MacroStatement = 805 => "GUST-E0805";
+    /// A struct literal field without a name.
+    StructLiteralFieldName = 806 => "GUST-E0806";
+    /// A `let` pattern that is not one identifier with an optional type.
+    LetBindingForm = 807 => "GUST-E0807";
+    /// An atomic call whose receiver is not a mutable reference.
+    AtomicEmitterReference = 808 => "GUST-E0808";
+    /// An atomic call whose receiver is not a buffer element.
+    AtomicEmitterElement = 809 => "GUST-E0809";
+    /// A struct literal outside a `let` initializer or an assignment.
+    StructLiteralPosition = 810 => "GUST-E0810";
+    /// An expression form with no lowering yet.
+    UnsupportedExpression = 811 => "GUST-E0811";
+    /// A literal other than a boolean or a 32-bit number.
+    UnsupportedLiteral = 812 => "GUST-E0812";
+    /// A type that is not a named path.
+    TypeNeedsPath = 813 => "GUST-E0813";
+    /// A `Result` without a payload type.
+    ResultPayloadMissing = 814 => "GUST-E0814";
+    /// A resource whose element type is not a named type.
+    ResourceElementPath = 815 => "GUST-E0815";
+    /// A resource without angle-bracketed arguments.
+    ResourceElementArity = 816 => "GUST-E0816";
+    /// A resource without an element type argument.
+    ResourceElementMissing = 817 => "GUST-E0817";
+
     // E09xx: reserved names and shadowing.
     /// An identifier with a reserved `__gust_` or `__gpu_` prefix.
     ReservedPrefix = 901 => "GUST-E0901";
@@ -236,14 +296,35 @@ pub(crate) fn error(code: Code, span: impl ToTokens, message: impl Display) -> s
     syn::Error::new_spanned(span, format!("[{}] {message}", code.text()))
 }
 
+/// [`error`] at a bare span, for a location that has no tokens (the macro call site).
+pub(crate) fn error_at(code: Code, span: proc_macro2::Span, message: impl Display) -> syn::Error {
+    syn::Error::new(span, format!("[{}] {message}", code.text()))
+}
+
+/// [`error`] for a failure inside `parse_nested_meta`, spanned over the option as
+/// `ParseNestedMeta::error` is.
+pub(crate) fn meta_error(
+    meta: &syn::meta::ParseNestedMeta<'_>,
+    code: Code,
+    message: impl Display,
+) -> syn::Error {
+    meta.error(format!("[{}] {message}", code.text()))
+}
+
 /// A `syn` parse error given `code`, keeping every combined error and its span.
 ///
 /// For failures `syn` reports itself (an unparsable attribute argument list, for
-/// example), where there is no message of ours to attach the code to.
+/// example), where there is no message of ours to attach the code to. An error that
+/// already carries a code keeps it, so wrapping a result that mixes our errors with
+/// `syn`'s is safe.
 pub(crate) fn wrap(code: Code, parse_error: syn::Error) -> syn::Error {
     let mut wrapped: Option<syn::Error> = None;
     for part in parse_error {
-        let part = syn::Error::new(part.span(), format!("[{}] {part}", code.text()));
+        let part = if part.to_string().starts_with("[GUST-E") {
+            part
+        } else {
+            syn::Error::new(part.span(), format!("[{}] {part}", code.text()))
+        };
         match &mut wrapped {
             Some(existing) => existing.combine(part),
             None => wrapped = Some(part),
@@ -450,6 +531,207 @@ mod tests {
         assert_eq!(
             messages,
             ["[GUST-E0108] first problem", "[GUST-E0108] second problem"]
+        );
+    }
+
+    #[test]
+    fn wrap_keeps_a_code_an_error_already_has() {
+        let mut mixed = error(Code::UnknownKernelOption, quote::quote!(a), "ours");
+        mixed.combine(syn::Error::new(proc_macro2::Span::call_site(), "syn's"));
+        let wrapped = wrap(Code::MalformedKernelAttribute, mixed);
+        assert_codes(
+            &wrapped,
+            &[Code::UnknownKernelOption, Code::MalformedKernelAttribute],
+        );
+    }
+
+    // --- Guard (iii): no error is created outside this file ---
+
+    /// `source` with comments, string literals and char literals replaced by a space,
+    /// so a text scan sees only code.
+    fn code_only(source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut out = String::with_capacity(source.len());
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            if c == '/' && next == Some('/') {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            } else if c == '/' && next == Some('*') {
+                let mut depth = 1;
+                i += 2;
+                while i < chars.len() && depth > 0 {
+                    match (chars[i], chars.get(i + 1)) {
+                        ('/', Some('*')) => {
+                            depth += 1;
+                            i += 2;
+                        }
+                        ('*', Some('/')) => {
+                            depth -= 1;
+                            i += 2;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                out.push(' ');
+            } else if let Some(end) = raw_string_end(&chars, i) {
+                i = end;
+                out.push(' ');
+            } else if c == '"' {
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    i += if chars[i] == '\\' { 2 } else { 1 };
+                }
+                i += 1;
+                out.push(' ');
+            } else if c == '\'' && next == Some('\\') {
+                // An escaped char literal: skip the backslash and the escaped character,
+                // then everything up to the closing quote (`'\''`, `'\n'`, `'\u{1f}'`).
+                i += 3;
+                while i < chars.len() && chars[i] != '\'' {
+                    i += 1;
+                }
+                i += 1;
+                out.push(' ');
+            } else if c == '\'' && chars.get(i + 2) == Some(&'\'') {
+                // A one-character literal such as `'"'`; a lifetime has no closing quote there.
+                i += 3;
+                out.push(' ');
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// The index after a raw string (`r"..."`, `r#"..."#`, `br"..."`) starting at `start`.
+    fn raw_string_end(chars: &[char], start: usize) -> Option<usize> {
+        if start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+            return None;
+        }
+        let mut i = start;
+        if chars.get(i) == Some(&'b') {
+            i += 1;
+        }
+        if chars.get(i) != Some(&'r') {
+            return None;
+        }
+        i += 1;
+        let hashes = chars[i..].iter().take_while(|&&c| c == '#').count();
+        i += hashes;
+        if chars.get(i) != Some(&'"') {
+            return None;
+        }
+        i += 1;
+        while i < chars.len() {
+            if chars[i] == '"' && chars[i + 1..].iter().take_while(|&&c| c == '#').count() >= hashes
+            {
+                return Some(i + 1 + hashes);
+            }
+            i += 1;
+        }
+        Some(chars.len())
+    }
+
+    /// Constructors of an uncoded `syn::Error`, as they appear in code.
+    const UNCODED_ERRORS: &[&str] = &["Error::new", "Error::from", "meta.error(", "Error as "];
+
+    /// The forbidden constructors `source` uses in code (comments and literals ignored).
+    fn uncoded_error_uses(source: &str) -> Vec<&'static str> {
+        let code = code_only(source);
+        UNCODED_ERRORS
+            .iter()
+            .copied()
+            .filter(|pattern| code.contains(pattern))
+            .collect()
+    }
+
+    #[test]
+    fn code_only_drops_comments_and_literals_but_keeps_code() {
+        for (source, forbidden) in [
+            ("// syn::Error::new_spanned(a, b)", false),
+            ("/// docs about syn::Error::new\nfn f() {}", false),
+            (
+                "/* syn::Error::new /* nested */ still comment */ fn f() {}",
+                false,
+            ),
+            ("let s = \"syn::Error::new(\";", false),
+            ("let s = \"quote \\\" syn::Error::new(\";", false),
+            ("let s = r#\"syn::Error::new(\"quoted\")\"#;", false),
+            ("let s = br\"syn::Error::new(\";", false),
+            ("let q = '\"'; let s = \"x\";", false),
+            ("let q = '\\''; // syn::Error::new", false),
+            (
+                "fn f<'a>(x: &'a str) { syn::Error::new_spanned(x, \"m\") }",
+                true,
+            ),
+            ("let e = syn::Error::new_spanned(a, \"m\");", true),
+            ("let e = Error::new(span, \"m\");", true),
+            ("return Err(meta.error(\"m\"));", true),
+            ("use syn::Error as E;", true),
+            // Code after a comment on the same line, and after a string, is still code.
+            ("let s = \"a\"; syn::Error::new(s, \"m\"); // x", true),
+            ("/* c */ syn::Error::new(a, \"m\")", true),
+            ("let q = '\"'; syn::Error::new(a, \"m\");", true),
+        ] {
+            assert_eq!(
+                !uncoded_error_uses(source).is_empty(),
+                forbidden,
+                "{source:?} -> {:?}",
+                code_only(source)
+            );
+        }
+    }
+
+    /// The `.rs` files below `dir`, relative to `root` with `/` separators.
+    fn rust_files(root: &Path, dir: &Path, found: &mut Vec<String>) {
+        let mut entries: Vec<_> = fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("could not read {}: {error}", dir.display()))
+            .map(|entry| entry.expect("directory entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                rust_files(root, &path, found);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let relative = path.strip_prefix(root).expect("below the root");
+                let parts: Vec<_> = relative
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                found.push(parts.join("/"));
+            }
+        }
+    }
+
+    /// Guard (iii): every `syn::Error` of this crate is created by `diagnostics::error`
+    /// (or its siblings in this file), so none can be added without a code.
+    #[test]
+    fn only_this_file_creates_syn_errors() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rust_files(&root, &root, &mut files);
+        for expected in ["lib.rs", "validate/mod.rs", "slang/mod.rs", "expand/mod.rs"] {
+            assert!(
+                files.iter().any(|file| file == expected),
+                "{expected} not scanned: {files:?}"
+            );
+        }
+        let mut offenders = Vec::new();
+        for file in files.iter().filter(|file| *file != "diagnostics.rs") {
+            let source = fs::read_to_string(root.join(file))
+                .unwrap_or_else(|error| panic!("could not read {file}: {error}"));
+            for pattern in uncoded_error_uses(&source) {
+                offenders.push(format!("{file}: {pattern}"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "create errors with diagnostics::error so they carry a code: {offenders:?}"
         );
     }
 }

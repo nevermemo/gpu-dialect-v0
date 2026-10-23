@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 use quote::ToTokens;
 use syn::{spanned::Spanned, visit::Visit};
 
-use crate::expand::KernelOptions;
+use crate::{
+    diagnostics::{self, Code},
+    expand::KernelOptions,
+};
 
 /// One inclusive, 1-based range of emitted Slang lines generated from one Rust
 /// line (DX19). Records are in emission order, outer construct first.
@@ -207,7 +210,8 @@ pub fn emit_kernel(
                 binding += 1;
             }
             ParameterFlavor::Value => {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::EntryPointParameter,
                     ty,
                     "Slang compute entry points currently accept resources and SV_DispatchThreadID only",
                 ));
@@ -229,7 +233,8 @@ pub fn emit_kernel(
     }
 
     let invocation = invocation.ok_or_else(|| {
-        syn::Error::new_spanned(
+        diagnostics::error(
+            Code::EntryPointDispatchParameter,
             &kernel.sig,
             "a Slang kernel requires an `SV_DispatchThreadID` (or legacy `Invocation`) parameter",
         )
@@ -350,7 +355,11 @@ fn emit_statement(
         syn::Stmt::Local(local) => {
             let (pattern, annotation) = local_binding(&local.pat)?;
             let initial = local.init.as_ref().ok_or_else(|| {
-                syn::Error::new_spanned(local, "Slang let bindings require an initializer")
+                diagnostics::error(
+                    Code::LetNeedsInitializer,
+                    local,
+                    "Slang let bindings require an initializer",
+                )
             })?;
             // Finish the initializer before introducing its binding: an inner
             // `let p = Pair { first: p.second, ... }` reads the outer `p`.
@@ -429,13 +438,18 @@ fn emit_statement(
             }
         },
         syn::Stmt::Item(item) => {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::error(
+                Code::NestedItem,
                 item,
                 "items inside Slang functions are not supported",
             ));
         }
         syn::Stmt::Macro(item) => {
-            return Err(syn::Error::new_spanned(item, "macros cannot run in Slang"));
+            return Err(diagnostics::error(
+                Code::MacroStatement,
+                item,
+                "macros cannot run in Slang",
+            ));
         }
     }
     Ok(())
@@ -477,7 +491,8 @@ fn emit_struct_assign(
         let name = match &field.member {
             syn::Member::Named(ident) => ident,
             syn::Member::Unnamed(_) => {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::StructLiteralFieldName,
                     field,
                     "GPU struct literal fields need names",
                 ));
@@ -506,12 +521,14 @@ pub fn local_binding(pattern: &syn::Pat) -> syn::Result<(&syn::PatIdent, Option<
         syn::Pat::Ident(name) => Ok((name, None)),
         syn::Pat::Type(typed) => match typed.pat.as_ref() {
             syn::Pat::Ident(name) => Ok((name, Some(&typed.ty))),
-            _ => Err(syn::Error::new_spanned(
+            _ => Err(diagnostics::error(
+                Code::LetBindingForm,
                 pattern,
                 "GPU let bindings require a single identifier, optionally with a type",
             )),
         },
-        _ => Err(syn::Error::new_spanned(
+        _ => Err(diagnostics::error(
+            Code::LetBindingForm,
             pattern,
             "GPU let bindings require a single identifier, optionally with a type",
         )),
@@ -536,7 +553,8 @@ fn emit_if(
             } else if let Some(name) = crate::validate::result_pattern(&binding.pat) {
                 (name, format!("__gust_result_{index}"), "isOk")
             } else {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::IfLetPattern,
                     &binding.pat,
                     "`if let` supports only the `Some(identifier)` or `Ok(identifier)` pattern",
                 ));
@@ -667,11 +685,11 @@ fn emit_for(
         Ok(Some(variable)) => variable.ident.to_string(),
         Ok(None) => format!("__gust_iter_{index}"),
         Err((code, message)) => {
-            return Err(crate::diagnostics::error(code, &expression.pat, message));
+            return Err(diagnostics::error(code, &expression.pat, message));
         }
     };
     let (start, end) = crate::validate::range_bounds(&expression.expr)
-        .map_err(|(code, message)| crate::diagnostics::error(code, &expression.expr, message))?;
+        .map_err(|(code, message)| diagnostics::error(code, &expression.expr, message))?;
     let end_temporary = format!("__gust_end_{index}");
     writeln!(
         output,
@@ -734,13 +752,15 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                 .first()
                 .expect("atomic call has at least one argument");
             let syn::Expr::Reference(reference) = receiver else {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::AtomicEmitterReference,
                     receiver,
                     format!("`{op_name}` requires a mutable reference to a buffer element"),
                 ));
             };
             let syn::Expr::Index(index) = reference.expr.as_ref() else {
-                return Err(syn::Error::new_spanned(
+                return Err(diagnostics::error(
+                    Code::AtomicEmitterElement,
                     &reference.expr,
                     format!("`{op_name}` requires a buffer element"),
                 ));
@@ -817,7 +837,8 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             None => "return".to_owned(),
         },
         syn::Expr::Struct(value) => {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::error(
+                Code::StructLiteralPosition,
                 value,
                 "GPU struct literals are supported only as a `let` initializer or the right side of an assignment; bind the struct to a local first, or copy a buffer element and update its fields",
             ));
@@ -831,7 +852,8 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_expression(&unary.expr)?
         ),
         other => {
-            return Err(syn::Error::new_spanned(
+            return Err(diagnostics::error(
+                Code::UnsupportedExpression,
                 other,
                 "this Rust expression is not in the Rust-to-Slang subset yet",
             ));
@@ -986,7 +1008,8 @@ impl<'ast> Visit<'ast> for ResultUsage {
 
 fn emit_literal(literal: &syn::Lit) -> syn::Result<String> {
     let unsupported = || {
-        syn::Error::new_spanned(
+        diagnostics::error(
+            Code::UnsupportedLiteral,
             literal,
             "GPU literals support booleans and 32-bit numbers (i32, u32, f32) only",
         )
@@ -1017,7 +1040,8 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         return Ok("void".to_owned());
     }
     let syn::Type::Path(path) = ty else {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::TypeNeedsPath,
             ty,
             "Slang types must be named paths",
         ));
@@ -1046,9 +1070,13 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         })
         .collect::<syn::Result<Vec<_>>>()?;
     if source_name == "Result" {
-        let payload = parameters
-            .first()
-            .ok_or_else(|| syn::Error::new_spanned(ty, "`Result` needs a payload type"))?;
+        let payload = parameters.first().ok_or_else(|| {
+            diagnostics::error(
+                Code::ResultPayloadMissing,
+                ty,
+                "`Result` needs a payload type",
+            )
+        })?;
         return Ok(format!("{name}<{payload}>"));
     }
     Ok(format!("{name}<{}>", parameters.join(", ")))
@@ -1056,13 +1084,15 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
 
 fn typed_argument(argument: &syn::FnArg) -> syn::Result<(&syn::Ident, &syn::Type)> {
     let syn::FnArg::Typed(argument) = argument else {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::SelfParameter,
             argument,
             "GPU functions cannot use self",
         ));
     };
     let syn::Pat::Ident(pattern) = argument.pat.as_ref() else {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::ParameterNeedsIdentifier,
             &argument.pat,
             "GPU parameters need identifier names",
         ));
@@ -1072,14 +1102,16 @@ fn typed_argument(argument: &syn::FnArg) -> syn::Result<(&syn::Ident, &syn::Type
 
 pub fn wrapper_element_type(ty: &syn::Type) -> syn::Result<&syn::Type> {
     let syn::Type::Path(path) = ty else {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::ResourceElementPath,
             ty,
             "GPU resource requires a named element type",
         ));
     };
     let segment = path.path.segments.last().expect("nonempty resource type");
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
-        return Err(syn::Error::new_spanned(
+        return Err(diagnostics::error(
+            Code::ResourceElementArity,
             segment,
             "GPU resource requires one element type",
         ));
@@ -1091,7 +1123,13 @@ pub fn wrapper_element_type(ty: &syn::Type) -> syn::Result<&syn::Type> {
             syn::GenericArgument::Type(ty) => Some(ty),
             _ => None,
         })
-        .ok_or_else(|| syn::Error::new_spanned(arguments, "GPU resource requires an element type"))
+        .ok_or_else(|| {
+            diagnostics::error(
+                Code::ResourceElementMissing,
+                arguments,
+                "GPU resource requires an element type",
+            )
+        })
 }
 
 fn type_name(ty: &syn::Type) -> Option<String> {
@@ -1143,5 +1181,63 @@ mod tests {
         assert!(source.contains("void gpu_vector_add_add(uint3 id : SV_DispatchThreadID)"));
         assert!(source.contains("out[i] = (a[i] + 1.0);"));
         assert!(source.contains("i < __gpu_len_out"));
+    }
+
+    /// The emitter re-checks shapes the validator already rejects, so these sites are
+    /// unreachable through `#[gpu]`; they are exercised on the emitter functions directly
+    /// and must still carry their own codes.
+    #[test]
+    fn emitter_rejections_carry_their_codes() {
+        use crate::diagnostics::testing::assert_code;
+
+        let ty = |ty: syn::Type| emit_type(&ty).unwrap_err();
+        assert_code(&ty(syn::parse_quote!((u32, u32))), Code::TypeNeedsPath);
+        assert_code(
+            &ty(syn::parse_quote!(Result<'a>)),
+            Code::ResultPayloadMissing,
+        );
+
+        let argument: syn::FnArg = syn::parse_quote!(&self);
+        assert_code(&typed_argument(&argument).unwrap_err(), Code::SelfParameter);
+        let argument: syn::FnArg = syn::parse_quote!((a, b): u32);
+        assert_code(
+            &typed_argument(&argument).unwrap_err(),
+            Code::ParameterNeedsIdentifier,
+        );
+
+        let element = |ty: syn::Type| wrapper_element_type(&ty).unwrap_err();
+        assert_code(
+            &element(syn::parse_quote!(*const u32)),
+            Code::ResourceElementPath,
+        );
+        assert_code(
+            &element(syn::parse_quote!(StructuredBuffer)),
+            Code::ResourceElementArity,
+        );
+        assert_code(
+            &element(syn::parse_quote!(StructuredBuffer<'a>)),
+            Code::ResourceElementMissing,
+        );
+
+        let expression = |expression: syn::Expr| emit_expression(&expression).unwrap_err();
+        assert_code(
+            &expression(syn::parse_quote!(atomic_add(counter, 1u32))),
+            Code::AtomicEmitterReference,
+        );
+        assert_code(
+            &expression(syn::parse_quote!(atomic_add(&mut counter, 1u32))),
+            Code::AtomicEmitterElement,
+        );
+        assert_code(
+            &expression(syn::parse_quote!(|x| x)),
+            Code::UnsupportedExpression,
+        );
+        assert_code(
+            &expression(syn::parse_quote!('a')),
+            Code::UnsupportedLiteral,
+        );
+
+        let pattern: syn::Pat = syn::parse_quote!((a, b));
+        assert_code(&local_binding(&pattern).unwrap_err(), Code::LetBindingForm);
     }
 }

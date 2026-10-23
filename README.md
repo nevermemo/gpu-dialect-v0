@@ -398,7 +398,7 @@ SPIR-V structure/semantic validation is centralized in full verification.
 
 Golden Slang and a real-GPU semantics fixture live in `tests/fixtures/`; update
 expected output only after reviewing the change and testing both target compilers.
-The [roadmap](docs/ROADMAP.md) prioritizes correctness, actionable diagnostics,
+The [roadmap](docs/ROADMAP.md) prioritizes correctness, actionable diagnostics ([stable codes](docs/DIAGNOSTICS.md)),
 ABI/capability evidence, and then a small explicit staged-execution proof.
 Slang reflection now gates every pipeline for the StorageV1 subset (D17); broader
 resource layouts need the same compiler evidence before they enter the runtime.
