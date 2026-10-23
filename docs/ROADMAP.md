@@ -40,17 +40,18 @@ framework, and Hurricane, the game engine (today's
 | M0.3 | Lint that fails when a `.ps1`, `.bat`, `.cmd` or `.sh` file is tracked (D27) | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
 | M0.4 | `cargo xtask doctor` exits non-zero when a required tool is missing | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
 | M0.5 | Artifact check compares expected file names, not a count | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
-| M0.6 | `cargo xtask docs-check`: relative links, conflict markers, decision ids | ready |
+| M0.6 | `cargo xtask docs-check`: relative links, conflict markers, decision ids | done (Unit, efc4c2a; check-fast Gpu RTX 5090) |
 | M0.7 | Machine-path lint for tracked files | done (Unit, 3ae37e2; check-fast Gpu RTX 5090) |
-| M0.8 | Explicit `BLESS_GOLDEN=1` for reviewed goldens, never automatic | ready |
-| M0.9 | `cargo xtask check-arch`: no custom shader IR (dependency allowlist, no IR modules outside a `future/` path) | ready |
-| M0.10 | Suites named by evidence tier: `cargo xtask test --suite Unit\|Slangc\|Spirv\|Reflect\|Gpu\|Full` over existing commands | ready |
+| M0.8 | Explicit `BLESS_GOLDEN=1` for reviewed goldens, never automatic | done (Unit, efc4c2a; check-fast Gpu RTX 5090) |
+| M0.9 | `cargo xtask check-arch`: no custom shader IR (dependency allowlist, no IR modules outside a `future/` path) | done (Unit, efc4c2a; check-fast Gpu RTX 5090) |
+| M0.10 | Suites named by evidence tier: `cargo xtask test --suite Unit\|Slangc\|Spirv\|Reflect\|Gpu\|Full` over existing commands | done (Unit, efc4c2a; check-fast Gpu RTX 5090) |
 | M0.11 | Thin `CLAUDE.md`: read AGENTS.md first, role mapping, compaction instructions, skills list | done (docs) |
 | M0.12 | Skill fixes: GUST does not use trybuild; "host reference" instead of "CPU oracle"; vertical-slice skill points at `check-artifacts`/`check-full` | done (Unit, 3ae37e2) |
 | M0.13 | DECISIONS tidy: header with next id, trailing prose moved under a heading | done (docs) |
 | M0.14 | Independent review of the 2026-10-23 `xtask` redaction and CI changes | in progress |
 | M0.16 | Bounded retry for a transient Vulkan `NoAdapter` in `HeadlessDevice::new`; `NoAdapter` stays a failure, never a skip (seen twice in parallel atomics tests, 2026-10-23) | ready |
 | M0.17 | DX19 scanner follow-ups: `else` prefix matching, balanced braces in conditions, `match` label numbering, contract note on the heuristic | ready |
+| M0.18 | Slice B review fixes: check-arch reads root `[workspace.dependencies]` renames; `--locked` wording in VALIDATION.md or flags on Reflect/Spirv suites; xtask `rust-version`; nits | ready |
 | M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | planned |
 
 **Next: M1, diagnostics.**
