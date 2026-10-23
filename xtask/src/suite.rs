@@ -94,7 +94,7 @@ impl Suite {
             }
             Self::Gpu => "all gust-wgpu tests on the first Vulkan adapter wgpu finds",
             Self::Full => {
-                "the release gate: lint, fmt, clippy, workspace tests, examples, artifacts and SPIR-V validation; writes .ai/VALIDATION.json"
+                "the release gate: lint, fmt, clippy, workspace tests, the release-profile Slang tests of the gust library, examples, artifacts and SPIR-V validation; writes .ai/VALIDATION.json"
             }
         }
     }

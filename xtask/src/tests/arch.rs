@@ -1,7 +1,7 @@
 use super::{
     CRATE_RULES, CrateRule, WorkspaceDependency, dependency_problems, ir_module_problems,
-    ir_path_problems, manifest_dependencies, unlisted_crate_problems, workspace_dependencies,
-    workspace_dependency_problems,
+    ir_path_problems, manifest_dependencies, strip_comment, unlisted_crate_problems, unquote,
+    workspace_dependencies, workspace_dependency_problems,
 };
 
 fn rule(name: &str) -> &'static CrateRule {
@@ -408,7 +408,12 @@ fn root_entries_with_a_foreign_source_fail() {
     // Spelling variants of the right path are fine; unrelated entries are not checked.
     for table in [
         "gust = { path = \"./crates/gust/\" }\n",
-        "gust = { path = \"crates\\gust\" }\n",
+        // TOML `"crates\\gust"` is the valid basic-string spelling of a backslash path.
+        "gust = { path = \"crates\\\\gust\" }\n",
+        // A literal string keeps its backslash as written.
+        "gust = { path = 'crates\\gust' }\n",
+        "gust = { path = \"crates\\u002fgust\" }\n",
+        "gust.path = \"crates\\\\gust\"\n",
         "unrelated = { git = \"https://example.com/x\" }\n",
     ] {
         assert!(
@@ -416,4 +421,110 @@ fn root_entries_with_a_foreign_source_fail() {
             "{table}"
         );
     }
+}
+
+#[test]
+fn quoted_field_names_are_read_like_bare_ones() {
+    // Every spelling of the field `git` / `package` must be judged alike, in every table form.
+    let bad = [
+        ("syn.\"git\" = \"https://example.com/syn\"\n", "git source"),
+        ("syn.'git' = \"https://example.com/syn\"\n", "git source"),
+        (
+            "\"syn\".\"git\" = \"https://example.com/syn\"\n",
+            "git source",
+        ),
+        (
+            "syn.\"p\\u0061ckage\" = \"evil-syn\"\n",
+            "package = \"evil-syn\"",
+        ),
+        ("syn.\"package\" = \"evil-syn\"\n", "package = \"evil-syn\""),
+        ("syn.'package' = 'evil-syn'\n", "package = \"evil-syn\""),
+        (
+            "syn = { \"package\" = \"evil-syn\" }\n",
+            "package = \"evil-syn\"",
+        ),
+        ("syn = { 'git' = \"x\" }\n", "git source"),
+        (
+            "syn = { package = \"ev\\u0069l-syn\" }\n",
+            "package = \"evil-syn\"",
+        ),
+        (
+            "[workspace.dependencies.syn]\n\"package\" = \"evil-syn\"\n",
+            "package = \"evil-syn\"",
+        ),
+        (
+            "[workspace.dependencies.syn]\n'package' = \"evil-syn\"\n",
+            "package = \"evil-syn\"",
+        ),
+        (
+            "[workspace.dependencies.\"syn\"]\n\"git\" = \"https://example.com/syn\"\n",
+            "git source",
+        ),
+        (
+            "[workspace.dependencies.syn]\n\"registry-index\" = \"https://example.com/index\"\n",
+            "names a registry",
+        ),
+    ];
+    for (table, expected) in bad {
+        let problems = workspace_dependency_problems(&root_with(table));
+        assert_eq!(problems.len(), 1, "{table}: {problems:?}");
+        assert!(problems[0].contains(expected), "{table}: {}", problems[0]);
+    }
+    // The same in a member manifest, where a rename hides a SPIR-V library.
+    for manifest in [
+        "[dependencies.friendly]\n\"package\" = \"rspirv\"\n",
+        "[dependencies.friendly]\n'package' = \"rspirv\"\n",
+        "[dependencies]\nfriendly.\"package\" = \"rspirv\"\n",
+        "[dependencies]\nfriendly = { \"package\" = \"rspirv\" }\n",
+        "[dependencies]\n\"friendly\".\"p\\u0061ckage\" = \"rspirv\"\n",
+    ] {
+        let problems = dependency_problems(rule("gust-macros"), manifest, &[]);
+        assert_eq!(problems.len(), 1, "{manifest}: {problems:?}");
+        assert!(
+            problems[0].contains("`rspirv`"),
+            "{manifest}: {}",
+            problems[0]
+        );
+    }
+    // A quoted `workspace` flag inherits, and the dependency name may hold dots and `=`.
+    let workspace = root_with("alias = { package = \"serde\", version = \"1\" }\n");
+    assert_eq!(
+        manifest_dependencies("[dependencies]\nalias.\"workspace\" = true\n", &workspace),
+        ["serde"]
+    );
+    assert_eq!(
+        manifest_dependencies(
+            "[dependencies]\n\"a.b\" = \"1\"\n\"c=d\" = { version = \"1\" }\n'e#f' = \"1\"\n",
+            &[]
+        ),
+        ["a.b", "c=d", "e#f"]
+    );
+}
+
+#[test]
+fn toml_basic_strings_are_decoded_and_literal_strings_are_not() {
+    assert_eq!(unquote("\"plain\"").as_deref(), Some("plain"));
+    assert_eq!(
+        unquote(r#""a\"b\\c\td\ne\u0041\U0001F600""#).as_deref(),
+        Some("a\"b\\c\td\ne\u{41}\u{1F600}")
+    );
+    // The escaped quote does not end the string; trailing text after it is ignored.
+    assert_eq!(unquote(r#""a\"" tail"#).as_deref(), Some("a\""));
+    // Literal strings keep every backslash.
+    assert_eq!(
+        unquote(r"'crates\gust\n'").as_deref(),
+        Some(r"crates\gust\n")
+    );
+    // An invalid escape is kept as written, an unterminated or unquoted value is no string.
+    assert_eq!(unquote(r#""crates\gust""#).as_deref(), Some(r"crates\gust"));
+    assert_eq!(unquote(r#""\u12""#).as_deref(), Some(r"\u12"));
+    assert_eq!(unquote("\"open"), None);
+    assert_eq!(unquote(r#""ends\"#), None);
+    assert_eq!(unquote("bare"), None);
+    // A `#` after an escaped quote is still inside the string.
+    assert_eq!(
+        strip_comment(r##"a = "x\"#y" # note"##),
+        r##"a = "x\"#y" "##
+    );
+    assert_eq!(strip_comment(r"a = 'x\' # note"), r"a = 'x\' ");
 }

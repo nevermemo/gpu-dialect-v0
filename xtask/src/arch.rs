@@ -163,7 +163,7 @@ pub(crate) fn declared_dependencies(text: &str) -> Vec<DeclaredDependency> {
             if line.starts_with("[[") || header.starts_with("workspace") {
                 continue;
             }
-            let segments = header_segments(header);
+            let segments = key_segments(header);
             if let Some(kind) = segments.iter().position(|s| is_dependency_table(s)) {
                 if kind + 1 == segments.len() {
                     section = Section::Table;
@@ -178,17 +178,14 @@ pub(crate) fn declared_dependencies(text: &str) -> Vec<DeclaredDependency> {
             }
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
+        let Some((key, value)) = split_key_value(line) else {
             continue;
         };
+        let mut segments = key_segments(key);
         match section {
             Section::Other => {}
             Section::Table => {
-                let (name, field) = match key.trim().split_once('.') {
-                    Some((name, field)) => (name, Some(field.trim())),
-                    None => (key.trim(), None),
-                };
-                let name = name.trim().trim_matches('"');
+                let name = segments.remove(0);
                 if name.is_empty() {
                     continue;
                 }
@@ -196,7 +193,7 @@ pub(crate) fn declared_dependencies(text: &str) -> Vec<DeclaredDependency> {
                     Some(offset) => table_start + offset,
                     None => {
                         deps.push(DeclaredDependency {
-                            key: name.to_owned(),
+                            key: name,
                             package: None,
                             inherits: false,
                         });
@@ -204,20 +201,21 @@ pub(crate) fn declared_dependencies(text: &str) -> Vec<DeclaredDependency> {
                     }
                 };
                 let dep = &mut deps[at];
-                match field {
+                match table_field(&segments) {
                     Some("package") => dep.package = unquote(value),
                     Some("workspace") => dep.inherits |= value.trim() == "true",
                     Some(_) => {}
                     None => {
-                        dep.package = package_rename(value);
+                        dep.package =
+                            inline_field(value, "package").and_then(|text| unquote(&text));
                         dep.inherits |=
                             inline_field(value, "workspace").is_some_and(|flag| flag == "true");
                     }
                 }
             }
             Section::Single => {
-                if let Some(dep) = deps.last_mut() {
-                    match key.trim() {
+                if let (Some(dep), [field]) = (deps.last_mut(), segments.as_slice()) {
+                    match field.as_str() {
                         "package" => dep.package = unquote(value),
                         "workspace" => dep.inherits |= value.trim() == "true",
                         _ => {}
@@ -270,7 +268,7 @@ pub(crate) fn workspace_dependencies(text: &str) -> Vec<WorkspaceDependency> {
             if line.starts_with("[[") {
                 continue;
             }
-            let segments = header_segments(header);
+            let segments = key_segments(header);
             if segments.len() >= 2 && segments[0] == "workspace" && segments[1] == "dependencies" {
                 match segments.len() {
                     2 => section = Section::Table,
@@ -286,17 +284,14 @@ pub(crate) fn workspace_dependencies(text: &str) -> Vec<WorkspaceDependency> {
             }
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else {
+        let Some((key, value)) = split_key_value(line) else {
             continue;
         };
+        let mut segments = key_segments(key);
         match section {
             Section::Other => {}
             Section::Table => {
-                let (name, field) = match key.trim().split_once('.') {
-                    Some((name, field)) => (name, Some(field.trim())),
-                    None => (key.trim(), None),
-                };
-                let name = name.trim().trim_matches('"');
+                let name = segments.remove(0);
                 if name.is_empty() {
                     continue;
                 }
@@ -304,14 +299,14 @@ pub(crate) fn workspace_dependencies(text: &str) -> Vec<WorkspaceDependency> {
                     Some(at) => at,
                     None => {
                         deps.push(WorkspaceDependency {
-                            key: name.to_owned(),
+                            key: name,
                             ..WorkspaceDependency::default()
                         });
                         deps.len() - 1
                     }
                 };
                 let dep = &mut deps[at];
-                match field {
+                match table_field(&segments) {
                     Some(field) => dep.set_field(field, value),
                     None => {
                         for field in ["package", "path", "git", "registry", "registry-index"] {
@@ -323,8 +318,8 @@ pub(crate) fn workspace_dependencies(text: &str) -> Vec<WorkspaceDependency> {
                 }
             }
             Section::Single => {
-                if let Some(dep) = deps.last_mut() {
-                    dep.set_field(key.trim(), value);
+                if let (Some(dep), [field]) = (deps.last_mut(), segments.as_slice()) {
+                    dep.set_field(field, value);
                 }
             }
         }
@@ -332,18 +327,50 @@ pub(crate) fn workspace_dependencies(text: &str) -> Vec<WorkspaceDependency> {
     deps
 }
 
-/// The value text of `field` in an inline table `{ a = 1, b = "x" }`, as written.
+/// Tracks whether a character-by-character scan is inside a TOML string. Basic strings
+/// (`"..."`) honour `\` escapes, literal strings (`'...'`) do not.
+#[derive(Default)]
+struct StringScan {
+    open: Option<char>,
+    escaped: bool,
+}
+
+impl StringScan {
+    /// Feeds the next character; true when it belongs to a string, quotes included.
+    fn feed(&mut self, c: char) -> bool {
+        let Some(open) = self.open else {
+            if matches!(c, '"' | '\'') {
+                self.open = Some(c);
+                return true;
+            }
+            return false;
+        };
+        if self.escaped {
+            self.escaped = false;
+        } else if open == '"' && c == '\\' {
+            self.escaped = true;
+        } else if c == open {
+            self.open = None;
+        }
+        true
+    }
+}
+
+/// The value text of `field` in an inline table `{ a = 1, b = "x" }`, as written. The key may be
+/// bare or quoted.
 fn inline_field(value: &str, field: &str) -> Option<String> {
     let inner = value.trim().strip_prefix('{')?.strip_suffix('}')?;
-    let (mut depth, mut quote, mut start) = (0usize, None, 0);
+    let (mut depth, mut start) = (0usize, 0);
+    let mut scan = StringScan::default();
     let mut parts = Vec::new();
     for (index, c) in inner.char_indices() {
-        match (c, quote) {
-            ('"' | '\'', None) => quote = Some(c),
-            (c, Some(open)) if c == open => quote = None,
-            ('[' | '{', None) => depth += 1,
-            (']' | '}', None) => depth = depth.saturating_sub(1),
-            (',', None) if depth == 0 => {
+        if scan.feed(c) {
+            continue;
+        }
+        match c {
+            '[' | '{' => depth += 1,
+            ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
                 parts.push(&inner[start..index]);
                 start = index + 1;
             }
@@ -352,17 +379,106 @@ fn inline_field(value: &str, field: &str) -> Option<String> {
     }
     parts.push(&inner[start..]);
     parts.into_iter().find_map(|part| {
-        let (key, value) = part.split_once('=')?;
-        (key.trim().trim_matches(['"', '\'']) == field).then(|| value.trim().to_owned())
+        let (key, value) = split_key_value(part)?;
+        (key_segments(key) == [field]).then(|| value.trim().to_owned())
     })
 }
 
-/// The text of a quoted TOML string value; `None` for anything else.
+/// A `key = value` line split at the first `=` outside a quoted key.
+fn split_key_value(line: &str) -> Option<(&str, &str)> {
+    let mut scan = StringScan::default();
+    line.char_indices().find_map(|(index, c)| {
+        (!scan.feed(c) && c == '=').then(|| (&line[..index], &line[index + 1..]))
+    })
+}
+
+/// The segments of a dotted key or table header, split at dots outside quotes and each
+/// decoded the same way, whether written bare (`git`), basic-quoted (`"git"`) or
+/// literal-quoted (`'git'`): `target.'cfg(unix)'.dependencies.foo`, `syn."git"`.
+/// Never empty.
+fn key_segments(key: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut scan = StringScan::default();
+    for (index, c) in key.char_indices() {
+        if !scan.feed(c) && c == '.' {
+            segments.push(decode_key(&key[start..index]));
+            start = index + 1;
+        }
+    }
+    segments.push(decode_key(&key[start..]));
+    segments
+}
+
+fn decode_key(segment: &str) -> String {
+    let segment = segment.trim();
+    unquote(segment).unwrap_or_else(|| segment.to_owned())
+}
+
+/// The field a dotted key names inside a dependency table (`syn.git` gives `git`), once the
+/// dependency name is removed. `None` when the key is the dependency itself; an empty string
+/// for a deeper key, which is no field this checker reads.
+fn table_field(rest: &[String]) -> Option<&str> {
+    match rest {
+        [] => None,
+        [field] => Some(field),
+        _ => Some(""),
+    }
+}
+
+/// The text of a quoted TOML string value; `None` for anything else. Basic strings are
+/// decoded (`\\`, `\"`, `\b`, `\t`, `\n`, `\f`, `\r`, `\uXXXX`, `\UXXXXXXXX`); an invalid escape
+/// is kept as written rather than dropped. Literal strings are returned raw.
 fn unquote(value: &str) -> Option<String> {
-    let rest = value.trim();
-    let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
-    let inner = &rest[1..];
-    Some(inner[..inner.find(quote)?].to_owned())
+    let mut chars = value.trim().chars();
+    let quote = chars.next().filter(|c| matches!(c, '"' | '\''))?;
+    let mut text = String::new();
+    while let Some(c) = chars.next() {
+        if c == quote {
+            return Some(text);
+        }
+        if quote == '\'' || c != '\\' {
+            text.push(c);
+            continue;
+        }
+        match chars.next()? {
+            'b' => text.push('\u{8}'),
+            't' => text.push('\t'),
+            'n' => text.push('\n'),
+            'f' => text.push('\u{c}'),
+            'r' => text.push('\r'),
+            '"' => text.push('"'),
+            '\\' => text.push('\\'),
+            marker @ ('u' | 'U') => {
+                let width = if marker == 'u' { 4 } else { 8 };
+                // Look ahead so that a short escape cannot swallow the closing quote.
+                let digits: String = chars.clone().take(width).collect();
+                let decoded = (digits.len() == width
+                    && digits.chars().all(|d| d.is_ascii_hexdigit()))
+                .then(|| {
+                    u32::from_str_radix(&digits, 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                })
+                .flatten();
+                match decoded {
+                    Some(decoded) => {
+                        text.push(decoded);
+                        chars.nth(width - 1);
+                    }
+                    None => {
+                        text.push('\x5c');
+                        text.push(marker);
+                    }
+                }
+            }
+            other => {
+                text.push('\\');
+                text.push(other);
+            }
+        }
+    }
+    None
 }
 
 fn is_dependency_table(segment: &str) -> bool {
@@ -372,41 +488,12 @@ fn is_dependency_table(segment: &str) -> bool {
     )
 }
 
-/// Header segments split at dots outside quotes: `target.'cfg(unix)'.dependencies.foo`.
-fn header_segments(header: &str) -> Vec<String> {
-    let mut segments = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    for c in header.chars() {
-        match (c, quote) {
-            ('"' | '\'', None) => quote = Some(c),
-            (c, Some(open)) if c == open => quote = None,
-            ('.', None) => segments.push(std::mem::take(&mut current).trim().to_owned()),
-            (c, _) => current.push(c),
-        }
-    }
-    segments.push(current.trim().to_owned());
-    segments
-}
-
-/// The `package = "name"` inside an inline table value, if any.
-fn package_rename(value: &str) -> Option<String> {
-    let rest = value.split("package").nth(1)?.trim_start();
-    let rest = rest.strip_prefix('=')?.trim_start();
-    let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
-    let inner = &rest[1..];
-    Some(inner[..inner.find(quote)?].to_owned())
-}
-
 /// The line without a `#` comment (a `#` inside a string is kept).
 fn strip_comment(line: &str) -> &str {
-    let mut quote = None;
+    let mut scan = StringScan::default();
     for (index, c) in line.char_indices() {
-        match (c, quote) {
-            ('"' | '\'', None) => quote = Some(c),
-            (c, Some(open)) if c == open => quote = None,
-            ('#', None) => return &line[..index],
-            _ => {}
+        if !scan.feed(c) && c == '#' {
+            return &line[..index];
         }
     }
     line

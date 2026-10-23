@@ -1,7 +1,7 @@
 use super::{Step, Suite};
 use crate::{
     checks::REFLECTION_TESTS,
-    verify::{VerifyMode, example_run_args},
+    verify::{RELEASE_SLANG_TESTS, VerifyMode, example_run_args},
     workspace::EXAMPLES,
 };
 
@@ -128,4 +128,25 @@ fn every_suite_says_what_it_does_and_does_not_cover() {
             .iter()
             .all(|s| !matches!(s, Step::RequireTool(_)))
     );
+}
+
+#[test]
+fn the_full_gate_runs_the_release_slang_tests() {
+    // The release-only fallback tests (`cfg(not(debug_assertions))`) run nowhere else.
+    assert_eq!(
+        RELEASE_SLANG_TESTS,
+        [
+            "test",
+            "--locked",
+            "--release",
+            "-p",
+            "gust",
+            "--lib",
+            "slang"
+        ]
+    );
+    assert!(Suite::Full.covers().contains("release-profile"));
+    // Suite::Full and check-full both run verify's Full mode; the call must be made there.
+    let source = include_str!("../verify.rs");
+    assert_eq!(source.matches("&RELEASE_SLANG_TESTS").count(), 1);
 }

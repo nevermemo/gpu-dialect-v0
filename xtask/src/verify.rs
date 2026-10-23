@@ -174,8 +174,10 @@ fn verify_inner(
             "cargo",
             &["test", "--locked", "-p", "gust-wgpu"],
         )?,
-        VerifyMode::Smoke | VerifyMode::Full => {
-            run_checked_owned(root, checks, "cargo", &workspace_test_args())?
+        VerifyMode::Smoke => run_checked_owned(root, checks, "cargo", &workspace_test_args())?,
+        VerifyMode::Full => {
+            run_checked_owned(root, checks, "cargo", &workspace_test_args())?;
+            run_checked(root, checks, "cargo", &RELEASE_SLANG_TESTS)?;
         }
         VerifyMode::Examples | VerifyMode::Artifacts => {}
     }
@@ -235,6 +237,18 @@ fn verify_inner(
     }
     Ok(())
 }
+
+/// The Slang tests of the core library in the release profile (the Full mode and suite).
+/// `cfg(not(debug_assertions))` tests, such as the source-map fallback, run only here.
+pub(crate) const RELEASE_SLANG_TESTS: [&str; 7] = [
+    "test",
+    "--locked",
+    "--release",
+    "-p",
+    "gust",
+    "--lib",
+    "slang",
+];
 
 /// The cargo call that runs one example binary and exports its SPIR-V (the Spirv suite).
 pub(crate) fn example_run_args(example: &str) -> [&str; 5] {
