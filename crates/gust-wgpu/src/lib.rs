@@ -412,6 +412,39 @@ impl TimestampProfiler {
     }
 }
 
+/// Adapter requests made by `HeadlessDevice::new` before `NoAdapter` is returned.
+const ADAPTER_ATTEMPTS: u32 = 3;
+/// Pauses after the first and second failed adapter request.
+const ADAPTER_BACKOFF: [Duration; 2] = [Duration::from_millis(100), Duration::from_millis(400)];
+
+/// Run `request` up to `attempts` times, pausing `backoff[n]` through `pause` after the
+/// `n`th failure. Only `Error::NoAdapter` is retried; any other result returns at once.
+/// The final `NoAdapter` keeps its message and gains the attempt count.
+fn retry_no_adapter<T>(
+    attempts: u32,
+    backoff: &[Duration],
+    mut pause: impl FnMut(Duration),
+    mut request: impl FnMut() -> Result<T, Error>,
+) -> Result<T, Error> {
+    let mut attempt = 1;
+    loop {
+        match request() {
+            Err(Error::NoAdapter(message)) if attempt >= attempts => {
+                return Err(Error::NoAdapter(format!(
+                    "{message} (after {attempt} attempts)"
+                )));
+            }
+            Err(Error::NoAdapter(_)) => {
+                if let Some(delay) = backoff.get(attempt as usize - 1) {
+                    pause(*delay);
+                }
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
 /// A logical device selected without creating a window or presentation surface.
 pub struct HeadlessDevice {
     id: u64,
@@ -424,21 +457,35 @@ pub struct HeadlessDevice {
 
 impl HeadlessDevice {
     /// Select a high-performance Vulkan adapter and open a logical device.
+    ///
+    /// A missing adapter is retried a bounded number of times with a short backoff,
+    /// because the Vulkan loader can fail transiently when many devices are opened at
+    /// once. After the last attempt the `NoAdapter` error is returned; there is no
+    /// skip and no software or CPU fallback.
     pub fn new() -> Result<Self, Error> {
-        pollster::block_on(Self::new_async())
+        let adapter = retry_no_adapter(
+            ADAPTER_ATTEMPTS,
+            &ADAPTER_BACKOFF,
+            std::thread::sleep,
+            || pollster::block_on(Self::request_adapter()),
+        )?;
+        pollster::block_on(Self::open(adapter))
     }
 
-    async fn new_async() -> Result<Self, Error> {
+    async fn request_adapter() -> Result<wgpu::Adapter, Error> {
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
         instance_descriptor.backends = wgpu::Backends::VULKAN;
         let instance = wgpu::Instance::new(instance_descriptor);
-        let adapter = instance
+        instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 ..Default::default()
             })
             .await
-            .map_err(|error| Error::NoAdapter(error.to_string()))?;
+            .map_err(|error| Error::NoAdapter(error.to_string()))
+    }
+
+    async fn open(adapter: wgpu::Adapter) -> Result<Self, Error> {
         let adapter_info = adapter.get_info();
         let timestamp_queries = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let required_features = if timestamp_queries {
@@ -1605,6 +1652,89 @@ mod tests {
             void gpu_test_kernel(uint3 id : SV_DispatchThreadID) { if (id.x < 1) out[id.x] = 0.0; }
         "#,
     };
+
+    fn no_adapter() -> Error {
+        Error::NoAdapter("loader failed".to_string())
+    }
+
+    #[test]
+    fn adapter_retry_succeeds_on_first_attempt_without_pausing() {
+        let mut calls = 0;
+        let mut pauses = Vec::new();
+        let result = retry_no_adapter(
+            3,
+            &ADAPTER_BACKOFF,
+            |delay| pauses.push(delay),
+            || {
+                calls += 1;
+                Ok(7)
+            },
+        );
+        assert!(matches!(result, Ok(7)));
+        assert_eq!(calls, 1);
+        assert!(pauses.is_empty());
+    }
+
+    #[test]
+    fn adapter_retry_succeeds_on_a_later_attempt() {
+        let mut calls = 0;
+        let mut pauses = Vec::new();
+        let result = retry_no_adapter(
+            3,
+            &ADAPTER_BACKOFF,
+            |delay| pauses.push(delay),
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err(no_adapter())
+                } else {
+                    Ok(calls)
+                }
+            },
+        );
+        assert!(matches!(result, Ok(3)));
+        assert_eq!(calls, 3);
+        assert_eq!(pauses, ADAPTER_BACKOFF);
+    }
+
+    #[test]
+    fn adapter_retry_fails_after_the_limit_with_the_attempt_count() {
+        let mut calls = 0;
+        let result: Result<(), Error> = retry_no_adapter(
+            3,
+            &ADAPTER_BACKOFF,
+            |_| {},
+            || {
+                calls += 1;
+                Err(no_adapter())
+            },
+        );
+        assert_eq!(calls, 3);
+        match result {
+            Err(Error::NoAdapter(message)) => {
+                assert_eq!(message, "loader failed (after 3 attempts)");
+            }
+            other => panic!("expected NoAdapter after the limit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adapter_retry_returns_other_errors_immediately() {
+        let mut calls = 0;
+        let mut pauses = 0;
+        let result: Result<(), Error> = retry_no_adapter(
+            3,
+            &ADAPTER_BACKOFF,
+            |_| pauses += 1,
+            || {
+                calls += 1;
+                Err(Error::RequestDevice("lost".to_string()))
+            },
+        );
+        assert!(matches!(result, Err(Error::RequestDevice(_))));
+        assert_eq!(calls, 1);
+        assert_eq!(pauses, 0);
+    }
 
     #[test]
     fn pipeline_cache_identity_includes_entrypoint() {
