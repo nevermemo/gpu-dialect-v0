@@ -9,6 +9,14 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.d0: `check-ui` reads `cargo check --message-format json` and judges only the
+  case's own diagnostics; a failing case must produce exactly one error. `expected.txt`
+  pins it by keys: `code`, `file` and `line` (exact, on one primary span), `message`
+  (substring of the message or a child note) and `label` (substring of that span's label,
+  where `on_unimplemented`'s label lands, measured on real runs). Editing the label text in
+  `gust` now fails check-ui. Open for m2.d1: spans inside macro-generated code may need
+  `expansion` followed, and one error per case may be tight for two-error fixtures
+  (`a8b074f`).
 - M2 m2.c: `gust-wgpu` implements the typed surface. `HeadlessDevice` is a
   `TypedDevice` with a `Run<K, N>` for every kernel, and `GpuBuffer<T>` is a `Resource`;
   every typed call goes through the existing persistent-binding validation (layout,
