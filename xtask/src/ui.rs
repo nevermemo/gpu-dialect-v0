@@ -50,6 +50,14 @@ pub(crate) struct Case {
     pub(crate) expectation: Expectation,
 }
 
+/// A place in a source file: a span's own, or one of the call sites of its macro expansion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Site {
+    /// `file_name` with backslashes read as slashes.
+    pub(crate) file: String,
+    pub(crate) line: Option<u64>,
+}
+
 /// One span of a rustc diagnostic, as far as `expected.txt` can name it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Span {
@@ -58,6 +66,10 @@ pub(crate) struct Span {
     pub(crate) line: Option<u64>,
     pub(crate) primary: bool,
     pub(crate) label: Option<String>,
+    /// The macro call sites of the span (`expansion.span`, then that span's own `expansion.span`, and so
+    /// on), innermost first. Empty for a span that is not from a macro. A panic in a `const` that a
+    /// macro generated has core's `panic.rs` as its primary span and the user's file only here.
+    pub(crate) call_sites: Vec<Site>,
 }
 
 /// One `compiler-message` of `cargo check --message-format json`.
@@ -328,7 +340,7 @@ pub(crate) fn judge(
                 errors.len(),
                 errors
                     .iter()
-                    .map(|error| describe(error))
+                    .map(|error| describe(case, error))
                     .collect::<Vec<_>>()
                     .join("; ")
             ),
@@ -336,7 +348,7 @@ pub(crate) fn judge(
         ],
         Expectation::Fails(wanted) => {
             let error = errors[0];
-            let missing = gaps(wanted, error);
+            let missing = gaps(case, wanted, error);
             if missing.is_empty() {
                 return Vec::new();
             }
@@ -345,7 +357,7 @@ pub(crate) fn judge(
                 .map(|gap| {
                     format!(
                         "{case}: the rustc error does not satisfy `{gap}` of expected.txt (error was: {})",
-                        describe(error)
+                        describe(case, error)
                     )
                 })
                 .collect();
@@ -356,7 +368,7 @@ pub(crate) fn judge(
 }
 
 /// The keys of `wanted` that `error` does not satisfy, each written as in expected.txt.
-fn gaps(wanted: &Expected, error: &Diagnostic) -> Vec<String> {
+fn gaps(case: &str, wanted: &Expected, error: &Diagnostic) -> Vec<String> {
     let mut gaps = Vec::new();
     if error.code.as_deref() != Some(wanted.code.as_str()) {
         gaps.push(format!("code: {}", wanted.code));
@@ -366,12 +378,12 @@ fn gaps(wanted: &Expected, error: &Diagnostic) -> Vec<String> {
     let on_file: Vec<&Span> = error
         .spans
         .iter()
-        .filter(|span| span.primary && span.file == wanted.file)
+        .filter(|span| span.primary && reported_at(case, span).file == wanted.file)
         .collect();
     let located: Vec<&Span> = on_file
         .iter()
         .copied()
-        .filter(|span| span.line == Some(wanted.line))
+        .filter(|span| reported_at(case, span).line == Some(wanted.line))
         .collect();
     if on_file.is_empty() {
         gaps.push(format!("file: {}", wanted.file));
@@ -403,8 +415,36 @@ fn gaps(wanted: &Expected, error: &Diagnostic) -> Vec<String> {
     gaps
 }
 
+/// Whether `file` (slash-separated, as in [`Span`]) is a file of the case: relative to `tests/ui` and under
+/// the case's directory. Core's `panic.rs` and every other absolute path are not.
+fn in_case(case: &str, file: &str) -> bool {
+    !is_absolute(file)
+        && file
+            .strip_prefix(case)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Where the span is reported, for `file` and `line`. A primary span in the case's own files is reported
+/// where it is. One outside them (the `panic.rs` of a `const` panic that a macro generated, say) is
+/// reported at the outermost of its macro call sites that lies in the case, which is where the user's
+/// attribute or macro call is. Without such a call site it stays where it is, so it never matches.
+fn reported_at(case: &str, span: &Span) -> Site {
+    let own = Site {
+        file: span.file.clone(),
+        line: span.line,
+    };
+    if in_case(case, &span.file) {
+        return own;
+    }
+    span.call_sites
+        .iter()
+        .rfind(|site| in_case(case, &site.file))
+        .cloned()
+        .unwrap_or(own)
+}
+
 /// `error[E0277] message at file:line`, for naming a diagnostic.
-fn describe(diagnostic: &Diagnostic) -> String {
+fn describe(case: &str, diagnostic: &Diagnostic) -> String {
     let code = diagnostic
         .code
         .as_deref()
@@ -414,10 +454,11 @@ fn describe(diagnostic: &Diagnostic) -> String {
         .iter()
         .find(|span| span.primary)
         .map_or_else(String::new, |span| {
-            let line = span
+            let site = reported_at(case, span);
+            let line = site
                 .line
                 .map_or_else(|| "?".to_owned(), |line| line.to_string());
-            format!(" at {}:{line}", span.file)
+            format!(" at {}:{line}", site.file)
         });
     format!("{}{code} {}{place}", diagnostic.level, diagnostic.message)
 }
@@ -494,7 +535,31 @@ fn span_of(span: &Json) -> Option<Span> {
         },
         primary: matches!(span.get("is_primary"), Some(Json::Bool(true))),
         label: span.get("label").and_then(Json::string_or_null),
+        call_sites: call_sites_of(span),
     })
+}
+
+/// The macro call sites of a span, innermost first (see [`Span::call_sites`]).
+fn call_sites_of(span: &Json) -> Vec<Site> {
+    let mut sites = Vec::new();
+    let mut current = span;
+    while let Some(site) = current
+        .get("expansion")
+        .and_then(|expansion| expansion.get("span"))
+    {
+        let Some(file) = site.get("file_name").and_then(Json::as_str) else {
+            break;
+        };
+        sites.push(Site {
+            file: file.replace('\\', "/"),
+            line: match site.get("line_start") {
+                Some(Json::Number(text)) => text.parse().ok(),
+                _ => None,
+            },
+        });
+        current = site;
+    }
+    sites
 }
 
 fn indent(text: &str) -> String {

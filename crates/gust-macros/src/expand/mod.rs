@@ -47,6 +47,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
         let slang_source = emitted.source;
         let [x, y, z] = options.workgroup_size;
         let (handle_doc, typed_calls) = typed_call_items(&original_name, &function.sig.inputs)?;
+        let element_assertions = element_layout_assertions(&original_name, &function.sig.inputs)?;
 
         function
             .attrs
@@ -78,6 +79,8 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
             }
 
             #typed_calls
+
+            #element_assertions
         });
     }
 
@@ -726,6 +729,76 @@ fn typed_call_items(
     ))
 }
 
+/// A type as written, for a message: rustc's token spacing (`super :: Outside`, `Vec < u32 >`) without the spaces
+/// around `::`, `<`, `>` and `,`. Other spaces (`dyn Trait`) are kept.
+fn type_text(ty: &syn::Type) -> String {
+    ty.to_token_stream()
+        .to_string()
+        .replace(" :: ", "::")
+        .replace(":: ", "::")
+        .replace(" < ", "<")
+        .replace("< ", "<")
+        .replace(" >", ">")
+        .replace(" ,", ",")
+}
+
+/// One `const _` per storage parameter of `kernel`: the element layout recorded in the kernel's descriptor (the
+/// element's `GpuPod::LAYOUT`) has the size and alignment of the Rust type and is a StorageV1 layout whose stride
+/// is the Rust size, so a hand-written `GpuPod` impl that lies is a compile error here. It covers everything the
+/// runtime checks (`create_typed_buffer`, dispatch validation) cover. The assertion reads the
+/// descriptor rather than naming `GpuPod` again, so an element that is no `GpuPod` still reports the one
+/// E0277 the descriptor already gives (the `gpupod-missing` fixture expects exactly one). A kernel with a
+/// uniform parameter is covered too (it has no typed call, but its storage buffers are still created from these
+/// elements). The message is a static string (const panics cannot format) that names the element, the parameter
+/// and the kernel.
+fn element_layout_assertions(
+    kernel: &syn::Ident,
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+) -> syn::Result<TokenStream> {
+    let mut assertions = Vec::new();
+    for (index, input) in inputs.iter().enumerate() {
+        let syn::FnArg::Typed(input) = input else {
+            continue;
+        };
+        let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
+            continue;
+        };
+        if !matches!(
+            crate::slang::parameter_flavor(&input.ty),
+            ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite
+        ) {
+            continue;
+        }
+        let element = crate::slang::wrapper_element_type(&input.ty)?;
+        // `assert!` reads its message as a format string.
+        let text = type_text(element).replace('{', "{{").replace('}', "}}");
+        let parameter = &pattern.ident;
+        let message = format!(
+            "GUST StorageV1: element `{text}` layout does not match its Rust representation \
+             (parameter `{parameter}` of kernel `{kernel}`)"
+        );
+        // `parameter_descriptors` emits one descriptor per input, in order, so `index` is this parameter's.
+        let index = proc_macro2::Literal::usize_unsuffixed(index);
+        assertions.push(quote! {
+            const _: () = ::core::assert!(
+                match <#kernel as ::gust::Kernel>::DESCRIPTOR.parameters[#index].resource_layout {
+                    ::core::option::Option::Some(__gust_layout) => {
+                        __gust_layout.element.size as usize == ::core::mem::size_of::<#element>()
+                            && __gust_layout.element.alignment as usize
+                                == ::core::mem::align_of::<#element>()
+                            && __gust_layout.element_stride as usize
+                                == ::core::mem::size_of::<#element>()
+                            && __gust_layout.element.is_storage_v1()
+                    }
+                    ::core::option::Option::None => false,
+                },
+                #message
+            );
+        });
+    }
+    Ok(quote!(#(#assertions)*))
+}
+
 fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
     let ident = &item.ident;
     let syn::Fields::Named(fields) = &item.fields else {
@@ -747,17 +820,33 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
             }
         }
     });
-    let field_types = fields.named.iter().map(|field| &field.ty);
-    Ok(quote! {
-        const _: () = {
-            assert!(::core::mem::size_of::<#ident>() > 0);
-            assert!(::core::mem::size_of::<#ident>() <= u32::MAX as usize);
-            assert!(
-                ::core::mem::size_of::<#ident>()
-                    == 0 #( + ::core::mem::size_of::<#field_types>() )*
+    let struct_name = ident.to_string();
+    // One assertion per field, in declaration order: the field sits at the sum of the sizes of the fields
+    // before it. Const panics cannot format, so the message is a static string that names the field.
+    let types: Vec<&syn::Type> = fields.named.iter().map(|field| &field.ty).collect();
+    let offset_assertions = fields.named.iter().enumerate().map(|(index, field)| {
+        let field_ident = field.ident.as_ref().expect("named field");
+        let earlier = &types[..index];
+        let message = format!(
+            "GUST StorageV1: field `{field_ident}` of `{struct_name}` is not at its padding-free offset"
+        );
+        quote! {
+            ::core::assert!(
+                ::core::mem::offset_of!(#ident, #field_ident)
+                    == 0 #( + ::core::mem::size_of::<#earlier>() )*,
+                #message
             );
-        };
-
+        }
+    });
+    let padding_message = format!(
+        "GUST StorageV1: `{struct_name}` has tail padding (its fields do not add up to its size)"
+    );
+    let alignment_message = format!("GUST StorageV1: `{struct_name}` must have alignment 4");
+    let storage_message = format!("GUST StorageV1: `{struct_name}` layout is not StorageV1");
+    // One block, after the impl whose `LAYOUT` it reads (const items are order-independent), so one cause is one
+    // E0080 and the asserts run in this order: the field that is off its offset is named first, then the total,
+    // then the alignment (an alignment other than 4 also fails the last one), then the whole layout.
+    Ok(quote! {
         unsafe impl ::gust::GpuPod for #ident {
             const LAYOUT: ::gust::TypeLayout = ::gust::TypeLayout::structure(
                 stringify!(#ident),
@@ -766,6 +855,24 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
                 &[#(#field_layouts),*],
             );
         }
+
+        const _: () = {
+            ::core::assert!(::core::mem::size_of::<#ident>() > 0);
+            ::core::assert!(
+                ::core::mem::size_of::<#ident>() <= ::core::primitive::u32::MAX as ::core::primitive::usize
+            );
+            #(#offset_assertions)*
+            ::core::assert!(
+                ::core::mem::size_of::<#ident>()
+                    == 0 #( + ::core::mem::size_of::<#types>() )*,
+                #padding_message
+            );
+            ::core::assert!(::core::mem::align_of::<#ident>() == 4, #alignment_message);
+            ::core::assert!(
+                <#ident as ::gust::GpuPod>::LAYOUT.is_storage_v1(),
+                #storage_message
+            );
+        };
     })
 }
 
@@ -781,6 +888,49 @@ mod tests {
         crate::diagnostics::testing::assert_code(
             &gpu_pod_impl(&item).unwrap_err(),
             Code::PodStructNamedFields,
+        );
+    }
+
+    #[test]
+    fn a_structs_asserts_share_one_const_after_its_impl_in_a_fixed_order() {
+        let item: syn::ItemStruct = syn::parse_quote! { struct Holder { a: uint, w: Wide8 } };
+        let text = gpu_pod_impl(&item).unwrap().to_string();
+        // One block: one cause is one E0080.
+        assert_eq!(text.matches("const _").count(), 1, "{text}");
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("no `{needle}` in {text}"))
+        };
+        let order = [
+            ":: gust :: GpuPod for Holder",
+            "const _",
+            "field `a` of `Holder` is not at its padding-free offset",
+            "field `w` of `Holder` is not at its padding-free offset",
+            "`Holder` has tail padding",
+            "`Holder` must have alignment 4",
+            "`Holder` layout is not StorageV1",
+        ];
+        let positions: Vec<usize> = order.iter().map(|needle| at(needle)).collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "{positions:?} for {order:?} in {text}"
+        );
+        // The unnamed size-sum assert carries a message too, so no bare `assertion failed` can reach a user.
+        assert!(
+            text.contains("== 0 + :: core :: mem :: size_of :: < uint > () + :: core :: mem :: size_of :: < Wide8 > () , \"GUST StorageV1: `Holder` has tail padding"),
+            "{text}"
+        );
+        assert!(!text.contains("u32 :: MAX as usize ) ;"), "{text}");
+    }
+
+    #[test]
+    fn element_text_keeps_the_spaces_that_mean_something() {
+        let text = |ty: syn::Type| type_text(&ty);
+        assert_eq!(text(syn::parse_quote!(super::Outside)), "super::Outside");
+        assert_eq!(text(syn::parse_quote!(Vec<Vec<u32>>)), "Vec<Vec<u32>>");
+        assert_eq!(
+            text(syn::parse_quote!(Box<dyn core::fmt::Debug>)),
+            "Box<dyn core::fmt::Debug>"
         );
     }
 

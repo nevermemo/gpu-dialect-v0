@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). The primary span of a const-evaluation error is the `#[gust::gpu]`
+# attribute: the macro emits the assertions with its call-site span and a const panic carries no span
+# of its own, so the message is what names the field or the parameter.
+code: E0080
+file: layout-outside-field/src/main.rs
+line: 17
+message: evaluation panicked: GUST StorageV1: field `w` of `Holder` is not at its padding-free offset
