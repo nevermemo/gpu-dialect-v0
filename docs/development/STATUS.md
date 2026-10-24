@@ -9,8 +9,9 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fable and
 Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
-adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (owner to
-confirm); spike S1 passed (decision A); m3.a1 next.
+adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
+confirmed it in D39: edge-case differences are documented limitations, not to be matched);
+spike S1 passed (decision A); m3.a1 next.
 
 - M3 spike S1 (pre-registered, decision A): a minimal `gust::cpu` (module-level
   `#![forbid(unsafe_code)]`, the erased-binding downcast confined to `gust::cpu::read`
