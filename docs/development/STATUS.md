@@ -11,8 +11,19 @@ below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fa
 Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
-spike S1 passed (decision A); m3.a1 (ledger) done; m3.a2 next.
+spike S1 passed (decision A); m3.a1 (ledger) and m3.a2 (contract text) done; m3.b next.
 
+- M3 m3.a2 (`cc88b1a`, docs only): `docs/SEMANTICS.md` is the executable-semantics
+  contract. It states the scope, the labels (spec-allowed, measured, proven; nothing is
+  proven yet), the defined domain with D22's narrowing (D38, D39), WGSL float rules quoted by
+  section (15.7.2 to 15.7.6), a per-operation bound table with input domains, reassociation
+  as a limitation, and the tolerance method. Worked polynomial bound: 46u, asserted at 48u in
+  m3.c. Also covered: memory preconditions (a sequential twin hides races), the atomics rule
+  (the weak compare-exchange may fail spuriously, so the atomics test is narrower than the
+  spec; m3.d revisits it), and the ledger as limitations. The review corrected the plan's
+  float bounds (correctly rounded allows either neighbour; 2.5 ULP is up to 5u). No test
+  exercises float rounding yet, and none covers `f32 as u32` in range. Evidence: docs-check,
+  lint, ledger test green.
 - M3 m3.a1 (`96ec90b`): known-mismatch ledger. `tests/fixtures/mismatch.rs` (13 kernels,
   blessed golden) and `crates/gust-wgpu/tests/mismatch.rs` pin, per row, the GPU outcome and
   the plain-Rust outcome; the Rust column follows the run-time `overflow-checks` mode (debug
