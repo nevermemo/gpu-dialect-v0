@@ -9,6 +9,14 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.f1: vector-add, atomic-counter, polynomial and signal-pipeline dispatch through the
+  generated typed calls (`<kernel>::dispatch`, `BufferDispatch::from(&call)` batches,
+  `Independent(&buffer)`); host references, tolerances and export code are unchanged, and
+  the release runs of polynomial and signal-pipeline pass on the RTX 5090. The one-shot
+  "GPU end-to-end" figure in polynomial and signal-pipeline now waits twice (dispatch, then
+  readback) instead of once; no before/after number was measured. Release workgroup counts
+  are pinned by unit tests against a copied 65 535 (a shared constant follows in the M2
+  close-out) (`ef52d86`).
 - M2 m2.g: a hand-written `KernelDescriptor` whose Slang uses an undeclared identifier
   fails in slangc with the error on its marked Rust line, through `slang::compile`, both
   reflect paths and the native reflection helper (`#line`, not the table lookup); with an
