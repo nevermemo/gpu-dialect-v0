@@ -1,18 +1,18 @@
-//! First explicit staged execution graph (T07).
+//! Staged execution graph (T07) on typed calls.
 //!
 //! One CPU settings update is uploaded, GPU stage A scales and shifts a resident
 //! sample buffer into a resident intermediate, GPU stage B reduces every block of
 //! `BLOCK` intermediates into one summary, and only the small summary buffer is
-//! read back. Dependencies are declared by the host and checked by the runtime;
-//! nothing is inferred from the kernels.
+//! read back. The graph derives the dependencies from the buffers each typed node
+//! touches (`write`, `run`, `read`); the runtime still checks the whole graph. The
+//! rejection tests keep the explicit, declared-edge API where they test it.
 
 use std::{path::PathBuf, time::Instant};
 
-use gust::{KernelDescriptor, gpu};
-use gust_wgpu::{
-    BufferBinding, BufferDispatch, GpuBufferAccess, GraphReport, HeadlessDevice, StagedGraph,
-    render_wgpu_source,
-};
+use gust::{Independent, KernelDescriptor, gpu};
+#[cfg(test)]
+use gust_wgpu::{BufferBinding, BufferDispatch};
+use gust_wgpu::{GpuBufferAccess, GraphReport, HeadlessDevice, StagedGraph, render_wgpu_source};
 
 /// Intermediates reduced into one summary element.
 pub const BLOCK: u32 = 8;
@@ -209,47 +209,64 @@ impl ResidentState {
     }
 }
 
+/// Per node of a graph, the indices of the nodes it depends on.
+pub type Edges = Vec<Vec<usize>>;
+
 /// Build and run the four-node graph for one settings update.
+#[cfg(test)]
 pub fn run_graph(
     device: &HeadlessDevice,
     state: &ResidentState,
     settings: &[Settings; 1],
 ) -> Result<(Vec<Summary>, GraphReport), gust_wgpu::Error> {
+    let (summaries, report, _edges) = run_graph_traced(device, state, settings)?;
+    Ok((summaries, report))
+}
+
+/// [`run_graph`] plus the dependency edges the graph derived, per node (node indices, ascending).
+///
+/// The typed calls are locals built before the graph, which borrows them. Nothing is declared by the
+/// host: `write`, `run` and `read` derive each node's edges from the buffers it touches and the access
+/// the kernel declares (`Independent` only lifts the shared-length rule, not the access).
+pub fn run_graph_traced(
+    device: &HeadlessDevice,
+    state: &ResidentState,
+    settings: &[Settings; 1],
+) -> Result<(Vec<Summary>, GraphReport, Edges), gust_wgpu::Error> {
     let sample_count = state.samples.len() as u32;
     let summary_count = state.summaries.len() as u32;
-    let transform_bindings = [
-        BufferBinding::read_only(&state.samples),
-        BufferBinding::read_only(&state.settings).independent_length(),
-        BufferBinding::read_write(&state.intermediate),
-    ];
-    let summarize_bindings = [
-        BufferBinding::read_only(&state.intermediate).independent_length(),
-        BufferBinding::read_only(&state.settings).independent_length(),
-        BufferBinding::read_write(&state.summaries),
-    ];
+    // `settings` has one element and `intermediate` one per sample, not one per summary: `Independent`
+    // is the call-site opt-in for a length that differs from the element count.
+    let transform = staged::transform::call(
+        sample_count,
+        &state.samples,
+        Independent(&state.settings),
+        &state.intermediate,
+    );
+    let summarize = staged::summarize::call(
+        summary_count,
+        Independent(&state.intermediate),
+        Independent(&state.settings),
+        &state.summaries,
+    );
 
     let mut graph = StagedGraph::new();
-    let upload = graph.upload(&state.settings, settings, &[]);
-    let stage_a = graph.dispatch(
-        BufferDispatch::new(
-            &staged::transform::DESCRIPTOR,
-            sample_count,
-            &transform_bindings,
-        ),
-        &[upload],
-    );
-    let stage_b = graph.dispatch(
-        BufferDispatch::new(
-            &staged::summarize::DESCRIPTOR,
-            summary_count,
-            &summarize_bindings,
-        ),
-        &[stage_a],
-    );
-    let readback = graph.readback(&state.summaries, &[stage_b]);
+    let upload = graph.write(&state.settings, settings);
+    let stage_a = graph.run(&transform);
+    let stage_b = graph.run(&summarize);
+    let readback = graph.read(&state.summaries);
+    let edges = [upload, stage_a, stage_b, readback]
+        .map(|node| {
+            graph
+                .dependencies(node)
+                .iter()
+                .map(|id| id.index())
+                .collect()
+        })
+        .to_vec();
 
     let output = device.execute_graph(&graph)?;
-    Ok((output.readback::<Summary>(readback)?, output.report))
+    Ok((output.readback::<Summary>(readback)?, output.report, edges))
 }
 
 pub fn descriptors() -> [&'static KernelDescriptor; 2] {
@@ -340,11 +357,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ];
     let mut last_report = None;
+    let mut last_edges = Vec::new();
     for settings in updates {
         let cpu_started = Instant::now();
         let expected = run_cpu(&samples, &settings);
         let cpu_elapsed = cpu_started.elapsed();
-        let (actual, report) = run_graph(&device, &state, &[settings])?;
+        let (actual, report, edges) = run_graph_traced(&device, &state, &[settings])?;
+        last_edges = edges;
         assert_close(&actual, &expected);
         println!(
             "settings {settings:?}: CPU reference {cpu_elapsed:?}, graph {:?}, upload {} B, readback {} B, resident {} B",
@@ -359,7 +378,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         summary_count(count)
     );
     println!("adapter: {}", device.adapter_info().name);
-    println!("nodes per execution: upload -> transform -> summarize -> readback");
+    println!("nodes per execution: write -> transform -> summarize -> read");
+    println!("derived dependencies per node (declared: none): {last_edges:?}");
     println!("pipeline cache: {:?}", device.pipeline_cache_stats());
     println!("last report: {:?}", last_report.expect("two updates ran"));
     println!("generated artifacts: {}", artifacts.display());
@@ -427,8 +447,13 @@ mod tests {
                 },
             ] {
                 let expected = run_cpu(&samples, &settings);
-                let (actual, report) = run_graph(&device, &state, &[settings]).unwrap();
+                let (actual, report, edges) =
+                    run_graph_traced(&device, &state, &[settings]).unwrap();
                 assert_close(&actual, &expected);
+                // Derived from the buffers: transform reads the settings the write replaces; summarize
+                // reads the settings and the intermediate transform wrote; the read follows summarize.
+                assert_eq!(edges, [vec![], vec![0], vec![0, 1], vec![2]]);
+                assert_eq!((report.derived_edges, report.declared_edges), (4, 0));
                 assert_eq!(report.upload_bytes, size_of::<Settings>() as u64);
                 assert_eq!(
                     report.readback_bytes,
@@ -540,6 +565,48 @@ mod tests {
             output.readback::<Summary>(stage_b),
             Err(Error::GraphUnknownReadback(2))
         ));
+
+        // The derived graph over the same buffers needs no declared edge and gets exactly the edges the
+        // two rejected graphs above lacked (typed calls are locals the graph borrows).
+        let transform_call = staged::transform::call(
+            64,
+            &state.samples,
+            Independent(&state.settings),
+            &state.intermediate,
+        );
+        let summarize_call = staged::summarize::call(
+            8,
+            Independent(&state.intermediate),
+            Independent(&state.settings),
+            &state.summaries,
+        );
+        let mut derived = StagedGraph::new();
+        let write = derived.write(&state.settings, &settings);
+        let stage_a = derived.run(&transform_call);
+        let stage_b = derived.run(&summarize_call);
+        let read = derived.read(&state.summaries);
+        let edges = |node| {
+            derived
+                .dependencies(node)
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            [edges(write), edges(stage_a), edges(stage_b), edges(read)],
+            [vec![], vec![0], vec![0, 1], vec![2]]
+        );
+        assert!(
+            [write, stage_a, stage_b, read]
+                .into_iter()
+                .all(|node| derived.is_derived(node))
+        );
+        let output = device.execute_graph(&derived).unwrap();
+        assert_eq!(
+            (output.report.derived_edges, output.report.declared_edges),
+            (4, 0)
+        );
+        assert_eq!(output.readback::<Summary>(read).unwrap().len(), 8);
 
         // A node id from another graph is not an earlier node of this one.
         let mut other = StagedGraph::new();

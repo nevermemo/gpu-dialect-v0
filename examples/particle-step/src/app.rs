@@ -1,9 +1,11 @@
 use std::{path::PathBuf, time::Instant};
 
 use gust::{GpuPod, gpu};
-use gust_wgpu::{
-    BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice, render_wgpu_source,
-};
+use gust_wgpu::{BufferDispatch, GpuBufferAccess, HeadlessDevice, render_wgpu_source};
+
+/// Particles per demo run: 16 384 workgroups of 64 invocations, within the 65 535 workgroups per
+/// dimension of the default limits.
+const PARTICLE_COUNT: usize = 1 << 20;
 
 #[gpu]
 mod particles {
@@ -166,7 +168,7 @@ fn assert_matches(
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let count = 1_048_576;
+    let count = PARTICLE_COUNT;
     let (input, acceleration) = data(count);
     let device = HeadlessDevice::new()?;
     let cpu_started = Instant::now();
@@ -180,24 +182,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpu_snapshot = device.create_typed_buffer("snapshot", &input, GpuBufferAccess::ReadWrite);
     let gpu_energy =
         device.create_f32_buffer("energy", &vec![0.0; count], GpuBufferAccess::ReadWrite);
-    let step_bindings = [
-        BufferBinding::read_only(&gpu_input),
-        BufferBinding::read_only(&gpu_acceleration),
-        BufferBinding::read_write(&gpu_output),
-        BufferBinding::read_write(&gpu_energy),
-    ];
-    let snapshot_bindings = [
-        BufferBinding::read_only(&gpu_output),
-        BufferBinding::read_write(&gpu_snapshot),
-    ];
-    let batch = [
-        BufferDispatch::new(&particles::step::DESCRIPTOR, count as u32, &step_bindings),
-        BufferDispatch::new(
-            &particles::snapshot::DESCRIPTOR,
-            count as u32,
-            &snapshot_bindings,
-        ),
-    ];
+    // Typed calls are locals; the batch entries borrow them. `snapshot` reads what `step` wrote, so the
+    // batch order carries the dependency.
+    let step = particles::step::call(
+        count as u32,
+        &gpu_input,
+        &gpu_acceleration,
+        &gpu_output,
+        &gpu_energy,
+    );
+    let snapshot = particles::snapshot::call(count as u32, &gpu_output, &gpu_snapshot);
+    let batch = [BufferDispatch::from(&step), BufferDispatch::from(&snapshot)];
     device.dispatch_batch(&batch)?; // Warm the compiled-kernel cache and complete initial uploads.
     let timing = device.dispatch_batch_timed(&batch)?;
     let actual = device.read_typed_buffer(&gpu_snapshot)?;
@@ -269,6 +264,27 @@ mod tests {
         })
     }
 
+    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
+    /// (gust-wgpu requests the default limits).
+    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
+
+    #[test]
+    fn demo_size_stays_within_the_default_workgroup_limit() {
+        for descriptor in [
+            &particles::step::DESCRIPTOR,
+            &particles::snapshot::DESCRIPTOR,
+        ] {
+            let groups = u32::try_from(PARTICLE_COUNT)
+                .unwrap()
+                .div_ceil(descriptor.workgroup_size[0]);
+            assert!(
+                groups <= MAX_WORKGROUPS_PER_DIMENSION,
+                "{}: {PARTICLE_COUNT} particles need {groups} workgroups",
+                descriptor.entry_point
+            );
+        }
+    }
+
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn nested_layout_matches_executable_artifacts() {
@@ -294,17 +310,11 @@ mod tests {
     #[ignore = "example validation runs only in full verification"]
     fn scalar_read_after_write() {
         let device = device();
-        let result = device
-            .dispatch_f32(
-                &particles::scalar_order::DESCRIPTOR,
-                1,
-                &[
-                    gust_wgpu::F32Binding::ReadWrite(&[0.0]),
-                    gust_wgpu::F32Binding::ReadWrite(&[0.0]),
-                ],
-            )
-            .unwrap();
-        assert_eq!(result.writable_buffers, vec![vec![3.0], vec![3.0]]);
+        let out = device.create_f32_buffer("out", &[0.0], GpuBufferAccess::ReadWrite);
+        let echo = device.create_f32_buffer("echo", &[0.0], GpuBufferAccess::ReadWrite);
+        particles::scalar_order::dispatch(&device, 1, &out, &echo).unwrap();
+        assert_eq!(device.read_f32_buffer(&out).unwrap(), vec![3.0]);
+        assert_eq!(device.read_f32_buffer(&echo).unwrap(), vec![3.0]);
     }
 
     #[test]
@@ -314,17 +324,7 @@ mod tests {
         let out = device.create_typed_buffer("particle", &data(1).0, GpuBufferAccess::ReadWrite);
         let input = device.create_typed_buffer("input", &data(1).0, GpuBufferAccess::ReadOnly);
         let echo = device.create_f32_buffer("echo", &[0.0], GpuBufferAccess::ReadWrite);
-        device
-            .dispatch_buffers(
-                &particles::field_order::DESCRIPTOR,
-                1,
-                &[
-                    BufferBinding::read_only(&input),
-                    BufferBinding::read_write(&out),
-                    BufferBinding::read_write(&echo),
-                ],
-            )
-            .unwrap();
+        particles::field_order::dispatch(&device, 1, &input, &out, &echo).unwrap();
         assert_eq!(device.read_typed_buffer(&out).unwrap()[0].velocity.y, 3.0);
         assert_eq!(device.read_f32_buffer(&echo).unwrap(), vec![3.0]);
     }
@@ -356,23 +356,11 @@ mod tests {
                 device.create_typed_buffer("snapshot", &input, GpuBufferAccess::ReadWrite);
             let energy =
                 device.create_f32_buffer("energy", &vec![0.0; count], GpuBufferAccess::ReadWrite);
-            let step_bindings = [
-                BufferBinding::read_only(&source),
-                BufferBinding::read_only(&force),
-                BufferBinding::read_write(&out),
-                BufferBinding::read_write(&energy),
-            ];
-            let snapshot_bindings = [
-                BufferBinding::read_only(&out),
-                BufferBinding::read_write(&snapshot),
-            ];
+            let step = particles::step::call(count as u32, &source, &force, &out, &energy);
+            let snapshot_call = particles::snapshot::call(count as u32, &out, &snapshot);
             let batch = [
-                BufferDispatch::new(&particles::step::DESCRIPTOR, count as u32, &step_bindings),
-                BufferDispatch::new(
-                    &particles::snapshot::DESCRIPTOR,
-                    count as u32,
-                    &snapshot_bindings,
-                ),
+                BufferDispatch::from(&step),
+                BufferDispatch::from(&snapshot_call),
             ];
             gust::Device::submit(&device, &batch)
                 .unwrap()
