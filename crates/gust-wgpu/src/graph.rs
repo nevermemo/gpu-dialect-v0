@@ -1,9 +1,12 @@
-//! Explicit staged execution graph: upload, dispatch, and readback nodes with
-//! host-declared dependencies, executed as one ordered submission.
+//! Staged execution graph: upload, dispatch, and readback nodes with explicit or
+//! derived dependencies, executed as one ordered submission.
 //!
-//! This is the first bounded proof from `docs/EXECUTION_GRAPH.md`. Nothing is
-//! inferred: the host declares every edge, and execution rejects a graph whose
-//! declared edges do not cover the buffer hazards its nodes actually create.
+//! This is the first bounded proof from `docs/EXECUTION_GRAPH.md`. The explicit
+//! methods (`upload`, `dispatch`, `dispatch_indirect`, `readback`) take edges the
+//! host declares; the typed methods (`write`, `run`, `run_indirect`, `read`)
+//! derive them from the buffers and access modes the node touches. Either way
+//! execution rejects a graph whose edges do not cover the buffer hazards its nodes
+//! actually create, and runs nodes in insertion order.
 //! Uploads are encoded as buffer copies so they stay ordered relative to the
 //! dispatches around them; `Queue::write_buffer` would run before the whole
 //! submission.
@@ -13,12 +16,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gust::{Access, GpuPod, TypeLayout, pod_slice_as_bytes};
+use gust::{Access, Call, GpuPod, Kernel, TypeLayout, pod_slice_as_bytes};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{
     BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, HeadlessDevice,
-    pod_vec_from_bytes,
+    error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, same_buffer,
 };
 
 /// Handle to one node of a [`StagedGraph`], in insertion order.
@@ -47,6 +50,7 @@ pub struct TransferRecord {
 
 /// What an execution moved across the host boundary and what stayed resident.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct GraphReport {
     pub transfers: Vec<TransferRecord>,
     pub upload_bytes: u64,
@@ -57,6 +61,10 @@ pub struct GraphReport {
     /// never learned that count, so they are excluded from `workgroups`.
     pub indirect_dispatches: usize,
     pub workgroups: u64,
+    /// Dependency edges the graph derived for typed nodes (`write`, `run`, `run_indirect`, `read`).
+    pub derived_edges: usize,
+    /// Distinct dependency edges the host declared on explicit nodes.
+    pub declared_edges: usize,
     /// Bytes of buffers touched by dispatches but by no transfer in this execution.
     pub resident_bytes: u64,
     pub host_elapsed: Duration,
@@ -83,9 +91,37 @@ enum NodeKind<'a> {
 struct Node<'a> {
     kind: NodeKind<'a>,
     dependencies: Vec<NodeId>,
+    /// The graph computed `dependencies` from the buffers the node touches.
+    derived: bool,
 }
 
-/// An ordered set of explicit execution nodes over resident typed buffers.
+fn upload_kind<'a, T: GpuPod>(buffer: &'a GpuBuffer<T>, values: &'a [T]) -> NodeKind<'a> {
+    NodeKind::Upload {
+        target: BufferBinding::new(buffer, Access::ReadWrite),
+        bytes: pod_slice_as_bytes(values),
+        element_count: values.len(),
+    }
+}
+
+fn indirect_kind<'a, T: GpuPod>(
+    dispatch: BufferDispatch<'a>,
+    args: &'a GpuBuffer<T>,
+) -> NodeKind<'a> {
+    NodeKind::DispatchIndirect {
+        dispatch,
+        args: BufferBinding::new(args, Access::ReadOnly),
+    }
+}
+
+fn readback_kind<'a, T: GpuPod>(buffer: &'a GpuBuffer<T>) -> NodeKind<'a> {
+    NodeKind::Readback {
+        source: BufferBinding::new(buffer, Access::ReadOnly),
+        layout: T::LAYOUT,
+    }
+}
+
+/// An ordered set of execution nodes over resident typed buffers. Explicit nodes carry declared
+/// edges; typed nodes carry edges the graph derives.
 #[derive(Default)]
 pub struct StagedGraph<'a> {
     nodes: Vec<Node<'a>>,
@@ -111,14 +147,7 @@ impl<'a> StagedGraph<'a> {
         values: &'a [T],
         dependencies: &[NodeId],
     ) -> NodeId {
-        self.push(
-            NodeKind::Upload {
-                target: BufferBinding::new(buffer, Access::ReadWrite),
-                bytes: pod_slice_as_bytes(values),
-                element_count: values.len(),
-            },
-            dependencies,
-        )
+        self.push(upload_kind(buffer, values), dependencies)
     }
 
     /// Run one kernel over resident buffers.
@@ -139,13 +168,7 @@ impl<'a> StagedGraph<'a> {
         args: &'a GpuBuffer<T>,
         dependencies: &[NodeId],
     ) -> NodeId {
-        self.push(
-            NodeKind::DispatchIndirect {
-                dispatch,
-                args: BufferBinding::new(args, Access::ReadOnly),
-            },
-            dependencies,
-        )
+        self.push(indirect_kind(dispatch, args), dependencies)
     }
 
     /// Copy a resident read-write buffer back to host memory after execution.
@@ -154,26 +177,123 @@ impl<'a> StagedGraph<'a> {
         buffer: &'a GpuBuffer<T>,
         dependencies: &[NodeId],
     ) -> NodeId {
-        self.push(
-            NodeKind::Readback {
-                source: BufferBinding::new(buffer, Access::ReadOnly),
-                layout: T::LAYOUT,
-            },
-            dependencies,
-        )
+        self.push(readback_kind(buffer), dependencies)
+    }
+
+    /// Typed twin of [`upload`](Self::upload): the edges are derived, not declared.
+    pub fn write<T: GpuPod>(&mut self, buffer: &'a GpuBuffer<T>, values: &'a [T]) -> NodeId {
+        self.push_derived(upload_kind(buffer, values))
+    }
+
+    /// Typed twin of [`dispatch`](Self::dispatch): run a typed [`Call`], with derived edges. The call
+    /// must outlive the graph, which records its bindings.
+    pub fn run<'r: 'a, K: Kernel, const N: usize>(
+        &mut self,
+        call: &'a Call<'r, HeadlessDevice, K, N>,
+    ) -> NodeId {
+        self.push_derived(NodeKind::Dispatch(BufferDispatch::from(call)))
+    }
+
+    /// Typed twin of [`dispatch_indirect`](Self::dispatch_indirect): workgroup counts come from `args` on
+    /// the GPU and the call's element count is ignored. Every argument of the call must be bound
+    /// `Independent`; `args` is read, never written, by the dispatch.
+    ///
+    /// The runtime cannot bound the count: wgpu silently zeroes a dispatch that exceeds the per-dimension
+    /// workgroup limit, so the kernel that writes `args` must clamp. wgpu checks the limits of the real
+    /// device, so a limit lowered with `HeadlessDevice::with_limits` never applies to indirect counts.
+    pub fn run_indirect<'r: 'a, K: Kernel, const N: usize, A: GpuPod>(
+        &mut self,
+        call: &'a Call<'r, HeadlessDevice, K, N>,
+        args: &'a GpuBuffer<A>,
+    ) -> NodeId {
+        self.push_derived(indirect_kind(BufferDispatch::from(call), args))
+    }
+
+    /// Typed twin of [`readback`](Self::readback), with derived edges.
+    pub fn read<T: GpuPod>(&mut self, buffer: &'a GpuBuffer<T>) -> NodeId {
+        self.push_derived(readback_kind(buffer))
+    }
+
+    /// The edges of `node`: declared for explicit nodes, derived for typed ones. Ascending for
+    /// derived nodes; in declaration order for explicit ones.
+    ///
+    /// # Panics
+    /// If `node` is not a node of this graph.
+    pub fn dependencies(&self, node: NodeId) -> &[NodeId] {
+        &self.nodes[node.0].dependencies
+    }
+
+    /// Whether the graph derived the edges of `node` (a typed method built it).
+    ///
+    /// # Panics
+    /// If `node` is not a node of this graph.
+    pub fn is_derived(&self, node: NodeId) -> bool {
+        self.nodes[node.0].derived
     }
 
     fn push(&mut self, kind: NodeKind<'a>, dependencies: &[NodeId]) -> NodeId {
         self.nodes.push(Node {
             kind,
             dependencies: dependencies.to_vec(),
+            derived: false,
         });
         NodeId(self.nodes.len() - 1)
     }
 
+    fn push_derived(&mut self, kind: NodeKind<'a>) -> NodeId {
+        let dependencies = self.derive_dependencies(&kind);
+        self.nodes.push(Node {
+            kind,
+            dependencies,
+            derived: true,
+        });
+        NodeId(self.nodes.len() - 1)
+    }
+
+    /// The conservative edge set of a node about to be appended (not a transitive reduction): for
+    /// every buffer it touches, the latest earlier writer; and, for a buffer it writes, every earlier
+    /// node that touched the buffer since that writer (the readers). Sorted and deduplicated.
+    ///
+    /// Every earlier conflicting access is then a direct or transitive dependency, because the latest
+    /// writer already depends on everything before it that touches the buffer. `validate` still runs
+    /// on the whole graph, so an explicit node with a missing edge is reported, never repaired.
+    fn derive_dependencies(&self, kind: &NodeKind<'a>) -> Vec<NodeId> {
+        let mut dependencies = Vec::new();
+        for (buffer, access) in Self::kind_accesses(kind) {
+            let latest_writer = self.nodes.iter().rposition(|node| {
+                Self::accesses(node)
+                    .into_iter()
+                    .any(|(other, other_access)| {
+                        same_buffer(other, buffer) && other_access == Access::ReadWrite
+                    })
+            });
+            if let Some(writer) = latest_writer {
+                dependencies.push(NodeId(writer));
+            }
+            if access == Access::ReadWrite {
+                let first_reader = latest_writer.map_or(0, |writer| writer + 1);
+                for (index, node) in self.nodes.iter().enumerate().skip(first_reader) {
+                    if Self::accesses(node)
+                        .into_iter()
+                        .any(|(other, _)| same_buffer(other, buffer))
+                    {
+                        dependencies.push(NodeId(index));
+                    }
+                }
+            }
+        }
+        dependencies.sort_by_key(|dependency| dependency.0);
+        dependencies.dedup();
+        dependencies
+    }
+
     /// Buffers a node touches, with the access the hazard check must assume.
     fn accesses(node: &Node<'a>) -> Vec<(&'a wgpu::Buffer, Access)> {
-        match &node.kind {
+        Self::kind_accesses(&node.kind)
+    }
+
+    fn kind_accesses(kind: &NodeKind<'a>) -> Vec<(&'a wgpu::Buffer, Access)> {
+        match kind {
             NodeKind::Upload { target, .. } => vec![(target.raw, Access::ReadWrite)],
             NodeKind::Dispatch(dispatch) => dispatch
                 .bindings
@@ -190,8 +310,11 @@ impl<'a> StagedGraph<'a> {
         }
     }
 
-    /// Check declared edges before any GPU object is created.
-    fn validate(&self, device_id: u64) -> Result<(), Error> {
+    /// Check every node and every edge before any GPU object is created: bindings, launch limits and
+    /// aliasing of each node, then the hazards between nodes. Nothing is compiled or cached when this
+    /// fails, however late in the graph the offending node is.
+    fn validate(&self, device: &HeadlessDevice) -> Result<(), Error> {
+        let device_id = device.id;
         let mut ancestors: Vec<Vec<bool>> = Vec::with_capacity(self.nodes.len());
         for (index, node) in self.nodes.iter().enumerate() {
             let mut reachable = vec![false; index];
@@ -225,11 +348,17 @@ impl<'a> StagedGraph<'a> {
                     }
                 }
                 NodeKind::Dispatch(dispatch) => {
-                    crate::validate_persistent_dispatch(
+                    let resources = crate::validate_persistent_dispatch(
                         device_id,
                         dispatch.kernel,
                         dispatch.element_count,
                         dispatch.bindings,
+                    )?;
+                    device.check_launch(
+                        dispatch.kernel,
+                        dispatch.element_count,
+                        &resources,
+                        dispatch.bindings.iter().map(|binding| binding.raw.size()),
                     )?;
                 }
                 NodeKind::DispatchIndirect { dispatch, args } => {
@@ -256,6 +385,27 @@ impl<'a> StagedGraph<'a> {
                             });
                         }
                     }
+                    // The GPU reads `args` as indirect arguments while the dispatch runs; wgpu rejects a
+                    // usage scope that also writes it (an uncaptured-error panic, measured in m2.e).
+                    // Read-only storage use of the same buffer is compatible and stays accepted.
+                    for (parameter, binding) in resources.iter().zip(dispatch.bindings) {
+                        if binding.access == Access::ReadWrite && same_buffer(binding.raw, args.raw)
+                        {
+                            return Err(Error::AliasedBinding {
+                                kernel: dispatch.kernel.qualified_name().to_string(),
+                                first: parameter.name.to_owned(),
+                                second: INDIRECT_ARGUMENTS.to_owned(),
+                            });
+                        }
+                    }
+                    // The count is a placeholder, as in execution: only the kernel shape, the binding
+                    // indices and the binding sizes can be checked on the host (D16).
+                    device.check_launch(
+                        dispatch.kernel,
+                        1,
+                        &resources,
+                        dispatch.bindings.iter().map(|binding| binding.raw.size()),
+                    )?;
                 }
                 NodeKind::Readback { source, .. } => {
                     if source.device_id != device_id {
@@ -274,7 +424,7 @@ impl<'a> StagedGraph<'a> {
                         Self::accesses(previous)
                             .into_iter()
                             .any(|(other, other_access)| {
-                                other == buffer
+                                same_buffer(other, buffer)
                                     && (access == Access::ReadWrite
                                         || other_access == Access::ReadWrite)
                             });
@@ -289,6 +439,21 @@ impl<'a> StagedGraph<'a> {
             ancestors.push(reachable);
         }
         Ok(())
+    }
+
+    /// Dependency edges recorded on derived (`true`) or explicit (`false`) nodes.
+    /// Duplicate declarations of one edge count once.
+    fn edge_count(&self, derived: bool) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| node.derived == derived)
+            .map(|node| {
+                let mut unique: Vec<usize> = node.dependencies.iter().map(|id| id.0).collect();
+                unique.sort_unstable();
+                unique.dedup();
+                unique.len()
+            })
+            .sum()
     }
 
     fn resident_bytes(&self) -> u64 {
@@ -357,12 +522,12 @@ impl HeadlessDevice {
     /// Validate, encode, and run a graph, waiting for its readbacks.
     ///
     /// Nodes execute in insertion order inside one command buffer, so a node's
-    /// declared dependencies are a contract that is checked, not a scheduling
-    /// hint. Intermediate buffers that no node uploads or reads back never leave
+    /// dependencies, declared or derived, are a contract that is checked, not a
+    /// scheduling hint. Intermediate buffers that no node uploads or reads back never leave
     /// the GPU; the report counts their bytes as resident.
     pub fn execute_graph(&self, graph: &StagedGraph<'_>) -> Result<GraphOutput, Error> {
         let started = Instant::now();
-        graph.validate(self.id)?;
+        graph.validate(self)?;
 
         let mut encoder = self
             .device
@@ -513,6 +678,8 @@ impl HeadlessDevice {
                 dispatches,
                 indirect_dispatches,
                 workgroups,
+                derived_edges: graph.edge_count(true),
+                declared_edges: graph.edge_count(false),
                 resident_bytes: graph.resident_bytes(),
                 host_elapsed: started.elapsed(),
             },

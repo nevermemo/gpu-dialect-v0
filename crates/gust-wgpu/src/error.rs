@@ -4,6 +4,10 @@ use gust::{Access, ParameterKind, ResourceLayout};
 
 use crate::GpuBufferAccess;
 
+/// Label `Error::AliasedBinding` carries as `second` when the buffer is the arguments buffer of an
+/// indirect dispatch in a staged graph. It stands where a parameter name would.
+pub(crate) const INDIRECT_ARGUMENTS: &str = "<indirect dispatch arguments>";
+
 #[derive(Debug)]
 pub enum Error {
     NoAdapter(String),
@@ -45,6 +49,11 @@ pub enum Error {
     /// read-write. Reported before any wgpu object is created or anything is written. Binding the
     /// same buffer twice is accepted only when both bindings are read-only. `first` precedes
     /// `second` in declaration order. Remedy: bind the buffer once, or use separate buffers.
+    ///
+    /// In a staged graph, an indirect dispatch node whose arguments buffer is also bound read-write
+    /// reports that parameter as `first` and the label `<indirect dispatch arguments>` as `second`
+    /// (wgpu does not allow the GPU to read a buffer as indirect arguments while the same dispatch
+    /// writes it). Binding the arguments buffer read-only is accepted.
     AliasedBinding {
         kernel: String,
         first: String,
@@ -181,6 +190,14 @@ impl fmt::Display for Error {
                     "persistent buffer belongs to a different GPU device"
                 )
             }
+            Self::AliasedBinding {
+                kernel,
+                first,
+                second,
+            } if second == INDIRECT_ARGUMENTS => write!(
+                formatter,
+                "the dispatch-arguments buffer of kernel `{kernel}` is also bound read-write by parameter `{first}`, which wgpu does not allow while the GPU reads it as indirect arguments (bind `{first}` read-only, or use a separate arguments buffer)",
+            ),
             Self::AliasedBinding {
                 kernel,
                 first,
