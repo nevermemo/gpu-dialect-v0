@@ -1,8 +1,12 @@
-# Substrings of the `cargo check` output (backslashes read as slashes), all in one diagnostic.
-# Only the wording of
-# `#[diagnostic::on_unimplemented]` on `GpuPod` and the user's file and line are compared,
-# not the whole rustc output, which changes between toolchains.
-error[E0277]
-`Outside` is not a GUST GPU POD type
-declare a plain struct inside the same `#[gpu]` module so that the macro implements `GpuPod` for it
-gpupod-missing/src/main.rs:13:
+# Keys matched against the one error of `cargo check --message-format json` (xtask/src/ui.rs):
+# `code` is `code.code`, `file` and `line` are a primary span's `file_name` (with slashes, relative
+# to tests/ui) and `line_start`, `message` is a substring of `message` or of a child message
+# (where `on_unimplemented`'s `note` lands), and `label` is a substring of the label of that
+# primary span (where its `label` lands). Only this wording and the user's file and line are
+# compared, not the whole rustc output, which changes between toolchains.
+code: E0277
+file: gpupod-missing/src/main.rs
+line: 13
+message: `Outside` is not a GUST GPU POD type
+message: an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`
+label: declare a plain struct inside the same `#[gpu]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it
