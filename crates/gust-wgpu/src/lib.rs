@@ -378,8 +378,7 @@ impl gust::Device for HeadlessDevice {
 
 /// Whether two handles are the same wgpu buffer. `wgpu::Buffer` equality compares the underlying
 /// allocation, not the address of the handle, so a cloned handle is the same buffer. Buffer identity
-/// in the typed-call alias rule is this comparison. `graph.rs` compares with `==` directly (same semantics); moving
-/// it onto this helper is m2.e work.
+/// in the typed-call alias rule and in the staged graph (hazard check and edge derivation) is this comparison.
 pub(crate) fn same_buffer(first: &wgpu::Buffer, second: &wgpu::Buffer) -> bool {
     first == second
 }
