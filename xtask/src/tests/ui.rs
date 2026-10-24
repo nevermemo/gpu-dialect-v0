@@ -767,6 +767,194 @@ fn the_repository_fixtures_are_a_workspace_of_their_own_and_every_crate_is_liste
         ))
     );
     assert_eq!(find("gpupod-present").expectation, Expectation::Compiles);
+    // The two const layout fixtures: one E0080 reported at the `#[gust::gpu]` line (line 17), pinned by message.
+    assert_eq!(
+        find("layout-outside-field").expectation,
+        fails(expected(
+            "E0080",
+            "layout-outside-field/src/main.rs",
+            17,
+            &[
+                "evaluation panicked: GUST StorageV1: field `w` of `Holder` is not at its padding-free offset"
+            ],
+            &[],
+        ))
+    );
+    assert_eq!(
+        find("layout-outside-element").expectation,
+        fails(expected(
+            "E0080",
+            "layout-outside-element/src/main.rs",
+            17,
+            &[
+                "evaluation panicked: GUST StorageV1: element `super::Short` layout does not match its Rust representation (parameter `out` of kernel `run`)"
+            ],
+            &[],
+        ))
+    );
     // Each fixture crate has a lockfile through the shared one at the fixture root.
     assert!(ui.join("Cargo.lock").is_file());
+}
+
+/// The `compiler-message` line of `cargo check --message-format json -p layout-outside-field`
+/// (probe/d2-fixture.log), trimmed from a real run on Windows. A `const` panic that a macro generated
+/// is reported at core's `panic.rs`, not in the user's file: the primary span is there and the user's
+/// `#[gust::gpu]` line is only the call site of its expansion chain. Cut: `package_id`,
+/// `manifest_path`, `explanation`, `def_site_span`s, byte offsets, columns and `text`. Changed: the
+/// machine path of `panic.rs` is replaced by the `/rustc/<hash>` form that rustc prints with
+/// remapped paths. Kept: `file_name` of the call sites is relative to the fixture workspace with
+/// backslashes, the label is on the primary span, the chain has two call sites (`panic_2021!`, then
+/// `assert!`) and the message names the field.
+const CONST_PANIC_LINE: &str = r#"{"reason":"compiler-message","target":{"kind":["bin"],"crate_types":["bin"],"name":"layout-outside-field"},"message":{"rendered":"error[E0080]: evaluation panicked: GUST StorageV1: field `w` of `Holder` is not at its padding-free offset\n --> layout-outside-field/src/main.rs:17:1\n","$message_type":"diagnostic","children":[],"code":{"code":"E0080","explanation":null},"level":"error","message":"evaluation panicked: GUST StorageV1: field `w` of `Holder` is not at its padding-free offset","spans":[{"file_name":"/rustc/0000000000000000000000000000000000000000/library/core/src/panic.rs","is_primary":true,"label":"evaluation of `layouts::_` failed here","line_start":62,"line_end":62,"expansion":{"span":{"file_name":"layout-outside-field\\src\\main.rs","is_primary":false,"label":null,"line_start":17,"line_end":17,"expansion":{"span":{"file_name":"layout-outside-field\\src\\main.rs","is_primary":false,"label":null,"line_start":17,"line_end":17,"expansion":null},"macro_decl_name":"::core::assert!"}},"macro_decl_name":"$crate::panic::panic_2021!"}}]}}"#;
+
+const CORE_PANIC: &str =
+    "/rustc/0000000000000000000000000000000000000000/library/core/src/panic.rs";
+
+fn const_panic_expected() -> Expected {
+    expected(
+        "E0080",
+        "layout-outside-field/src/main.rs",
+        17,
+        &["field `w` of `Holder` is not at its padding-free offset"],
+        &["evaluation of `layouts::_` failed here"],
+    )
+}
+
+fn run_const_panic(wanted: &Expected, line: &str) -> Vec<String> {
+    judge(
+        "layout-outside-field",
+        &fails(wanted.clone()),
+        false,
+        &cargo_stdout(&[line]),
+        "",
+    )
+}
+
+/// A synthetic error of the case `a`: one primary span at `(file, line)` with the call sites `sites`
+/// (innermost first) as its expansion chain.
+fn expansion_line(primary: (&str, u32), sites: &[(&str, u32)]) -> String {
+    let mut chain = "null".to_owned();
+    for (file, line) in sites.iter().rev() {
+        chain = format!(
+            r#"{{"span":{{"file_name":"{file}","is_primary":false,"label":null,"line_start":{line},"line_end":{line},"expansion":{chain}}},"macro_decl_name":"m!"}}"#
+        );
+    }
+    format!(
+        r#"{{"reason":"compiler-message","target":{{"kind":["bin"],"name":"a"}},"message":{{"rendered":"error: x\n","children":[],"code":{{"code":"E0080","explanation":null}},"level":"error","message":"x","spans":[{{"file_name":"{}","is_primary":true,"label":"here","line_start":{},"line_end":{},"expansion":{chain}}}]}}}}"#,
+        primary.0, primary.1, primary.1
+    )
+}
+
+#[test]
+fn a_primary_span_in_core_is_reported_at_the_expansion_call_site_in_the_case() {
+    let diagnostics = parse_diagnostics(CONST_PANIC_LINE);
+    let span = &diagnostics[0].spans[0];
+    assert_eq!(span.file, CORE_PANIC);
+    assert_eq!(span.line, Some(62));
+    let sites: Vec<(&str, Option<u64>)> = span
+        .call_sites
+        .iter()
+        .map(|site| (site.file.as_str(), site.line))
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("layout-outside-field/src/main.rs", Some(17)),
+            ("layout-outside-field/src/main.rs", Some(17))
+        ]
+    );
+    // `file`, `line` and the message hold; the label is still read from the primary span itself.
+    let wanted = const_panic_expected();
+    assert_eq!(
+        run_const_panic(&wanted, CONST_PANIC_LINE),
+        Vec::<String>::new()
+    );
+    // A wrong line is named, and the error is described where it is reported (no machine path).
+    let mut wrong = wanted.clone();
+    wrong.line = 62;
+    let problems = run_const_panic(&wrong, CONST_PANIC_LINE);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].contains("`line: 62`"), "{problems:?}");
+    assert!(
+        problems[0].contains("at layout-outside-field/src/main.rs:17)"),
+        "{problems:?}"
+    );
+    // The file of core's panic.rs is not the case's: it never satisfies `file`.
+    let mut core = wanted.clone();
+    core.file = CORE_PANIC.to_owned();
+    assert!(
+        run_const_panic(&core, CONST_PANIC_LINE)[0].contains("`file: "),
+        "an absolute path in expected.txt must not match"
+    );
+    // A label that is on no primary span is still a gap.
+    let mut label = wanted;
+    label.labels = vec!["not the label".to_owned()];
+    assert!(run_const_panic(&label, CONST_PANIC_LINE)[0].contains("`label: not the label`"));
+}
+
+#[test]
+fn a_chain_that_never_reaches_the_case_does_not_satisfy_file() {
+    let outside = CONST_PANIC_LINE.replace(
+        r"layout-outside-field\\src\\main.rs",
+        "/rustc/0000000000000000000000000000000000000000/library/core/src/macros/mod.rs",
+    );
+    assert_ne!(outside, CONST_PANIC_LINE);
+    let problems = run_const_panic(&const_panic_expected(), &outside);
+    assert!(
+        problems[0].contains("`file: layout-outside-field/src/main.rs`"),
+        "{problems:?}"
+    );
+    // Another case's file in the chain is not this case's file either.
+    let other = CONST_PANIC_LINE.replace(
+        r"layout-outside-field\\src\\main.rs",
+        r"other-case\\src\\main.rs",
+    );
+    let problems = run_const_panic(&const_panic_expected(), &other);
+    assert!(
+        problems[0].contains("`file: layout-outside-field/src/main.rs`"),
+        "{problems:?}"
+    );
+    // No expansion at all: the primary span is all there is.
+    let line = expansion_line((CORE_PANIC, 62), &[]);
+    let wanted = expected("E0080", "a/src/main.rs", 17, &[], &[]);
+    let problems = run_a(&wanted, &[line]);
+    assert!(
+        problems[0].contains("`file: a/src/main.rs`"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_primary_span_in_the_case_wins_over_its_expansion_chain() {
+    let line = expansion_line(("a/src/main.rs", 10), &[("a/src/main.rs", 99)]);
+    // Reported where it is: line 10, not the call site's 99.
+    let at_ten = expected("E0080", "a/src/main.rs", 10, &[], &["here"]);
+    assert_eq!(
+        run_a(&at_ten, std::slice::from_ref(&line)),
+        Vec::<String>::new()
+    );
+    let at_call_site = expected("E0080", "a/src/main.rs", 99, &[], &[]);
+    let problems = run_a(&at_call_site, std::slice::from_ref(&line));
+    assert!(problems[0].contains("`line: 99`"), "{problems:?}");
+}
+
+#[test]
+fn the_outermost_call_site_in_the_case_is_the_one_reported() {
+    // Innermost first: line 5, then 7 in the case, with a call site in core between and one after.
+    let line = expansion_line(
+        (CORE_PANIC, 62),
+        &[
+            ("a/src/main.rs", 5),
+            (CORE_PANIC, 1),
+            ("a/src/main.rs", 7),
+            (CORE_PANIC, 2),
+        ],
+    );
+    let seven = expected("E0080", "a/src/main.rs", 7, &[], &["here"]);
+    assert_eq!(
+        run_a(&seven, std::slice::from_ref(&line)),
+        Vec::<String>::new()
+    );
+    let five = expected("E0080", "a/src/main.rs", 5, &[], &[]);
+    assert!(run_a(&five, &[line])[0].contains("`line: 5`"));
 }

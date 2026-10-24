@@ -1945,9 +1945,14 @@ fn the_storage_parameter_count_is_asserted_in_a_non_generic_const() {
             _ => None,
         })
         .collect();
-    // `add` has one invocation parameter and three storage parameters.
-    let [constant] = constants.as_slice() else {
-        panic!("expected one `const _` in the module: {constants:?}");
+    // `add` has one invocation parameter and three storage parameters. The module also holds one element
+    // layout `const _` per storage parameter (m2.d2); those are not this assertion.
+    let counts: Vec<&String> = constants
+        .iter()
+        .filter(|constant| constant.contains("storage_parameter_count"))
+        .collect();
+    let [constant] = counts.as_slice() else {
+        panic!("expected one count assertion in the module: {constants:?}");
     };
     assert!(
         constant.contains(
@@ -2076,5 +2081,238 @@ fn the_handle_and_its_calls_document_the_rules_users_hit() {
     assert!(
         uniform.contains("has a uniform parameter, so it has no typed"),
         "{uniform}"
+    );
+}
+
+// ---- const layout assertions (roadmap M2, slice m2.d2) ----
+
+/// Two structs with a nested one and a three-field one, so the earlier-field sums have 0, 1 and 2 terms.
+const LAYOUT_MODULE: &str = "mod layout { \
+    pub struct Pair { pub first: uint, pub second: uint } \
+    pub struct Wide { pub pair: Pair, pub extra: float } \
+    pub struct Trio { pub a: uint, pub b: float, pub c: int } \
+    #[kernel] \
+    pub fn run(id: SV_DispatchThreadID, input: StructuredBuffer<Pair>, mut out: RWStructuredBuffer<Wide>) { \
+        let i = id.x; \
+        if i < out.len() {} \
+    } \
+}";
+
+/// Occurrences of `needle` in `haystack`.
+fn count(haystack: &str, needle: &str) -> usize {
+    haystack.matches(needle).count()
+}
+
+#[test]
+fn every_struct_field_is_asserted_at_its_padding_free_offset() {
+    let text = expansion(LAYOUT_MODULE).to_string();
+    // Exact token shape: the offset equals the sum of the sizes of the fields before it.
+    assert!(text.contains("offset_of ! (Pair , first) == 0 ,"), "{text}");
+    assert!(
+        text.contains(
+            "offset_of ! (Pair , second) == 0 + :: core :: mem :: size_of :: < uint > () ,"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "offset_of ! (Wide , extra) == 0 + :: core :: mem :: size_of :: < Pair > () ,"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("offset_of ! (Trio , c) == 0 + :: core :: mem :: size_of :: < uint > () + :: core :: mem :: size_of :: < float > () ,"),
+        "{text}"
+    );
+    // One assert per field (2 + 2 + 3), each naming its field and struct.
+    assert_eq!(
+        count(&text, "is not at its padding-free offset"),
+        7,
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "\"GUST StorageV1: field `second` of `Pair` is not at its padding-free offset\""
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"GUST StorageV1: field `c` of `Trio` is not at its padding-free offset\""),
+        "{text}"
+    );
+}
+
+#[test]
+fn every_struct_is_asserted_to_have_alignment_four_and_a_storage_v1_layout() {
+    let text = expansion(LAYOUT_MODULE).to_string();
+    for name in ["Pair", "Wide", "Trio"] {
+        assert!(
+            text.contains(&format!(
+                ":: core :: mem :: align_of :: < {name} > () == 4 , \"GUST StorageV1: `{name}` must have alignment 4\""
+            )),
+            "{name}: {text}"
+        );
+        let storage = format!(
+            "< {name} as :: gust :: GpuPod > :: LAYOUT . is_storage_v1 () , \"GUST StorageV1: `{name}` layout is not StorageV1\""
+        );
+        assert_eq!(count(&text, &storage), 1, "{name}: {text}");
+        // The `is_storage_v1` const reads the `LAYOUT` of the impl, so it follows the impl.
+        let implementation = text
+            .find(&format!(":: gust :: GpuPod for {name} "))
+            .unwrap_or_else(|| panic!("no GpuPod impl for {name}: {text}"));
+        assert!(
+            text.find(&storage).unwrap() > implementation,
+            "{name}: {text}"
+        );
+    }
+    assert_eq!(count(&text, "must have alignment 4"), 3, "{text}");
+    assert_eq!(count(&text, "layout is not StorageV1"), 3, "{text}");
+}
+
+#[test]
+fn every_storage_parameter_element_is_asserted_against_its_rust_representation() {
+    // `add`: three storage parameters of `float`, one assert each (not one per distinct element).
+    let text = expansion(VECTOR_ADD).to_string();
+    assert_eq!(
+        count(&text, "layout does not match its Rust representation"),
+        3,
+        "{text}"
+    );
+    // Each reads the recorded layout of its own descriptor entry (`id` is entry 0, so 1, 2 and 3).
+    for index in 1..=3 {
+        let shape = format!(
+            "< add as :: gust :: Kernel > :: DESCRIPTOR . parameters [{index}] . resource_layout {{ \
+             :: core :: option :: Option :: Some (__gust_layout) => {{ \
+             __gust_layout . element . size as usize == :: core :: mem :: size_of :: < float > () \
+             && __gust_layout . element . alignment as usize == :: core :: mem :: align_of :: < float > () \
+             && __gust_layout . element_stride as usize == :: core :: mem :: size_of :: < float > () \
+             && __gust_layout . element . is_storage_v1 () }} \
+             :: core :: option :: Option :: None => false , }} ,"
+        );
+        assert_eq!(count(&text, &shape), 1, "{index}: {text}");
+    }
+    // The assertion does not name `GpuPod` again: an element that is no `GpuPod` must report one E0277 only.
+    assert!(
+        !text.contains("GpuPod > :: LAYOUT . size as usize"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"GUST StorageV1: element `float` layout does not match its Rust representation (parameter `out` of kernel `add`)\""),
+        "{text}"
+    );
+
+    // Elements keep the path the user wrote, and the two parameters of `run` are told apart.
+    let text = expansion(LAYOUT_MODULE).to_string();
+    assert!(
+        text.contains("parameters [1] . resource_layout { :: core :: option :: Option :: Some (__gust_layout) => { __gust_layout . element . size as usize == :: core :: mem :: size_of :: < Pair > ()"),
+        "{text}"
+    );
+    assert!(
+        text.contains("parameters [2] . resource_layout { :: core :: option :: Option :: Some (__gust_layout) => { __gust_layout . element . size as usize == :: core :: mem :: size_of :: < Wide > ()"),
+        "{text}"
+    );
+    assert_eq!(
+        count(&text, "layout does not match its Rust representation"),
+        2,
+        "{text}"
+    );
+    let outside = expansion(
+        "mod pool { #[kernel] pub fn step(id: SV_DispatchThreadID, \
+         mut out: RWStructuredBuffer<super::Outside>) { let i = id.x; if i < out.len() {} } }",
+    )
+    .to_string();
+    assert!(
+        outside.contains("__gust_layout . element . size as usize == :: core :: mem :: size_of :: < super :: Outside > ()"),
+        "{outside}"
+    );
+    assert!(
+        outside.contains("element `super::Outside` layout"),
+        "{outside}"
+    );
+}
+
+#[test]
+fn the_element_asserts_are_non_generic_consts_and_kernels_without_storage_have_none() {
+    let output = expansion(VECTOR_ADD);
+    let module: syn::ItemMod = crate::diagnostics::parse2(Code::ItemNotModule, output).unwrap();
+    let elements = module
+        .content
+        .unwrap()
+        .1
+        .into_iter()
+        .filter(|item| match item {
+            syn::Item::Const(item) if item.ident == "_" => {
+                assert!(item.generics.params.is_empty());
+                quote::ToTokens::to_token_stream(item)
+                    .to_string()
+                    .contains("Rust representation")
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(elements, 3);
+
+    let none = expansion(
+        "mod empty { #[kernel] pub fn nothing(id: SV_DispatchThreadID) { let i = id.x; if i < 1u32 {} } }",
+    )
+    .to_string();
+    assert!(!none.contains("Rust representation"), "{none}");
+    assert!(!none.contains("is_storage_v1"), "{none}");
+}
+
+#[test]
+fn a_kernel_with_a_uniform_parameter_still_asserts_its_storage_elements() {
+    let text = expansion(
+        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
+         mut out: RWStructuredBuffer<int>) { let i = id.x; if i < out.len() {} } }",
+    )
+    .to_string();
+    assert_eq!(
+        count(&text, "layout does not match its Rust representation"),
+        1,
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "< run as :: gust :: Kernel > :: DESCRIPTOR . parameters [2] . resource_layout"
+        ),
+        "{text}"
+    );
+    // The uniform parameter is not a storage element.
+    assert!(!text.contains("size_of :: < float > ()"), "{text}");
+}
+
+#[test]
+fn an_element_message_with_braces_stays_a_valid_format_string() {
+    // `assert!` formats its message; a brace in the element text must be escaped, not interpreted. Such a type
+    // fails later (it is no `GpuPod`), but the assertion itself must still parse.
+    let text = expansion(
+        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, \
+         mut out: RWStructuredBuffer<super::Weird<{ 4 }>>) { let i = id.x; if i < out.len() {} } }",
+    )
+    .to_string();
+    assert!(
+        text.contains("element `super::Weird<{{ 4 }}>` layout"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_element_assert_covers_everything_the_runtime_checks() {
+    // Size, alignment, stride and the whole StorageV1 verdict (an honest element of alignment 8 and size 8 passes the
+    // first two and fails the last).
+    let text = expansion(VECTOR_ADD).to_string();
+    assert_eq!(
+        count(
+            &text,
+            "__gust_layout . element_stride as usize == :: core :: mem :: size_of :: < float > ()"
+        ),
+        3,
+        "{text}"
+    );
+    assert_eq!(
+        count(&text, "__gust_layout . element . is_storage_v1 ()"),
+        3,
+        "{text}"
     );
 }
