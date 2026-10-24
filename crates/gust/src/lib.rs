@@ -47,6 +47,30 @@
 //! }
 //! ```
 //!
+//! # Layout checks run at compile time
+//!
+//! `TypeLayout::is_storage_v1` is a `const fn`, so a layout can be asserted while compiling. A padded layout fails
+//! the build (the field `b` sits at offset 8, not at 4):
+//! ```compile_fail
+//! use gust::{ScalarKind, StructFieldLayout, TypeLayout};
+//!
+//! const FIELDS: &[StructFieldLayout] = &[
+//!     StructFieldLayout { name: "a", offset: 0, ty: TypeLayout::scalar("u32", ScalarKind::U32) },
+//!     StructFieldLayout { name: "b", offset: 8, ty: TypeLayout::scalar("u32", ScalarKind::U32) },
+//! ];
+//! const _: () = assert!(TypeLayout::structure("P", 12, 4, FIELDS).is_storage_v1());
+//! ```
+//! The same assertion on the padding-free layout compiles (the control for the case above):
+//! ```
+//! use gust::{ScalarKind, StructFieldLayout, TypeLayout};
+//!
+//! const FIELDS: &[StructFieldLayout] = &[
+//!     StructFieldLayout { name: "a", offset: 0, ty: TypeLayout::scalar("u32", ScalarKind::U32) },
+//!     StructFieldLayout { name: "b", offset: 4, ty: TypeLayout::scalar("u32", ScalarKind::U32) },
+//! ];
+//! const _: () = assert!(TypeLayout::structure("P", 8, 4, FIELDS).is_storage_v1());
+//! ```
+//!
 //! # Supported source
 //!
 //! Named struct construction is lowered field-aware: Slang has no field-name
@@ -66,6 +90,7 @@
 
 mod abi;
 mod descriptor;
+mod dispatch;
 mod job;
 pub mod reflect;
 mod runtime;
@@ -80,6 +105,7 @@ pub use descriptor::{
     Access, Kernel, KernelDescriptor, LineSpan, ModuleDescriptor, ParameterDescriptor,
     ParameterKind, ResourceBinding, SourceOrigin,
 };
+pub use dispatch::{Arg, Call, Independent, LengthRule, Resource, Run, TypedDevice};
 pub use gust_macros::gpu;
 pub use job::{Device, Job, JobStatus};
 pub use reflect::{

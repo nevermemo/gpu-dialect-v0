@@ -1,0 +1,1534 @@
+//! Backend-neutral typed dispatch surface (roadmap M2, slice m2.a).
+//!
+//! A `#[gpu]` kernel handle (a [`Kernel`]) gets, in a later slice, a generated `call` function that turns typed
+//! buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
+//! storage parameter. This module holds only what that generated code and the backends share:
+//!
+//! - [`TypedDevice`]: extension of [`Device`] that names the erased, `Copy` binding of one device. [`Device`] itself is
+//!   unchanged, so existing backends compile as before.
+//! - [`Run<K, N>`]: the executable hook. A device runs kernel `K` (with `N` storage parameters) when it implements
+//!   `Run<K, N>`. A GPU backend implements it once for every `K` (a blanket impl); a CPU backend implements it per
+//!   kernel, next to the body it executes. `K: Kernel` exposes only a descriptor, so generic code cannot reach a body
+//!   through `K` itself.
+//! - [`Resource`]: a typed buffer of one device. Through a *generated* `call`, its `Element` and `Device` associated
+//!   types make a buffer of the wrong element type, or of another device *type*, a compile error. `Call::new` and
+//!   `Resource::bind` are public, so hand-built calls are not covered by that check; see the contract below.
+//! - [`Arg`], [`Independent`], [`LengthRule`]: one argument of a call and the call-site opt-in (D15) that lets a
+//!   buffer's length differ from the element count.
+//! - [`Call`]: a plain, reusable value: what the generated `call` returns, what [`Run::submit_call`] consumes and what
+//!   the staged graph (m2.e) records. Its descriptor is taken from `K` and its parameter count from `N`; it cannot be
+//!   built from a free-form descriptor.
+//!
+//! # Contract for every backend
+//!
+//! - **The backend checks every binding against `call.kernel()` at submit**, and does not trust the binding or the
+//!   generated code: the binding's access equals the descriptor's access for that parameter, its element layout equals
+//!   the parameter's layout, it belongs to this device *instance* (two devices of one type share a `Binding` type), and
+//!   its length obeys the rule below, measured at submit and not when the call was built. A hand-built `Call` can have
+//!   the right count and still the wrong order, access, element or device.
+//! - One buffer bound twice in one call is accepted when both bindings are [`Access::ReadOnly`]; when either side is
+//!   [`Access::ReadWrite`] the backend rejects the call at run time with an error that names both parameters, before
+//!   it writes anything (S0 decision A; `gust-wgpu` implements this in m2.c).
+//! - `LengthRule::Shared` bindings must hold exactly `element_count` elements; `LengthRule::Independent` ones only
+//!   need to be non-empty when `element_count` is non-zero (the rules of the existing runtime checks).
+//!
+//! # What the tests in this file are
+//!
+//! The `tests` module holds two mock devices written only to exercise this surface. The recording mock mirrors a GPU
+//! backend: one blanket `Run` impl, it records the call and never runs a kernel body (D21/D22). The CPU-shaped mock
+//! proves the surface is executable in safe Rust (the module forbids `unsafe`; `RefCell` borrows only) by running
+//! *hand-written test bodies* through the same `Call`, and it implements the backend contract above; it is test-only,
+//! defines no CPU execution contract for `#[gpu]` shadow bodies and is not a backend. The M3 CPU backend is a
+//! separate design (it will need a backend-neutral way to read a binding's identity and access, which this module
+//! deliberately does not add yet).
+
+use core::fmt;
+use core::marker::PhantomData;
+
+use crate::{Access, Device, GpuPod, Kernel, KernelDescriptor, ParameterKind};
+
+/// Extension of [`Device`] for typed calls (implemented by `gust-wgpu` in m2.c).
+///
+/// [`Device`] is not modified: the binding type lives here so a backend that has no typed surface yet keeps compiling.
+pub trait TypedDevice: Device {
+    /// Erased, backend-specific, `Copy` view of one bound resource for one dispatch.
+    type Binding<'r>: Copy;
+}
+
+/// A device that can run kernel `K`, which has `N` storage parameters.
+///
+/// GPU backends implement this for every `K`; a CPU backend implements it per kernel, next to the body it executes
+/// (M3). Generated `submit` and `dispatch` functions require `R0::Device: Run<Self, N>`, so a kernel without an
+/// executable form on a device fails to compile for that device.
+///
+/// The returned job is tied to the device (`'d`), not to the borrowed buffers (`'r`), as for [`Device::submit`]: a CPU
+/// backend must finish the work inside `submit_call` (or hold owned handles), because the buffers may be released
+/// when the call returns. Backends check every binding against `call.kernel()` (see the module documentation).
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot run the kernel `{K}`",
+    label = "this device has no executable form of the kernel; GPU devices run every kernel, CPU twins only those emitted for them"
+)]
+pub trait Run<K: Kernel, const N: usize>: TypedDevice {
+    /// Start the call and return a job to wait on.
+    fn submit_call<'d>(&'d self, call: &Call<'_, Self, K, N>)
+    -> Result<Self::Job<'d>, Self::Error>;
+
+    /// Start the call and wait for it to finish.
+    fn dispatch_call(&self, call: &Call<'_, Self, K, N>) -> Result<(), Self::Error> {
+        use crate::Job as _;
+        self.submit_call(call)?.wait()
+    }
+}
+
+/// How a binding's length relates to the call's element count (D15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LengthRule {
+    /// The buffer must hold exactly `element_count` elements.
+    Shared,
+    /// The buffer's length is independent of the element count (a settings buffer, a counter).
+    Independent,
+}
+
+/// A typed buffer of one backend.
+///
+/// In a *generated* call function, `Element` and `Device` are constrained, so the element type and the device type
+/// of every argument are checked at compile time. That is all the type system knows: two devices of one type
+/// are the same `Device` here, and access is not part of the buffer type (the call binds it). `Call::new` and
+/// [`Resource::bind`] are public, so a hand-built call is unchecked; the backend checks access, layout, device
+/// instance and length against the kernel descriptor at submit.
+///
+/// The buffer's length must not change through `&self`: [`Resource::bind`] may record it when the call is built and a
+/// [`Call`] can be submitted later and repeatedly. A resource whose length can change through `&self` (interior
+/// mutability) must let the backend measure it again at submit. GPU buffers grow only through `&mut`.
+///
+/// A buffer of the wrong element type does not compile:
+///
+/// ```compile_fail
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev<const ID: u8>;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl<const ID: u8> Device for Dev<ID> {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl<const ID: u8> TypedDevice for Dev<ID> { type Binding<'r> = (); }
+/// # struct Buf<const ID: u8, T>(PhantomData<T>);
+/// # impl<const ID: u8, T: GpuPod> Resource for Buf<ID, T> {
+/// #     type Element = T;
+/// #     type Device = Dev<ID>;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #     };
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32> + 'r,
+/// #     R1: Resource<Element = f32, Device = R0::Device> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// let a = Buf::<1, u32>(PhantomData);
+/// let b = Buf::<1, f32>(PhantomData);
+/// let _ = call(1, &a, &b);
+/// ```
+///
+/// A buffer of another device type does not compile:
+///
+/// ```compile_fail
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev<const ID: u8>;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl<const ID: u8> Device for Dev<ID> {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl<const ID: u8> TypedDevice for Dev<ID> { type Binding<'r> = (); }
+/// # struct Buf<const ID: u8, T>(PhantomData<T>);
+/// # impl<const ID: u8, T: GpuPod> Resource for Buf<ID, T> {
+/// #     type Element = T;
+/// #     type Device = Dev<ID>;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #     };
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32> + 'r,
+/// #     R1: Resource<Element = f32, Device = R0::Device> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// let a = Buf::<1, f32>(PhantomData);
+/// let b = Buf::<2, f32>(PhantomData);
+/// let _ = call(1, &a, &b);
+/// ```
+///
+/// The control for both cases differs from each in exactly one place (the element type, respectively the device):
+///
+/// ```
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev<const ID: u8>;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl<const ID: u8> Device for Dev<ID> {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl<const ID: u8> TypedDevice for Dev<ID> { type Binding<'r> = (); }
+/// # struct Buf<const ID: u8, T>(PhantomData<T>);
+/// # impl<const ID: u8, T: GpuPod> Resource for Buf<ID, T> {
+/// #     type Element = T;
+/// #     type Device = Dev<ID>;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #     };
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32> + 'r,
+/// #     R1: Resource<Element = f32, Device = R0::Device> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// let a = Buf::<1, f32>(PhantomData);
+/// let b = Buf::<1, f32>(PhantomData);
+/// let built = call(1, &a, &b);
+/// assert_eq!(built.element_count(), 1);
+/// assert_eq!(built.kernel().name, "probe");
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a GUST buffer of a typed device",
+    label = "typed calls take the buffer type of a GUST backend; wrap or allocate the data through that backend"
+)]
+pub trait Resource {
+    /// The element type the kernel parameter must have. `GpuPod` gives backends the element layout to check.
+    type Element: GpuPod;
+    /// The device type this buffer belongs to; every argument of one generated call must name the same device type.
+    type Device: TypedDevice;
+
+    /// The erased binding of this buffer for one dispatch.
+    fn bind<'r>(
+        &'r self,
+        access: Access,
+        length: LengthRule,
+    ) -> <Self::Device as TypedDevice>::Binding<'r>;
+}
+
+/// One argument of a typed call: a borrowed resource plus its length rule.
+#[derive(Debug)]
+pub struct Arg<'r, R: Resource> {
+    /// The borrowed buffer.
+    pub resource: &'r R,
+    /// How its length relates to the element count.
+    pub length: LengthRule,
+}
+
+impl<'r, R: Resource> From<&'r R> for Arg<'r, R> {
+    fn from(resource: &'r R) -> Self {
+        Self {
+            resource,
+            length: LengthRule::Shared,
+        }
+    }
+}
+
+/// Call-site opt-in: this buffer's length may differ from the element count (D15).
+///
+/// `kernel::call(n, &a, Independent(&settings), &out)` marks only `settings`.
+#[derive(Debug)]
+pub struct Independent<T>(pub T);
+
+impl<'r, R: Resource> From<Independent<&'r R>> for Arg<'r, R> {
+    fn from(independent: Independent<&'r R>) -> Self {
+        Self {
+            resource: independent.0,
+            length: LengthRule::Independent,
+        }
+    }
+}
+
+impl<'r, R: Resource> Arg<'r, R> {
+    /// Bind the buffer with the access the kernel parameter declares.
+    #[must_use = "the binding is only useful as an element of a `Call`"]
+    pub fn bind(self, access: Access) -> <R::Device as TypedDevice>::Binding<'r> {
+        self.resource.bind(access, self.length)
+    }
+}
+
+/// The descriptor and parameter count a `Call<_, K, N>` carries, derived from `K` and `N` alone.
+struct Described<K, const N: usize>(PhantomData<fn() -> K>);
+
+impl<K: Kernel, const N: usize> Described<K, N> {
+    /// `&K::DESCRIPTOR` as a `'static` reference. A `const` item's borrow is extended to `'static`, so no generic
+    /// caller needs constant promotion of an associated constant (plan F12).
+    const DESCRIPTOR: &'static KernelDescriptor = &K::DESCRIPTOR;
+
+    /// Evaluated whenever `Call::new` is instantiated: the kernel's storage-parameter count must be `N`.
+    const STORAGE_PARAMETERS_MATCH: () = assert!(
+        storage_parameters(&K::DESCRIPTOR) == N,
+        "Call<_, K, N>: N must equal the number of storage parameters of K::DESCRIPTOR"
+    );
+}
+
+/// Number of `Storage` parameters of a descriptor (the ones a typed call binds).
+const fn storage_parameters(descriptor: &KernelDescriptor) -> usize {
+    let mut index = 0;
+    let mut count = 0;
+    while index < descriptor.parameters.len() {
+        if matches!(descriptor.parameters[index].kind, ParameterKind::Storage) {
+            count += 1;
+        }
+        index += 1;
+    }
+    count
+}
+
+/// A typed kernel call: the kernel, the element count and one binding per storage parameter.
+///
+/// It is a plain value (build once, submit as often as needed) and what the generated `call` returns, what
+/// [`Run::submit_call`] consumes and what the staged graph records. The descriptor is `K::DESCRIPTOR` and `N` is
+/// the kernel's storage-parameter count: [`Call::new`] takes neither as an argument.
+#[must_use = "a `Call` does nothing until a device runs it"]
+pub struct Call<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> {
+    kernel: &'static KernelDescriptor,
+    element_count: u32,
+    bindings: [D::Binding<'r>; N],
+    _kernel: PhantomData<fn() -> K>,
+}
+
+impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
+    /// Build the call of kernel `K`: `bindings` are its storage parameters in declaration order.
+    ///
+    /// The descriptor is `K::DESCRIPTOR`, so the public metadata cannot disagree with the kernel type, and `N` must
+    /// equal the number of `Storage` parameters of that descriptor. A mismatch is a compile error when the call is
+    /// instantiated (a failed constant assertion). That is after monomorphisation: `cargo check`, clippy and
+    /// rust-analyzer do not report it, and it never fires for a `call` nothing uses. This is therefore a backstop;
+    /// the macro will emit (slice m2.d1) a non-generic `const _: () = assert!(..)` per kernel. The count is the only
+    /// property of `bindings` that is checked here: order, access, element and device are the generated code's
+    /// and the backend's business.
+    ///
+    /// ```compile_fail
+    /// # use gust::*;
+    /// # use core::time::Duration;
+    /// # struct Dev;
+    /// # struct Done;
+    /// # impl Job for Done {
+    /// #     type Error = ();
+    /// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+    /// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+    /// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+    /// # }
+    /// # impl Device for Dev {
+    /// #     type Error = ();
+    /// #     type Dispatch<'r> = ();
+    /// #     type Job<'d> = Done where Self: 'd;
+    /// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+    /// # }
+    /// # impl TypedDevice for Dev { type Binding<'r> = (); }
+    /// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+    /// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+    /// # }
+    /// # struct Probe;
+    /// # impl Kernel for Probe {
+    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+    /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+    /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+    /// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+    /// #     };
+    /// # }
+    /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
+    /// #     Call::new(1, [(); N])
+    /// # }
+    /// // `Probe` has two storage parameters, the call claims three.
+    /// let _ = build::<3>();
+    /// ```
+    ///
+    /// The control differs in exactly one place (the count):
+    ///
+    /// ```
+    /// # use gust::*;
+    /// # use core::time::Duration;
+    /// # struct Dev;
+    /// # struct Done;
+    /// # impl Job for Done {
+    /// #     type Error = ();
+    /// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+    /// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+    /// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+    /// # }
+    /// # impl Device for Dev {
+    /// #     type Error = ();
+    /// #     type Dispatch<'r> = ();
+    /// #     type Job<'d> = Done where Self: 'd;
+    /// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+    /// # }
+    /// # impl TypedDevice for Dev { type Binding<'r> = (); }
+    /// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+    /// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+    /// # }
+    /// # struct Probe;
+    /// # impl Kernel for Probe {
+    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+    /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+    /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+    /// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+    /// #     };
+    /// # }
+    /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
+    /// #     Call::new(1, [(); N])
+    /// # }
+    /// let call = build::<2>();
+    /// assert_eq!(call.kernel().name, "probe");
+    /// ```
+    pub const fn new(element_count: u32, bindings: [D::Binding<'r>; N]) -> Self {
+        let () = Described::<K, N>::STORAGE_PARAMETERS_MATCH;
+        Self {
+            kernel: Described::<K, N>::DESCRIPTOR,
+            element_count,
+            bindings,
+            _kernel: PhantomData,
+        }
+    }
+
+    /// The descriptor of `K`.
+    pub const fn kernel(&self) -> &'static KernelDescriptor {
+        self.kernel
+    }
+
+    /// How many invocations the call covers (before rounding up to whole workgroups).
+    pub const fn element_count(&self) -> u32 {
+        self.element_count
+    }
+
+    /// One binding per storage parameter, in declaration order.
+    pub const fn bindings(&self) -> &[D::Binding<'r>; N] {
+        &self.bindings
+    }
+}
+
+impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> fmt::Debug for Call<'r, D, K, N>
+where
+    D::Binding<'r>: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Call")
+            .field("kernel", &self.kernel.name)
+            .field("element_count", &self.element_count)
+            .field("bindings", &self.bindings)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+#[forbid(unsafe_code)]
+mod tests {
+    use core::cell::RefCell;
+    use core::marker::PhantomData;
+    use core::time::Duration;
+    use std::any::Any;
+    use std::cell::{Ref, RefMut};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::{
+        Invocation, Job, JobStatus, ParameterDescriptor, ResourceBinding, ResourceLayout,
+        SourceOrigin, Storage, StorageMut, TypeLayout, UVec3,
+    };
+
+    // ---- hand-written kernels, in the exact form the macro will emit (m2.d1) ----
+
+    const fn invocation() -> ParameterDescriptor {
+        ParameterDescriptor {
+            name: "id",
+            rust_type: "SV_DispatchThreadID",
+            kind: ParameterKind::Invocation,
+            access: Access::NotApplicable,
+            resource_layout: None,
+            binding: None,
+        }
+    }
+
+    const fn storage(name: &'static str, access: Access, binding: u32) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "float",
+            kind: ParameterKind::Storage,
+            access,
+            resource_layout: Some(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT)),
+            binding: Some(ResourceBinding { group: 0, binding }),
+        }
+    }
+
+    const fn descriptor(
+        name: &'static str,
+        parameters: &'static [ParameterDescriptor],
+    ) -> KernelDescriptor {
+        KernelDescriptor {
+            module: "typed_tests",
+            name,
+            entry_point: name,
+            workgroup_size: [64, 1, 1],
+            parameters,
+            slang_source: "",
+            source: SourceOrigin::UNKNOWN,
+        }
+    }
+
+    /// `scale(id, a: RO, settings: RO, out: RW)`; the invocation parameter is not a binding.
+    struct Scale;
+    impl Kernel for Scale {
+        const DESCRIPTOR: KernelDescriptor = descriptor(
+            "scale",
+            &[
+                invocation(),
+                storage("a", Access::ReadOnly, 0),
+                storage("settings", Access::ReadOnly, 1),
+                storage("out", Access::ReadWrite, 2),
+            ],
+        );
+    }
+
+    /// `sum2(id, a: RO, b: RO, out: RW)`: the RO/RO alias case; same shape as `Scale` with another name.
+    struct Sum2;
+    impl Kernel for Sum2 {
+        const DESCRIPTOR: KernelDescriptor = descriptor(
+            "sum2",
+            &[
+                invocation(),
+                storage("a", Access::ReadOnly, 0),
+                storage("b", Access::ReadOnly, 1),
+                storage("out", Access::ReadWrite, 2),
+            ],
+        );
+    }
+
+    /// `swap2(id, x: RW, y: RW)`: the RW/RW alias case.
+    struct Swap2;
+    impl Kernel for Swap2 {
+        const DESCRIPTOR: KernelDescriptor = descriptor(
+            "swap2",
+            &[
+                invocation(),
+                storage("x", Access::ReadWrite, 0),
+                storage("y", Access::ReadWrite, 1),
+            ],
+        );
+    }
+
+    /// A kernel without storage parameters.
+    struct Nothing;
+    impl Kernel for Nothing {
+        const DESCRIPTOR: KernelDescriptor = descriptor("nothing", &[invocation()]);
+    }
+
+    impl Scale {
+        fn call<'r, R0, R1, R2>(
+            __gust_element_count: u32,
+            a: impl Into<Arg<'r, R0>>,
+            settings: impl Into<Arg<'r, R1>>,
+            out: impl Into<Arg<'r, R2>>,
+        ) -> Call<'r, R0::Device, Self, 3>
+        where
+            R0: Resource<Element = f32> + 'r,
+            R1: Resource<Element = f32, Device = R0::Device> + 'r,
+            R2: Resource<Element = f32, Device = R0::Device> + 'r,
+        {
+            Call::new(
+                __gust_element_count,
+                [
+                    a.into().bind(Access::ReadOnly),
+                    settings.into().bind(Access::ReadOnly),
+                    out.into().bind(Access::ReadWrite),
+                ],
+            )
+        }
+
+        fn submit<'d, 'r, R0, R1, R2>(
+            __gust_device: &'d R0::Device,
+            __gust_element_count: u32,
+            a: impl Into<Arg<'r, R0>>,
+            settings: impl Into<Arg<'r, R1>>,
+            out: impl Into<Arg<'r, R2>>,
+        ) -> Result<<R0::Device as Device>::Job<'d>, <R0::Device as Device>::Error>
+        where
+            R0: Resource<Element = f32> + 'r,
+            R1: Resource<Element = f32, Device = R0::Device> + 'r,
+            R2: Resource<Element = f32, Device = R0::Device> + 'r,
+            R0::Device: Run<Self, 3>,
+        {
+            __gust_device.submit_call(&Self::call(__gust_element_count, a, settings, out))
+        }
+
+        fn dispatch<'r, R0, R1, R2>(
+            __gust_device: &R0::Device,
+            __gust_element_count: u32,
+            a: impl Into<Arg<'r, R0>>,
+            settings: impl Into<Arg<'r, R1>>,
+            out: impl Into<Arg<'r, R2>>,
+        ) -> Result<(), <R0::Device as Device>::Error>
+        where
+            R0: Resource<Element = f32> + 'r,
+            R1: Resource<Element = f32, Device = R0::Device> + 'r,
+            R2: Resource<Element = f32, Device = R0::Device> + 'r,
+            R0::Device: Run<Self, 3>,
+        {
+            __gust_device.dispatch_call(&Self::call(__gust_element_count, a, settings, out))
+        }
+    }
+
+    impl Sum2 {
+        fn call<'r, R0, R1, R2>(
+            __gust_element_count: u32,
+            a: impl Into<Arg<'r, R0>>,
+            b: impl Into<Arg<'r, R1>>,
+            out: impl Into<Arg<'r, R2>>,
+        ) -> Call<'r, R0::Device, Self, 3>
+        where
+            R0: Resource<Element = f32> + 'r,
+            R1: Resource<Element = f32, Device = R0::Device> + 'r,
+            R2: Resource<Element = f32, Device = R0::Device> + 'r,
+        {
+            Call::new(
+                __gust_element_count,
+                [
+                    a.into().bind(Access::ReadOnly),
+                    b.into().bind(Access::ReadOnly),
+                    out.into().bind(Access::ReadWrite),
+                ],
+            )
+        }
+
+        fn dispatch<'r, R0, R1, R2>(
+            __gust_device: &R0::Device,
+            __gust_element_count: u32,
+            a: impl Into<Arg<'r, R0>>,
+            b: impl Into<Arg<'r, R1>>,
+            out: impl Into<Arg<'r, R2>>,
+        ) -> Result<(), <R0::Device as Device>::Error>
+        where
+            R0: Resource<Element = f32> + 'r,
+            R1: Resource<Element = f32, Device = R0::Device> + 'r,
+            R2: Resource<Element = f32, Device = R0::Device> + 'r,
+            R0::Device: Run<Self, 3>,
+        {
+            __gust_device.dispatch_call(&Self::call(__gust_element_count, a, b, out))
+        }
+    }
+
+    impl Swap2 {
+        fn call<'r, R0, R1>(
+            __gust_element_count: u32,
+            x: impl Into<Arg<'r, R0>>,
+            y: impl Into<Arg<'r, R1>>,
+        ) -> Call<'r, R0::Device, Self, 2>
+        where
+            R0: Resource<Element = f32> + 'r,
+            R1: Resource<Element = f32, Device = R0::Device> + 'r,
+        {
+            Call::new(
+                __gust_element_count,
+                [
+                    x.into().bind(Access::ReadWrite),
+                    y.into().bind(Access::ReadWrite),
+                ],
+            )
+        }
+
+        fn dispatch<'r, R0, R1>(
+            __gust_device: &R0::Device,
+            __gust_element_count: u32,
+            x: impl Into<Arg<'r, R0>>,
+            y: impl Into<Arg<'r, R1>>,
+        ) -> Result<(), <R0::Device as Device>::Error>
+        where
+            R0: Resource<Element = f32> + 'r,
+            R1: Resource<Element = f32, Device = R0::Device> + 'r,
+            R0::Device: Run<Self, 2>,
+        {
+            __gust_device.dispatch_call(&Self::call(__gust_element_count, x, y))
+        }
+    }
+
+    impl Nothing {
+        fn call<'r, D: TypedDevice>(__gust_element_count: u32) -> Call<'r, D, Self, 0> {
+            Call::new(__gust_element_count, [])
+        }
+    }
+
+    // Test bodies (not `#[gpu]` shadow bodies): the same shape and guards as GPU kernels.
+
+    fn scale_body(
+        id: Invocation,
+        a: Storage<'_, f32>,
+        settings: Storage<'_, f32>,
+        mut out: StorageMut<'_, f32>,
+    ) {
+        let x = id.global_id().x;
+        if x < out.len() {
+            out[x] = a[x] * settings[0];
+        }
+    }
+
+    fn sum2_body(
+        id: Invocation,
+        a: Storage<'_, f32>,
+        b: Storage<'_, f32>,
+        mut out: StorageMut<'_, f32>,
+    ) {
+        let x = id.global_id().x;
+        if x < out.len() {
+            out[x] = a[x] + b[x];
+        }
+    }
+
+    #[allow(clippy::manual_swap)] // a shadow-shaped body: the shape is the point
+    fn swap2_body(id: Invocation, mut x: StorageMut<'_, f32>, mut y: StorageMut<'_, f32>) {
+        let i = id.global_id().x;
+        if i < x.len() && i < y.len() {
+            let t = x[i];
+            x[i] = y[i];
+            y[i] = t;
+        }
+    }
+
+    // ---- shared mock plumbing ----
+
+    struct Done<E>(PhantomData<E>);
+
+    impl<E> Done<E> {
+        fn new() -> Self {
+            Self(PhantomData)
+        }
+    }
+
+    impl<E> Job for Done<E> {
+        type Error = E;
+
+        fn status(&self) -> Result<JobStatus, E> {
+            Ok(JobStatus::Complete)
+        }
+
+        fn wait_timeout(&self, _timeout: Duration) -> Result<JobStatus, E> {
+            Ok(JobStatus::Complete)
+        }
+
+        fn wait(&self) -> Result<(), E> {
+            Ok(())
+        }
+    }
+
+    // ---- recording mock: GPU-shaped, one blanket `Run` impl, never executes a body ----
+
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+
+    struct RecBuffer<T> {
+        id: usize,
+        values: Vec<T>,
+    }
+
+    impl<T> RecBuffer<T> {
+        fn new(values: Vec<T>) -> Self {
+            Self {
+                id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                values,
+            }
+        }
+    }
+
+    /// Mirrors `BufferBinding<'a>` of `gust-wgpu`: `Copy` and borrowing the buffer.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct RecBinding<'r> {
+        id: usize,
+        len: usize,
+        layout: TypeLayout,
+        access: Access,
+        length: LengthRule,
+        _buffer: PhantomData<&'r ()>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Recorded {
+        kernel: &'static str,
+        element_count: u32,
+        bindings: Vec<(usize, usize, Access, LengthRule)>,
+        layouts: Vec<TypeLayout>,
+    }
+
+    #[derive(Default)]
+    struct RecordingDevice {
+        calls: RefCell<Vec<Recorded>>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum RecError {}
+
+    impl Device for RecordingDevice {
+        type Error = RecError;
+        type Dispatch<'resources> = ();
+        type Job<'device> = Done<RecError>;
+
+        fn submit(&self, _dispatches: &[()]) -> Result<Done<RecError>, RecError> {
+            Ok(Done::new())
+        }
+    }
+
+    impl TypedDevice for RecordingDevice {
+        type Binding<'r> = RecBinding<'r>;
+    }
+
+    impl<T: GpuPod> Resource for RecBuffer<T> {
+        type Element = T;
+        type Device = RecordingDevice;
+
+        fn bind<'r>(&'r self, access: Access, length: LengthRule) -> RecBinding<'r> {
+            RecBinding {
+                id: self.id,
+                len: self.values.len(),
+                layout: T::LAYOUT,
+                access,
+                length,
+                _buffer: PhantomData,
+            }
+        }
+    }
+
+    impl<K: Kernel, const N: usize> Run<K, N> for RecordingDevice {
+        fn submit_call(&self, call: &Call<'_, Self, K, N>) -> Result<Done<RecError>, RecError> {
+            self.calls.borrow_mut().push(Recorded {
+                kernel: call.kernel().name,
+                element_count: call.element_count(),
+                bindings: call
+                    .bindings()
+                    .iter()
+                    .map(|b| (b.id, b.len, b.access, b.length))
+                    .collect(),
+                layouts: call.bindings().iter().map(|b| b.layout).collect(),
+            });
+            Ok(Done::new())
+        }
+    }
+
+    // ---- CPU-shaped mock: implements the backend contract of the module documentation ----
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum CpuError {
+        /// The binding's element layout is not the parameter's.
+        ElementType {
+            parameter: &'static str,
+        },
+        /// The binding's access is not the one the descriptor declares for the parameter.
+        Access {
+            parameter: &'static str,
+            expected: Access,
+            actual: Access,
+        },
+        /// The buffer belongs to another device instance.
+        WrongDevice {
+            parameter: &'static str,
+        },
+        /// Two parameters are the same buffer and one of them is read-write (identity, before any borrow).
+        Aliased {
+            first: &'static str,
+            second: &'static str,
+        },
+        /// The buffer is borrowed by someone outside this call (not an alias within the call).
+        Borrowed {
+            parameter: &'static str,
+        },
+        BufferLength {
+            parameter: &'static str,
+            expected: usize,
+            actual: usize,
+        },
+        IndependentLengthEmpty {
+            parameter: &'static str,
+        },
+    }
+
+    /// A device instance; a buffer belongs to the instance named by its `owner`.
+    #[derive(Clone, Copy)]
+    struct CpuDevice(u32);
+
+    /// What the erased binding points at: the cell, its element type and its current length.
+    trait CpuData {
+        fn as_any(&self) -> &dyn Any;
+        /// The length right now; `None` while the cell is mutably borrowed outside this call.
+        fn current_len(&self) -> Option<usize>;
+    }
+
+    impl<T: GpuPod> CpuData for RefCell<Vec<T>> {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn current_len(&self) -> Option<usize> {
+            self.try_borrow().ok().map(|values| values.len())
+        }
+    }
+
+    struct CpuBuffer<T> {
+        owner: u32,
+        cells: RefCell<Vec<T>>,
+    }
+
+    impl<T: Clone> CpuBuffer<T> {
+        fn new(values: &[T]) -> Self {
+            Self::owned_by(0, values)
+        }
+
+        fn owned_by(owner: u32, values: &[T]) -> Self {
+            Self {
+                owner,
+                cells: RefCell::new(values.to_vec()),
+            }
+        }
+
+        fn read(&self) -> Vec<T> {
+            self.cells.borrow().clone()
+        }
+    }
+
+    /// Erased view. It records no length: the backend measures it at submit.
+    #[derive(Clone, Copy)]
+    struct CpuBinding<'r> {
+        data: &'r dyn CpuData,
+        access: Access,
+        length: LengthRule,
+        layout: TypeLayout,
+        owner: u32,
+    }
+
+    impl Device for CpuDevice {
+        type Error = CpuError;
+        type Dispatch<'resources> = ();
+        type Job<'device> = Done<CpuError>;
+
+        fn submit(&self, _dispatches: &[()]) -> Result<Done<CpuError>, CpuError> {
+            Ok(Done::new())
+        }
+    }
+
+    impl TypedDevice for CpuDevice {
+        type Binding<'r> = CpuBinding<'r>;
+    }
+
+    impl<T: GpuPod> Resource for CpuBuffer<T> {
+        type Element = T;
+        type Device = CpuDevice;
+
+        // Never borrows the cell, so it cannot panic while the buffer is borrowed.
+        fn bind<'r>(&'r self, access: Access, length: LengthRule) -> CpuBinding<'r> {
+            CpuBinding {
+                data: &self.cells,
+                access,
+                length,
+                layout: T::LAYOUT,
+                owner: self.owner,
+            }
+        }
+    }
+
+    /// The backend contract, once for every kernel: every binding against `call.kernel()`, then aliasing by identity.
+    /// Nothing is borrowed for writing before this returns `Ok`, so a rejected call leaves every buffer untouched.
+    fn validate<K: Kernel, const N: usize>(
+        device: CpuDevice,
+        call: &Call<'_, CpuDevice, K, N>,
+    ) -> Result<(), CpuError> {
+        let parameters = call
+            .kernel()
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.kind == ParameterKind::Storage);
+        let mut seen: Vec<(&'static str, CpuBinding<'_>)> = Vec::new();
+        for (parameter, binding) in parameters.zip(call.bindings().iter().copied()) {
+            let name = parameter.name;
+            if binding.owner != device.0 {
+                return Err(CpuError::WrongDevice { parameter: name });
+            }
+            if binding.access != parameter.access {
+                return Err(CpuError::Access {
+                    parameter: name,
+                    expected: parameter.access,
+                    actual: binding.access,
+                });
+            }
+            if Some(binding.layout) != parameter.resource_layout.map(|layout| layout.element) {
+                return Err(CpuError::ElementType { parameter: name });
+            }
+            let len = binding
+                .data
+                .current_len()
+                .ok_or(CpuError::Borrowed { parameter: name })?;
+            let expected = call.element_count() as usize;
+            match binding.length {
+                LengthRule::Shared if len != expected => {
+                    return Err(CpuError::BufferLength {
+                        parameter: name,
+                        expected,
+                        actual: len,
+                    });
+                }
+                LengthRule::Independent if len == 0 && expected != 0 => {
+                    return Err(CpuError::IndependentLengthEmpty { parameter: name });
+                }
+                _ => {}
+            }
+            for (earlier_name, earlier) in &seen {
+                let written =
+                    earlier.access == Access::ReadWrite || binding.access == Access::ReadWrite;
+                if written && core::ptr::addr_eq(earlier.data, binding.data) {
+                    return Err(CpuError::Aliased {
+                        first: earlier_name,
+                        second: name,
+                    });
+                }
+            }
+            seen.push((name, binding));
+        }
+        Ok(())
+    }
+
+    fn read<'b>(
+        binding: CpuBinding<'b>,
+        parameter: &'static str,
+    ) -> Result<Ref<'b, Vec<f32>>, CpuError> {
+        let cells = binding
+            .data
+            .as_any()
+            .downcast_ref::<RefCell<Vec<f32>>>()
+            .ok_or(CpuError::ElementType { parameter })?;
+        cells
+            .try_borrow()
+            .map_err(|_| CpuError::Borrowed { parameter })
+    }
+
+    fn write<'b>(
+        binding: CpuBinding<'b>,
+        parameter: &'static str,
+    ) -> Result<RefMut<'b, Vec<f32>>, CpuError> {
+        let cells = binding
+            .data
+            .as_any()
+            .downcast_ref::<RefCell<Vec<f32>>>()
+            .ok_or(CpuError::ElementType { parameter })?;
+        cells
+            .try_borrow_mut()
+            .map_err(|_| CpuError::Borrowed { parameter })
+    }
+
+    /// Whole workgroups, like the GPU; bodies guard with `.len()`.
+    fn invocations(
+        kernel: &KernelDescriptor,
+        element_count: u32,
+    ) -> impl Iterator<Item = Invocation> {
+        let width = kernel.workgroup_size[0];
+        (0..element_count.div_ceil(width) * width).map(|x| Invocation::new(UVec3 { x, y: 0, z: 0 }))
+    }
+
+    // The work finishes inside `submit_call` (the job is not tied to the buffers' lifetime).
+
+    impl Run<Scale, 3> for CpuDevice {
+        fn submit_call(&self, call: &Call<'_, Self, Scale, 3>) -> Result<Done<CpuError>, CpuError> {
+            validate(*self, call)?;
+            let [a, settings, out] = *call.bindings();
+            let a = read(a, "a")?;
+            let settings = read(settings, "settings")?;
+            let mut out = write(out, "out")?;
+            for id in invocations(call.kernel(), call.element_count()) {
+                scale_body(
+                    id,
+                    Storage::new(&a),
+                    Storage::new(&settings),
+                    StorageMut::new(&mut out),
+                );
+            }
+            Ok(Done::new())
+        }
+    }
+
+    impl Run<Sum2, 3> for CpuDevice {
+        fn submit_call(&self, call: &Call<'_, Self, Sum2, 3>) -> Result<Done<CpuError>, CpuError> {
+            validate(*self, call)?;
+            let [a, b, out] = *call.bindings();
+            let a = read(a, "a")?;
+            let b = read(b, "b")?;
+            let mut out = write(out, "out")?;
+            for id in invocations(call.kernel(), call.element_count()) {
+                sum2_body(
+                    id,
+                    Storage::new(&a),
+                    Storage::new(&b),
+                    StorageMut::new(&mut out),
+                );
+            }
+            Ok(Done::new())
+        }
+    }
+
+    impl Run<Swap2, 2> for CpuDevice {
+        fn submit_call(&self, call: &Call<'_, Self, Swap2, 2>) -> Result<Done<CpuError>, CpuError> {
+            validate(*self, call)?;
+            let [x, y] = *call.bindings();
+            let mut x = write(x, "x")?;
+            let mut y = write(y, "y")?;
+            for id in invocations(call.kernel(), call.element_count()) {
+                swap2_body(id, StorageMut::new(&mut x), StorageMut::new(&mut y));
+            }
+            Ok(Done::new())
+        }
+    }
+
+    // ---- tests ----
+
+    // Execution and writeback through the typed call: 5 elements under a 64-wide workgroup, so the guard runs.
+    #[test]
+    fn cpu_executes_the_body_and_writes_back() -> Result<(), CpuError> {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32, 2.0, 3.0, 4.0, 5.0]);
+        let settings = CpuBuffer::new(&[2.0f32]);
+        let out = CpuBuffer::new(&[0.0f32; 5]);
+        Scale::dispatch(&cpu, 5, &a, Independent(&settings), &out)?;
+        assert_eq!(out.read(), vec![2.0, 4.0, 6.0, 8.0, 10.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_enforces_the_shared_length_rule() {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32; 4]);
+        let settings = CpuBuffer::new(&[2.0f32]);
+        let out = CpuBuffer::new(&[0.0f32; 5]);
+        assert_eq!(
+            Scale::dispatch(&cpu, 4, &a, Independent(&settings), &out),
+            Err(CpuError::BufferLength {
+                parameter: "out",
+                expected: 4,
+                actual: 5
+            })
+        );
+        // Without `Independent`, the one-element settings buffer is a length error too.
+        assert_eq!(
+            Scale::dispatch(&cpu, 4, &a, &settings, &CpuBuffer::new(&[0.0f32; 4])),
+            Err(CpuError::BufferLength {
+                parameter: "settings",
+                expected: 4,
+                actual: 1
+            })
+        );
+        // An empty independent buffer is rejected while there is work to do.
+        let empty = CpuBuffer::<f32>::new(&[]);
+        assert_eq!(
+            Scale::dispatch(
+                &cpu,
+                4,
+                &a,
+                Independent(&empty),
+                &CpuBuffer::new(&[0.0f32; 4])
+            ),
+            Err(CpuError::IndependentLengthEmpty {
+                parameter: "settings"
+            })
+        );
+    }
+
+    // RO/RO: accepted.
+    #[test]
+    fn alias_read_read_is_accepted() -> Result<(), CpuError> {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32, 2.0, 3.0]);
+        let out = CpuBuffer::new(&[0.0f32; 3]);
+        Sum2::dispatch(&cpu, 3, &a, &a, &out)?;
+        assert_eq!(out.read(), vec![2.0, 4.0, 6.0]);
+        Ok(())
+    }
+
+    // RO/RW: compiles, rejected at run time by buffer identity with both parameters named, buffer untouched.
+    #[test]
+    fn alias_read_write_is_rejected_at_run_time() {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32, 2.0, 3.0]);
+        let settings = CpuBuffer::new(&[2.0f32]);
+        assert_eq!(
+            Scale::dispatch(&cpu, 3, &a, Independent(&settings), &a),
+            Err(CpuError::Aliased {
+                first: "a",
+                second: "out"
+            })
+        );
+        assert_eq!(a.read(), vec![1.0, 2.0, 3.0]);
+    }
+
+    // RW/RW: compiles, rejected at run time, buffer untouched; two distinct buffers swap.
+    #[test]
+    fn alias_write_write_is_rejected_at_run_time() {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32, 2.0]);
+        assert_eq!(
+            Swap2::dispatch(&cpu, 2, &a, &a),
+            Err(CpuError::Aliased {
+                first: "x",
+                second: "y"
+            })
+        );
+        assert_eq!(a.read(), vec![1.0, 2.0]);
+        let b = CpuBuffer::new(&[9.0f32, 8.0]);
+        Swap2::dispatch(&cpu, 2, &a, &b).unwrap();
+        assert_eq!((a.read(), b.read()), (vec![9.0, 8.0], vec![1.0, 2.0]));
+    }
+
+    // Aliasing is decided by identity before any borrow, and an unrelated outside borrow is a
+    // different error, not an alias.
+    #[test]
+    fn alias_is_identity_and_an_outside_borrow_is_not_an_alias() {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32, 2.0]);
+        let b = CpuBuffer::new(&[3.0f32, 4.0]);
+        let settings = CpuBuffer::new(&[1.0f32]);
+        // The read-write parameter first or last: both are aliases of `a`.
+        assert_eq!(
+            Swap2::dispatch(&cpu, 2, &b, &b),
+            Err(CpuError::Aliased {
+                first: "x",
+                second: "y"
+            })
+        );
+        assert_eq!(
+            Scale::dispatch(&cpu, 2, &a, Independent(&settings), &a),
+            Err(CpuError::Aliased {
+                first: "a",
+                second: "out"
+            })
+        );
+        // Outside borrows of distinct buffers.
+        {
+            let _held = b.cells.borrow();
+            assert_eq!(
+                Sum2::dispatch(&cpu, 2, &a, &a, &b),
+                Err(CpuError::Borrowed { parameter: "out" })
+            );
+        }
+        {
+            let _held = a.cells.borrow_mut();
+            assert_eq!(
+                Sum2::dispatch(&cpu, 2, &a, &a, &b),
+                Err(CpuError::Borrowed { parameter: "a" })
+            );
+        }
+        assert_eq!(b.read(), vec![3.0, 4.0], "no rejected call wrote anything");
+    }
+
+    // A hand-built `Call` is not covered by the compile-time checks: the backend checks every binding against
+    // `call.kernel()`.
+    #[test]
+    fn hand_built_calls_are_checked_against_the_descriptor() {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32]);
+        let settings = CpuBuffer::new(&[2.0f32]);
+        let out = CpuBuffer::new(&[0.0f32]);
+        let shared = LengthRule::Shared;
+        let independent = LengthRule::Independent;
+        let (ro, rw) = (Access::ReadOnly, Access::ReadWrite);
+
+        // The right call, built by hand, runs.
+        let call = Call::<CpuDevice, Scale, 3>::new(
+            1,
+            [
+                a.bind(ro, shared),
+                settings.bind(ro, independent),
+                out.bind(rw, shared),
+            ],
+        );
+        cpu.dispatch_call(&call).unwrap();
+        assert_eq!(out.read(), vec![2.0]);
+
+        // Wrong access on the first parameter.
+        let call = Call::<CpuDevice, Scale, 3>::new(
+            1,
+            [
+                a.bind(rw, shared),
+                settings.bind(ro, independent),
+                out.bind(rw, shared),
+            ],
+        );
+        assert_eq!(
+            cpu.dispatch_call(&call),
+            Err(CpuError::Access {
+                parameter: "a",
+                expected: ro,
+                actual: rw
+            })
+        );
+
+        // Wrong order: the output buffer first (right count, right elements).
+        let call = Call::<CpuDevice, Scale, 3>::new(
+            1,
+            [
+                out.bind(rw, shared),
+                settings.bind(ro, independent),
+                a.bind(ro, shared),
+            ],
+        );
+        assert_eq!(
+            cpu.dispatch_call(&call),
+            Err(CpuError::Access {
+                parameter: "a",
+                expected: ro,
+                actual: rw
+            })
+        );
+
+        // Wrong element: a u32 buffer in the f32 parameter `a`.
+        let integers = CpuBuffer::new(&[7u32]);
+        let call = Call::<CpuDevice, Scale, 3>::new(
+            1,
+            [
+                integers.bind(ro, shared),
+                settings.bind(ro, independent),
+                out.bind(rw, shared),
+            ],
+        );
+        assert_eq!(
+            cpu.dispatch_call(&call),
+            Err(CpuError::ElementType { parameter: "a" })
+        );
+
+        // Wrong device instance: same device type, another instance.
+        let foreign = CpuBuffer::owned_by(1, &[0.0f32]);
+        let call = Call::<CpuDevice, Scale, 3>::new(
+            1,
+            [
+                a.bind(ro, shared),
+                settings.bind(ro, independent),
+                foreign.bind(rw, shared),
+            ],
+        );
+        assert_eq!(
+            cpu.dispatch_call(&call),
+            Err(CpuError::WrongDevice { parameter: "out" })
+        );
+        assert_eq!(foreign.read(), vec![0.0]);
+        assert_eq!(out.read(), vec![2.0], "rejected calls wrote nothing");
+    }
+
+    // A reused `Call` carries no stale length: the backend measures the buffer at submit.
+    #[test]
+    fn a_reused_call_is_checked_against_the_current_length() {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32, 1.0]);
+        let settings = CpuBuffer::new(&[3.0f32]);
+        let out = CpuBuffer::new(&[0.0f32; 2]);
+        let call = Scale::call(2, &a, Independent(&settings), &out);
+        cpu.dispatch_call(&call).unwrap();
+        out.cells.borrow_mut().push(0.0);
+        assert_eq!(
+            cpu.dispatch_call(&call),
+            Err(CpuError::BufferLength {
+                parameter: "out",
+                expected: 2,
+                actual: 3
+            })
+        );
+    }
+
+    // The same source line of `Scale::dispatch` as the CPU test, on the GPU-shaped device: records access, length
+    // rule, element layout and lengths, executes nothing.
+    #[test]
+    fn recording_device_records_and_never_executes() {
+        let rec = RecordingDevice::default();
+        let a = RecBuffer::new(vec![1.0f32, 2.0, 3.0, 4.0]);
+        let settings = RecBuffer::new(vec![2.0f32]);
+        let out = RecBuffer::new(vec![0.0f32; 4]);
+        Scale::dispatch(&rec, 4, &a, Independent(&settings), &out).unwrap();
+        assert_eq!(
+            *rec.calls.borrow(),
+            vec![Recorded {
+                kernel: "scale",
+                element_count: 4,
+                bindings: vec![
+                    (a.id, 4, Access::ReadOnly, LengthRule::Shared),
+                    (settings.id, 1, Access::ReadOnly, LengthRule::Independent),
+                    (out.id, 4, Access::ReadWrite, LengthRule::Shared),
+                ],
+                layouts: vec![<f32 as GpuPod>::LAYOUT; 3],
+            }]
+        );
+        assert_eq!(
+            out.values,
+            vec![0.0; 4],
+            "the recording device must not execute"
+        );
+    }
+
+    // Buffers of three scopes compile (the compile is the proof); `submit` returns a job to wait on.
+    #[test]
+    fn buffers_of_different_scopes_and_submit() -> Result<(), CpuError> {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[3.0f32, 4.0]);
+        {
+            let settings = CpuBuffer::new(&[10.0f32]);
+            {
+                let out = CpuBuffer::new(&[0.0f32; 2]);
+                let job = Scale::submit(&cpu, 2, &a, Independent(&settings), &out)?;
+                job.wait()?;
+                assert_eq!(out.read(), vec![30.0, 40.0]);
+            }
+        }
+        Ok(())
+    }
+
+    // A `Call` is a plain value: build once, dispatch twice (what m2.e records in the graph).
+    #[test]
+    fn a_call_is_a_reusable_value() -> Result<(), CpuError> {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[1.0f32, 1.0]);
+        let settings = CpuBuffer::new(&[3.0f32]);
+        let out = CpuBuffer::new(&[0.0f32; 2]);
+        let call = Scale::call(2, &a, Independent(&settings), &out);
+        assert_eq!(call.kernel().name, "scale");
+        assert_eq!(call.bindings().len(), 3);
+        cpu.dispatch_call(&call)?;
+        cpu.dispatch_call(&call)?;
+        assert_eq!(out.read(), vec![3.0, 3.0]);
+
+        let rec = RecordingDevice::default();
+        let a = RecBuffer::new(vec![1.0f32]);
+        let out = RecBuffer::new(vec![0.0f32]);
+        let call = Scale::call(1, &a, Independent(&a), &out);
+        rec.dispatch_call(&call).unwrap();
+        rec.dispatch_call(&call).unwrap();
+        let calls = rec.calls.borrow();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], calls[1]);
+        Ok(())
+    }
+
+    // Explicit `Arg` values take the same path as `&buffer` (reflexive `From`).
+    #[test]
+    fn explicit_args_take_the_same_path() -> Result<(), CpuError> {
+        let cpu = CpuDevice(0);
+        let a = CpuBuffer::new(&[2.0f32]);
+        let settings = CpuBuffer::new(&[2.0f32]);
+        let out = CpuBuffer::new(&[0.0f32]);
+        Scale::dispatch(
+            &cpu,
+            1,
+            Arg::from(&a),
+            Arg::from(Independent(&settings)),
+            Arg::from(&out),
+        )?;
+        assert_eq!(out.read(), vec![4.0]);
+        Ok(())
+    }
+
+    // The Independent wrapper maps to the right rule, the plain reference to Shared.
+    #[test]
+    fn arg_conversions_set_the_length_rule() {
+        let buffer = CpuBuffer::new(&[0.0f32]);
+        assert_eq!(Arg::from(&buffer).length, LengthRule::Shared);
+        assert_eq!(
+            Arg::from(Independent(&buffer)).length,
+            LengthRule::Independent
+        );
+    }
+
+    // `Call::new` takes its descriptor from `K`: two kernels of the same shape do not get each other's descriptor.
+    #[test]
+    fn call_carries_the_descriptor_of_its_kernel() {
+        let buffer = RecBuffer::new(vec![0.0f32]);
+        let scale = Scale::call(1, &buffer, &buffer, &buffer);
+        let sum2 = Sum2::call(1, &buffer, &buffer, &buffer);
+        assert_eq!(*scale.kernel(), Scale::DESCRIPTOR);
+        assert_eq!(*sum2.kernel(), Sum2::DESCRIPTOR);
+        assert_eq!(scale.kernel().name, "scale");
+        assert_eq!(sum2.kernel().name, "sum2");
+        assert_eq!(
+            scale.bindings().len(),
+            3,
+            "the invocation parameter is not a binding"
+        );
+    }
+
+    // N is the storage-parameter count: zero for a kernel without storage parameters.
+    #[test]
+    fn a_kernel_without_storage_parameters_builds_an_empty_call() {
+        let call = Nothing::call::<RecordingDevice>(7);
+        assert_eq!(call.kernel().name, "nothing");
+        assert_eq!(call.element_count(), 7);
+        assert!(call.bindings().is_empty());
+        let rec = RecordingDevice::default();
+        rec.dispatch_call(&call).unwrap();
+        assert_eq!(rec.calls.borrow()[0].bindings, vec![]);
+    }
+
+    #[test]
+    fn storage_parameters_counts_only_storage_kind() {
+        assert_eq!(storage_parameters(&Scale::DESCRIPTOR), 3);
+        assert_eq!(storage_parameters(&Swap2::DESCRIPTOR), 2);
+        assert_eq!(storage_parameters(&Nothing::DESCRIPTOR), 0);
+    }
+
+    #[test]
+    fn call_arg_and_independent_are_debug() {
+        let buffer = RecBuffer::new(vec![0.0f32]);
+        let call = Nothing::call::<RecordingDevice>(7);
+        assert_eq!(
+            format!("{call:?}"),
+            "Call { kernel: \"nothing\", element_count: 7, bindings: [] }"
+        );
+        assert!(format!("{:?}", Independent(&buffer.values)).starts_with("Independent("));
+    }
+}

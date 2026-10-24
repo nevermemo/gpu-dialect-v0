@@ -27,7 +27,9 @@ pub struct TypeLayout {
 
 impl TypeLayout {
     /// Check that this description follows the supported four-byte scalar/struct ABI.
-    pub fn is_storage_v1(self) -> bool {
+    ///
+    /// Usable in `const` contexts, so a layout can be asserted at compile time.
+    pub const fn is_storage_v1(self) -> bool {
         if self.size == 0 || self.alignment != 4 || self.stride != self.size {
             return false;
         }
@@ -35,7 +37,9 @@ impl TypeLayout {
             TypeLayoutKind::Scalar(_) => self.size == 4,
             TypeLayoutKind::Struct(fields) => {
                 let mut offset = 0_u32;
-                for field in fields {
+                let mut index = 0;
+                while index < fields.len() {
+                    let field = &fields[index];
                     if field.offset != offset || !field.ty.is_storage_v1() {
                         return false;
                     }
@@ -43,6 +47,7 @@ impl TypeLayout {
                         return false;
                     };
                     offset = next;
+                    index += 1;
                 }
                 offset == self.size
             }
@@ -166,6 +171,96 @@ mod tests {
         assert_eq!(
             ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT).element_stride,
             4
+        );
+    }
+
+    // Evaluated by the compiler: a regression of `is_storage_v1` to a non-const fn, or to a wrong answer on these
+    // layouts, fails the build of the test module.
+    const U32_FIELDS: &[StructFieldLayout] = &[
+        StructFieldLayout {
+            name: "a",
+            offset: 0,
+            ty: TypeLayout::scalar("u32", ScalarKind::U32),
+        },
+        StructFieldLayout {
+            name: "b",
+            offset: 4,
+            ty: TypeLayout::scalar("u32", ScalarKind::U32),
+        },
+    ];
+    const PADDED_FIELDS: &[StructFieldLayout] = &[
+        StructFieldLayout {
+            name: "a",
+            offset: 0,
+            ty: TypeLayout::scalar("u32", ScalarKind::U32),
+        },
+        StructFieldLayout {
+            name: "b",
+            offset: 8,
+            ty: TypeLayout::scalar("u32", ScalarKind::U32),
+        },
+    ];
+    const SCALAR_OK: bool = <u32 as GpuPod>::LAYOUT.is_storage_v1();
+    const PAIR_OK: bool = TypeLayout::structure("Pair", 8, 4, U32_FIELDS).is_storage_v1();
+    const NESTED_OK: bool = TypeLayout::structure(
+        "Nested",
+        16,
+        4,
+        &[
+            StructFieldLayout {
+                name: "first",
+                offset: 0,
+                ty: TypeLayout::structure("Pair", 8, 4, U32_FIELDS),
+            },
+            StructFieldLayout {
+                name: "second",
+                offset: 8,
+                ty: TypeLayout::structure("Pair", 8, 4, U32_FIELDS),
+            },
+        ],
+    )
+    .is_storage_v1();
+    const PADDED_OK: bool = TypeLayout::structure("Padded", 12, 4, PADDED_FIELDS).is_storage_v1();
+    // Sizes add up to the total (12) but field `c` sits at 12 instead of 8: only the per-field offset check sees it.
+    const LATE_PADDING_OK: bool = TypeLayout::structure(
+        "Late",
+        12,
+        4,
+        &[
+            StructFieldLayout {
+                name: "a",
+                offset: 0,
+                ty: TypeLayout::scalar("u32", ScalarKind::U32),
+            },
+            StructFieldLayout {
+                name: "b",
+                offset: 4,
+                ty: TypeLayout::scalar("u32", ScalarKind::U32),
+            },
+            StructFieldLayout {
+                name: "c",
+                offset: 12,
+                ty: TypeLayout::scalar("u32", ScalarKind::U32),
+            },
+        ],
+    )
+    .is_storage_v1();
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)] // the constants are evaluated by the compiler on purpose
+    fn storage_v1_is_decided_in_const_context() {
+        assert!(SCALAR_OK);
+        assert!(PAIR_OK);
+        assert!(NESTED_OK);
+        // Padded: field `b` at offset 8 instead of 4, and size 12 instead of 8.
+        assert!(!PADDED_OK);
+        // Only the per-field offset check rejects this one (the field sizes sum to the total).
+        assert!(!LATE_PADDING_OK);
+        // The const results agree with the run-time calls.
+        assert_eq!(SCALAR_OK, <u32 as GpuPod>::LAYOUT.is_storage_v1());
+        assert_eq!(
+            PADDED_OK,
+            TypeLayout::structure("Padded", 12, 4, PADDED_FIELDS).is_storage_v1()
         );
     }
 
