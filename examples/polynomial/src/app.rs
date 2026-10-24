@@ -303,7 +303,102 @@ fn export_generated_source() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use gust::cpu::{CpuDevice, Error as CpuError, ulps};
+
     use super::*;
+
+    /// The twin-versus-GPU bound, absolute, over the whole input domain: 48 * 2^-24, about 2.86e-6.
+    ///
+    /// Derived from the kernel text (docs/SEMANTICS.md section 4, "Worked example"), not from a measurement. With
+    /// `u = 2^-24` and `|v| <= 1` (inputs are `k / 2048 - 1`), multiplication by a power of two is exact, and:
+    /// - twin, in the written order: `squared` u, `cubed` 2u, `2.0 * squared` 2u, `curved` 7u (2u + 2u plus u times
+    ///   its magnitude bound 3), plus `linear` 10.5u, plus `1.0` 15u;
+    /// - GPU, in the worst grouping WGSL allows for the four terms: `squared` 2u, `cubed` 4u, `2.0 * squared` 4u,
+    ///   then three additions of partial sums of magnitude up to 3, 4 and 4.5 at 2u each, so 8u + 23u = 31u;
+    /// - twin versus GPU: 15u + 31u = 46u, and 48u asserted, the extra 2u being the margin for second-order terms.
+    ///
+    /// Observed maxima are printed separately by the test and never become the tolerance.
+    const TWIN_VS_GPU_BOUND: f64 = 48.0 / 16_777_216.0;
+
+    /// `k / 2048 - 1` for `k` in `0..4096`, the input domain of `main`.
+    fn domain() -> Vec<f32> {
+        (0..4096).map(|k| k as f32 / 2048.0 - 1.0).collect()
+    }
+
+    /// The host reference: `run_cpu` over a fresh output.
+    fn reference(input: &[f32]) -> Vec<f32> {
+        let mut output = vec![0.0; input.len()];
+        run_cpu(input, &mut output);
+        output
+    }
+
+    /// The same typed `dispatch` on the CPU twin, which the macro emits under `cfg(test)`: no GPU involved.
+    fn evaluate_on_cpu(input: &[f32]) -> Result<Vec<f32>, CpuError> {
+        let device = CpuDevice::new();
+        let input_buffer = device.buffer(input);
+        let output = device.buffer(&vec![0.0f32; input.len()]);
+        polynomial::evaluate::dispatch(&device, input.len() as u32, &input_buffer, &output)?;
+        Ok(output.read())
+    }
+
+    /// The largest distance between two results in ULPs and in absolute terms (computed in `f64`).
+    fn largest_difference(left: &[f32], right: &[f32]) -> (u64, f64) {
+        assert_eq!(left.len(), right.len());
+        left.iter().zip(right).fold((0, 0.0), |(ulp, abs), (l, r)| {
+            (
+                ulp.max(ulps(*l, *r)),
+                abs.max((f64::from(*l) - f64::from(*r)).abs()),
+            )
+        })
+    }
+
+    #[test]
+    fn twin_matches_host_reference() {
+        // The twin runs the shadow body, which performs the operations of `run_cpu` in the same order, and Rust
+        // does not contract them, so the two agree to the last bit. 4096 values fill 32 workgroups; 1000 end
+        // mid-workgroup (the kernel's `i < out.len()` guard is what keeps the tail inside the buffer).
+        let domain = domain();
+        for count in [domain.len(), 1000, 1, 0] {
+            let input = &domain[..count];
+            let twin = evaluate_on_cpu(input).expect("twin dispatch");
+            let (max_ulps, max_abs) = largest_difference(&twin, &reference(input));
+            println!(
+                "twin versus run_cpu, {count} elements: max {max_ulps} ULP, max abs error {max_abs:e}"
+            );
+            assert_eq!(max_ulps, 0, "{count} elements");
+        }
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn twin_matches_reference_and_gpu_within_the_derived_bound() {
+        let device = match HeadlessDevice::new() {
+            Ok(device) => device,
+            Err(error) => panic!(
+                "Vulkan adapter required; this test must not silently skip: could not initialize headless wgpu: {error}"
+            ),
+        };
+        let input = domain();
+        let twin = evaluate_on_cpu(&input).expect("twin dispatch");
+        let gpu = dispatch_gpu(&device, &input, &vec![0.0; input.len()]).expect("GPU dispatch");
+        let host = reference(&input);
+
+        let (twin_host_ulps, twin_host_abs) = largest_difference(&twin, &host);
+        let (twin_gpu_ulps, twin_gpu_abs) = largest_difference(&twin, &gpu);
+        // Observations on this adapter, recorded in the slice log (probe/s4.log); not tolerances.
+        println!("S4 adapter: {}", device.adapter_info().name);
+        println!(
+            "S4 twin versus run_cpu: max {twin_host_ulps} ULP, max abs error {twin_host_abs:e}"
+        );
+        println!("S4 twin versus GPU: max {twin_gpu_ulps} ULP, max abs error {twin_gpu_abs:e}");
+        println!("S4 derived bound (48 * 2^-24): {TWIN_VS_GPU_BOUND:e}");
+
+        assert_eq!(twin_host_ulps, 0, "twin versus run_cpu");
+        assert!(
+            twin_gpu_abs <= TWIN_VS_GPU_BOUND,
+            "twin versus GPU: max abs error {twin_gpu_abs:e} exceeds the derived bound {TWIN_VS_GPU_BOUND:e}"
+        );
+    }
 
     #[test]
     fn demo_sizes_stay_within_the_default_workgroup_limit() {

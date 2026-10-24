@@ -857,21 +857,40 @@ Decision: D02.
 
 ### GUST-E0707 unknown `#[kernel]` option
 
-`workgroup_size` is the only `#[kernel]` option.
+`workgroup_size` and `cpu` are the only `#[kernel]` options.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(threads(64))]`.
-Write instead: `#[kernel(workgroup_size(x, y, z))]` is the only option.
-Decision: D02.
+Write instead: `#[kernel(workgroup_size(x, y, z))]` or `#[kernel(cpu = "unsupported")]`.
+Decision: D02, D26.
 
 ### GUST-E0708 malformed `#[kernel]` attribute
 
 Reported for attribute syntax that `syn` rejects before an option is recognised: a
-missing comma, a dimension that is not an integer literal, fewer than three dimensions.
+missing comma, a dimension that is not an integer literal, fewer than three dimensions,
+a `cpu` value that is not a string literal, a `cpu` without a value.
 The message after the code is `syn`'s own.
 Reached through `#[gpu]`.
-Rejected: `#[kernel(workgroup_size(8, 8))]`, `#[kernel(workgroup_size(a, 1, 1))]`.
-Write instead: `#[kernel(workgroup_size(8, 8, 1))]`.
+Rejected: `#[kernel(workgroup_size(8, 8))]`, `#[kernel(workgroup_size(a, 1, 1))]`, `#[kernel(cpu = 1)]`,
+`#[kernel(cpu)]`.
+Write instead: `#[kernel(workgroup_size(8, 8, 1))]` or `#[kernel(cpu = "unsupported")]`.
 Decision: D02.
+
+### GUST-E0709 unknown `cpu` value
+
+`cpu` opts a kernel out of its CPU twin, which the macro otherwise emits under `cfg(test)` or
+`--cfg gust_dual`. The only value is `"unsupported"`.
+Reached through `#[gpu]`.
+Rejected: `#[kernel(cpu = "off")]`.
+Write instead: `#[kernel(cpu = "unsupported")]`, or no `cpu` option to keep the twin.
+Decision: D26.
+
+### GUST-E0710 duplicate `cpu`
+
+The `cpu` option is stated once.
+Reached through `#[gpu]`.
+Rejected: `#[kernel(cpu = "unsupported", cpu = "unsupported")]`.
+Write instead: state `cpu` once.
+Decision: D26.
 
 ## E08xx: emitter-only rejections
 

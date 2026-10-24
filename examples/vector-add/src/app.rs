@@ -87,7 +87,79 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use gust::cpu::{CpuDevice, Error as CpuError};
+
     use super::*;
+
+    /// The host reference: what the kernel computes for every element.
+    fn host_reference(a: &[f32], b: &[f32]) -> Vec<f32> {
+        a.iter().zip(b).map(|(left, right)| left + right).collect()
+    }
+
+    /// The same typed `dispatch` on the CPU twin, which the macro emits under `cfg(test)`: no GPU involved.
+    fn add_on_cpu(a: &[f32], b: &[f32], seed: &[f32]) -> Result<Vec<f32>, CpuError> {
+        let device = CpuDevice::new();
+        let a = device.buffer(a);
+        let b = device.buffer(b);
+        let out = device.buffer(seed);
+        vector_add::add::dispatch(&device, seed.len() as u32, &a, &b, &out)?;
+        Ok(out.read())
+    }
+
+    /// Inputs whose sums are exact in `f32`, so every comparison below is exact.
+    fn inputs(count: usize) -> (Vec<f32>, Vec<f32>) {
+        let a = (0..count).map(|k| k as f32 * 0.5 - 7.0).collect();
+        let b = (0..count).map(|k| 100.0 - k as f32 * 0.25).collect();
+        (a, b)
+    }
+
+    #[test]
+    fn twin_matches_host_reference() {
+        // Zero, one, a partial workgroup, a whole one (64) and counts that end mid-workgroup.
+        for count in [0, 1, 3, 4, 63, 64, 65, 200] {
+            let (a, b) = inputs(count);
+            let twin = add_on_cpu(&a, &b, &vec![-1.0; count]).expect("twin dispatch");
+            assert_eq!(twin, host_reference(&a, &b), "{count} elements");
+        }
+    }
+
+    #[test]
+    fn twin_checks_buffer_aliasing_like_the_gpu_backend() {
+        let device = CpuDevice::new();
+        let a = device.buffer(&[1.0f32, 2.0, 3.0]);
+        let b = device.buffer(&[10.0f32, 20.0, 30.0]);
+        let out = device.buffer(&[0.0f32; 3]);
+        // One buffer bound read-only twice is fine.
+        vector_add::add::dispatch(&device, 3, &a, &a, &out).expect("read-only alias");
+        assert_eq!(out.read(), [2.0, 4.0, 6.0]);
+        // A read-only parameter and the read-write one on the same buffer are rejected, and nothing is written.
+        let error = vector_add::add::dispatch(&device, 3, &a, &b, &a).unwrap_err();
+        assert_eq!(
+            error,
+            CpuError::Aliased {
+                kernel: "vector_add::add".to_owned(),
+                first: "a",
+                second: "out",
+            }
+        );
+        assert_eq!(a.read(), [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn twin_matches_reference_and_gpu() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter");
+        for count in [4, 65, 200] {
+            let (a, b) = inputs(count);
+            let seed = vec![-1.0; count];
+            let reference = host_reference(&a, &b);
+            let twin = add_on_cpu(&a, &b, &seed).expect("twin dispatch");
+            let gpu = add_on_gpu(&device, &a, &b, &seed).expect("GPU dispatch");
+            assert_eq!(twin, reference, "{count} elements: twin versus reference");
+            // A single IEEE addition of exactly representable sums: both targets are exact.
+            assert_eq!(twin, gpu, "{count} elements: twin versus GPU");
+        }
+    }
 
     #[test]
     #[ignore = "example validation runs only in full verification"]

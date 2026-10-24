@@ -38,9 +38,9 @@
 //! The `tests` module exercises this surface with two devices. The recording mock mirrors a GPU backend: one blanket
 //! `Run` impl, it records the call and never runs a kernel body (D21/D22). The CPU side is the real
 //! [`crate::cpu::CpuDevice`] (M3): the tests implement `Run` for it per hand-written test kernel, in the shape the
-//! `#[gpu]` macro will emit (planned, m3.c), and run *hand-written test bodies* through the same `Call`. The CPU
-//! backend implements the backend contract above; its binding identity and access are read through `gust::cpu` only
-//! (the `CpuBinding` is opaque here), so this module adds no backend-neutral accessor for them.
+//! `#[gpu]` macro emits for real kernels (slice m3.c), and run *hand-written test bodies* through the same `Call`.
+//! The CPU backend implements the backend contract above; its binding identity and access are read through
+//! `gust::cpu` only (the `CpuBinding` is opaque here), so this module adds no backend-neutral accessor for them.
 
 use core::fmt;
 use core::marker::PhantomData;

@@ -91,8 +91,10 @@
 //! # CPU twin
 //!
 //! [`cpu`] runs a kernel's Rust shadow body on the CPU (`CpuDevice`, `CpuBuffer`); the per-kernel twin of the typed
-//! calls that the `#[gpu]` macro will emit (planned, m3.c) uses it. Until then a twin is a hand-written `impl Run`.
-//! Nothing of it is re-exported at the crate root, except the hidden macro behind `cpu::overflow_checks!`.
+//! calls that the `#[gpu]` macro emits uses it. The macro emits the twin under `cfg(test)` of the crate that defines
+//! the kernel or under `--cfg gust_dual`, unless the kernel has a uniform parameter or `#[kernel(cpu =
+//! "unsupported")]`. Nothing of it is re-exported at the crate root, except the hidden macro behind
+//! `cpu::overflow_checks!`.
 
 // The `#[gpu]` expansion names `::gust::..`; this lets the crate's own unit tests expand it too.
 #[cfg(test)]

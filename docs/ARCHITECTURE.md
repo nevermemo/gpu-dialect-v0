@@ -248,12 +248,15 @@ ordered kernels whose intermediate buffers all use different struct types. This 
 useful for correctness and benchmarking without coupling the shader language to a
 CPU interpreter.
 
-The policy is unchanged by the typed call surface. The mock devices in the
+The policy is unchanged by the typed call surface. The test devices in the
 `gust::dispatch` unit tests exist only to exercise that surface: the recording mock
-mirrors a GPU backend and never runs a kernel body, and the CPU-shaped mock runs
-hand-written test bodies through the same `Call`. Neither is a CPU runtime for
-`#[gpu]` shadow bodies, and no CPU backend exists; whether a CPU backend can implement
-`TypedDevice` and `Run<K, N>` is roadmap M3 work.
+mirrors a GPU backend and never runs a kernel body, and the CPU side is the real
+`gust::cpu::CpuDevice` (since m3.b), on which those tests run hand-written test bodies
+through the same `Call`. The recording mock is not a CPU runtime for `#[gpu]` shadow
+bodies. The CPU backend is `gust::cpu::CpuDevice` (roadmap M3), which
+implements `TypedDevice` and `Run<K, N>`; the macro emits its per-kernel `Run` impl
+(the CPU twin) under `cfg(test)` of the defining crate or `--cfg gust_dual`, never in a
+production build.
 
 ## Validation layers
 

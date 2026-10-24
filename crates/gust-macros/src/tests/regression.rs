@@ -2084,6 +2084,331 @@ fn the_handle_and_its_calls_document_the_rules_users_hit() {
     );
 }
 
+// ---- CPU twin (roadmap M3, slice m3.c): the `impl Run<kernel, N> for gust::cpu::CpuDevice` ----
+
+/// The twin `impl` text opens with this attribute (`proc_macro2` spacing), directly before the impl.
+const TWIN_CFG: &str = "# [cfg (any (test , gust_dual))] impl :: gust :: Run <";
+
+/// `text` without its twin `impl`, from the `cfg` attribute to the closing brace of the impl.
+fn without_twin(text: &str) -> String {
+    let start = text.find(TWIN_CFG).expect("a twin");
+    let rest = &text[start..];
+    let mut depth = 0_usize;
+    for (offset, character) in rest.char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return format!("{}{}", &text[..start], &rest[offset + 1..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced twin in {text}");
+}
+
+/// A text with all whitespace removed, for comparing two token streams that differ in spacing only.
+fn squeezed(text: &str) -> String {
+    text.split_whitespace().collect()
+}
+
+#[test]
+fn a_storage_kernel_gets_exactly_one_twin_behind_the_dual_cfg() {
+    let text = expansion(VECTOR_ADD).to_string();
+    assert_eq!(text.matches("impl :: gust :: Run <").count(), 1, "{text}");
+    assert_eq!(text.matches(TWIN_CFG).count(), 1, "{text}");
+    assert!(
+        text.contains(&format!(
+            "{TWIN_CFG} add , 3 > for :: gust :: cpu :: CpuDevice"
+        )),
+        "{text}"
+    );
+    // The twin is the only place that names the cfg: the host API and the descriptor are not gated.
+    assert_eq!(text.matches("any (test , gust_dual)").count(), 1, "{text}");
+    assert_eq!(text.matches("cfg (").count(), 1, "{text}");
+}
+
+#[test]
+fn the_twin_has_the_exact_shape_of_the_hand_written_one_in_gust_cpu() {
+    // `crates/gust/src/cpu.rs` (its tests) holds the specification: validate, destructure, acquire, loop,
+    // complete; elided lifetimes; the shadow body called as written, once per invocation.
+    let text = expansion(VECTOR_ADD).to_string();
+    let expected = quote::quote! {
+        #[cfg(any(test, gust_dual))]
+        impl ::gust::Run<add, 3> for ::gust::cpu::CpuDevice {
+            fn submit_call(
+                &self,
+                __gust_call: &::gust::Call<'_, Self, add, 3>,
+            ) -> ::core::result::Result<::gust::cpu::CpuJob, ::gust::cpu::Error> {
+                ::gust::cpu::validate(self, __gust_call)?;
+                let [a, b, out] = *__gust_call.bindings();
+                let a = ::gust::cpu::read::<float>(a, "a")?;
+                let b = ::gust::cpu::read::<float>(b, "b")?;
+                let mut out = ::gust::cpu::write::<float>(out, "out")?;
+                for __gust_id in
+                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.element_count())
+                {
+                    __gpu_typecheck_add(
+                        <SV_DispatchThreadID as ::gust::cpu::FromGlobalId>::from_global_id(__gust_id),
+                        ::gust::Storage::new(&a),
+                        ::gust::Storage::new(&b),
+                        ::gust::StorageMut::new(&mut out)
+                    );
+                }
+                ::core::result::Result::Ok(::gust::cpu::CpuJob::complete())
+            }
+        }
+    }
+    .to_string();
+    assert!(text.contains(&expected), "{expected}\n---\n{text}");
+    // No lifetime parameter of its own (Revision 5), and no downcast in the emitted code.
+    assert!(!text.contains("'__gust_d"), "{text}");
+    assert!(!text.contains("downcast"), "{text}");
+}
+
+#[test]
+fn the_twin_acquires_read_only_with_read_and_read_write_with_write() {
+    let text = expansion(VECTOR_ADD).to_string();
+    assert_eq!(
+        text.matches(":: cpu :: read :: < float > (").count(),
+        2,
+        "{text}"
+    );
+    assert_eq!(
+        text.matches(":: cpu :: write :: < float > (").count(),
+        1,
+        "{text}"
+    );
+    assert!(
+        text.contains("let mut out = :: gust :: cpu :: write :: < float > (out , \"out\") ?"),
+        "{text}"
+    );
+
+    let swap = expansion(
+        "mod swapping { #[kernel] pub fn swap(id: SV_DispatchThreadID, mut x: RWStructuredBuffer<float>, \
+         mut y: RWStructuredBuffer<float>) { let i = id.x; if i < x.len() && i < y.len() {} } }",
+    )
+    .to_string();
+    assert_eq!(swap.matches(":: cpu :: write :: <").count(), 2, "{swap}");
+    assert_eq!(swap.matches(":: cpu :: read :: <").count(), 0, "{swap}");
+    assert!(swap.contains("impl :: gust :: Run < swap , 2 >"), "{swap}");
+}
+
+#[test]
+fn the_invocation_argument_is_built_by_from_global_id_for_every_spelling() {
+    for spelling in ["SV_DispatchThreadID", "Invocation", "UVec3"] {
+        let text = expansion(&format!(
+            "mod m {{ #[kernel] pub fn run(id: {spelling}, mut out: RWStructuredBuffer<float>) {{ \
+             let i = 0u32; if i < out.len() {{}} }} }}"
+        ))
+        .to_string();
+        let expected = format!(
+            "< {spelling} as :: gust :: cpu :: FromGlobalId > :: from_global_id (__gust_id)"
+        );
+        assert_eq!(text.matches(&expected).count(), 1, "{spelling}: {text}");
+    }
+}
+
+#[test]
+fn twin_arguments_follow_the_parameter_order_and_the_written_element_types() {
+    // The invocation parameter is not first, and the element types are the ones written in the module.
+    let text = expansion(
+        "mod pool { pub struct Particle { pub x: float } \
+         #[kernel] pub fn step(input: StructuredBuffer<Particle>, id: SV_DispatchThreadID, \
+         mut out: RWStructuredBuffer<super::Outside>) { let i = id.x; if i < out.len() {} } }",
+    )
+    .to_string();
+    assert!(
+        text.contains("let input = :: gust :: cpu :: read :: < Particle > (input , \"input\") ?"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "let mut out = :: gust :: cpu :: write :: < super :: Outside > (out , \"out\") ?"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "__gpu_typecheck_step (:: gust :: Storage :: new (& input) , \
+             < SV_DispatchThreadID as :: gust :: cpu :: FromGlobalId > :: from_global_id (__gust_id) , \
+             :: gust :: StorageMut :: new (& mut out))"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("let [input , out] = * __gust_call . bindings ()"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_kernel_without_storage_parameters_gets_a_twin_over_no_bindings() {
+    let text = expansion(
+        "mod empty { #[kernel] pub fn nothing(id: SV_DispatchThreadID) { let i = id.x; if i < 1u32 {} } }",
+    )
+    .to_string();
+    assert!(
+        text.contains(&format!("{TWIN_CFG} nothing , 0 >")),
+        "{text}"
+    );
+    assert!(
+        text.contains("let [] = * __gust_call . bindings ()"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_uniform_kernel_gets_no_twin() {
+    let text = expansion(
+        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
+         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }",
+    )
+    .to_string();
+    assert!(!text.contains("impl :: gust :: Run"), "{text}");
+    assert!(!text.contains("any (test , gust_dual)"), "{text}");
+    assert!(!text.contains("CpuDevice"), "{text}");
+}
+
+#[test]
+fn cpu_unsupported_emits_no_twin_and_keeps_the_typed_host_api() {
+    let output = expansion(
+        "mod vector_add { \
+            #[kernel(cpu = \"unsupported\")] \
+            pub fn add(id: SV_DispatchThreadID, a: StructuredBuffer<float>, b: StructuredBuffer<float>, \
+                       mut out: RWStructuredBuffer<float>) { \
+                let i = id.x; \
+                if i < out.len() { out[i] = a[i] + b[i]; } \
+            } \
+        }",
+    );
+    let text = output.to_string();
+    assert!(!text.contains("impl :: gust :: Run"), "{text}");
+    assert!(!text.contains("any (test , gust_dual)"), "{text}");
+    assert!(!text.contains(":: cpu :: CpuDevice"), "{text}");
+    let item = typed_impl(&output, "add").expect("typed impl of `add`");
+    for name in ["call", "submit", "dispatch"] {
+        let _ = typed_fn(&item, name);
+    }
+    assert!(text.contains("impl :: gust :: Kernel for add"), "{text}");
+    // The option changes nothing else: the same module without it is this one plus the twin.
+    assert_eq!(
+        squeezed(&text),
+        squeezed(&without_twin(&expansion(VECTOR_ADD).to_string()))
+    );
+}
+
+#[test]
+fn cpu_and_workgroup_size_combine_in_either_order() {
+    for options in [
+        "workgroup_size(8, 1, 1), cpu = \"unsupported\"",
+        "cpu = \"unsupported\", workgroup_size(8, 1, 1)",
+    ] {
+        let text = expansion(&format!(
+            "mod m {{ #[kernel({options})] pub fn run(id: SV_DispatchThreadID, \
+             mut out: RWStructuredBuffer<float>) {{ let i = id.x; if i < out.len() {{}} }} }}"
+        ))
+        .to_string();
+        assert!(
+            text.contains("workgroup_size : [8u32 , 1u32 , 1u32]"),
+            "{options}: {text}"
+        );
+        assert!(!text.contains("impl :: gust :: Run"), "{options}: {text}");
+    }
+    // `workgroup_size` alone keeps the twin and the written size.
+    let text = expansion(
+        "mod m { #[kernel(workgroup_size(8, 1, 1))] pub fn run(id: SV_DispatchThreadID, \
+         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }",
+    )
+    .to_string();
+    assert!(
+        text.contains("workgroup_size : [8u32 , 1u32 , 1u32]"),
+        "{text}"
+    );
+    assert!(text.contains("impl :: gust :: Run < run , 1 >"), "{text}");
+}
+
+#[test]
+fn the_cpu_option_has_one_cause_per_rejection() {
+    use crate::diagnostics::testing::assert_codes;
+    for (options, code) in [
+        ("cpu = \"off\"", Code::UnknownCpuValue),
+        ("cpu = \"\"", Code::UnknownCpuValue),
+        ("cpu = \"Unsupported\"", Code::UnknownCpuValue),
+        (
+            "workgroup_size(8, 1, 1), cpu = \"cpu\"",
+            Code::UnknownCpuValue,
+        ),
+        // The first problem is the one reported: a bad value before the repeat.
+        (
+            "cpu = \"off\", cpu = \"unsupported\"",
+            Code::UnknownCpuValue,
+        ),
+        (
+            "cpu = \"unsupported\", cpu = \"unsupported\"",
+            Code::DuplicateCpuOption,
+        ),
+        (
+            "cpu = \"unsupported\", cpu = \"off\"",
+            Code::DuplicateCpuOption,
+        ),
+        (
+            "cpu = \"unsupported\", workgroup_size(8, 1, 1), cpu = \"unsupported\"",
+            Code::DuplicateCpuOption,
+        ),
+        // A value that is not a string literal, or no value at all, is `syn`'s own failure.
+        ("cpu = 1", Code::MalformedKernelAttribute),
+        ("cpu", Code::MalformedKernelAttribute),
+        // Other options are still unknown.
+        (
+            "cpu = \"unsupported\", threads(64)",
+            Code::UnknownKernelOption,
+        ),
+    ] {
+        let source =
+            format!("mod bad {{ #[kernel({options})] fn run(id: SV_DispatchThreadID) {{}} }}");
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(&source).unwrap();
+        let error = crate::expand::expand(module).unwrap_err();
+        assert_codes(&error, &[code]);
+    }
+}
+
+#[test]
+fn the_cpu_option_is_checked_by_validation_too() {
+    // `validate_module` calls `kernel_options`, so a bad value is reported before the emitter runs.
+    let module: syn::ItemMod = crate::diagnostics::testing::parse_str(
+        "mod bad { #[kernel(cpu = \"off\")] fn run(id: SV_DispatchThreadID) {} }",
+    )
+    .unwrap();
+    assert_code(
+        &validate_module(&module).unwrap_err(),
+        Code::UnknownCpuValue,
+    );
+}
+
+#[test]
+fn the_handle_documents_the_twin_and_its_opt_out() {
+    let add = expansion(VECTOR_ADD).to_string();
+    assert!(
+        add.contains(
+            "Under `cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, the kernel also runs on \
+             `gust::cpu::CpuDevice` (its CPU twin), unless `#[kernel(cpu = \\\"unsupported\\\")]`."
+        ),
+        "{add}"
+    );
+}
+
+#[test]
+fn the_module_allows_the_unexpected_cfg_lint_for_the_dual_cfg() {
+    let text = expansion(VECTOR_ADD).to_string();
+    assert!(
+        text.contains("# [allow (dead_code)] # [allow (unexpected_cfgs)] mod vector_add"),
+        "{text}"
+    );
+}
+
 // ---- const layout assertions (roadmap M2, slice m2.d2) ----
 
 /// Two structs with a nested one and a three-field one, so the earlier-field sums have 0, 1 and 2 terms.
