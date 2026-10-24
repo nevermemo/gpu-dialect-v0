@@ -9,6 +9,15 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 close-out (code and user docs, `009f86a`): `gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION`
+  is pinned to `wgpu::Limits::default()` by a unit test and to the opened device by a GPU test, and replaces
+  the examples' seven copies of 65 535. One runtime StorageV1 and size assertion now guards typed, pool and
+  indirect-argument buffers (unit tests per clause, a GPU test per allocation path, mutations caught).
+  `StagedGraph::dependency_indices` replaces the examples' copies. README, ARCHITECTURE, EXECUTION_GRAPH and
+  VALIDATION describe the M2 code; decisions D34 (typed call surface, alias contract), D35 (derived edges)
+  and D36 (launch limits and what stays unchecked). Evidence: fmt, clippy, gust-wgpu tests, docs-check, lint,
+  Unit suite and check-fast green after the review fix round (Opus: keep after fixes). Still to run:
+  `check-full` and the M2 sanity check.
 - M2 m2.f2: particle-step and typed-pipeline batch typed calls; staged-graph and
   component-pool build every frame with `StagedGraph::write/run/run_indirect/read`, so all
   edges are derived, and they assert the derived sets (`[[], [0], [0, 1], [2]]` and
