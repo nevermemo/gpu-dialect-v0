@@ -198,6 +198,12 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   atomics.
 - **Visibility.** The writes of a dispatch are visible after the dispatch completes. Within a dispatch, an invocation
   must not depend on another invocation's non-atomic writes.
+- **Launch size (CPU backend).** The CPU backend (`gust::cpu`) rejects only a launch whose invocation total, rounded up
+  to whole workgroups, is above 2^32 (`DeviceLimit`, because global ids are `u32`). The GPU backend also enforces the
+  adapter's `max_compute_workgroups_per_dimension` (and any lower `with_limits` value). For example 5,000,000 elements
+  at workgroup width 64 need 78125 workgroups: they run on the CPU backend and are `DeviceLimit` under wgpu's default
+  limits (65535 workgroups). This is a documented difference (D39), not something to match; split the work into
+  several dispatches for the GPU. The macro twin that will use the CPU backend is still planned (m3.c).
 
 ## 6. Atomics
 
