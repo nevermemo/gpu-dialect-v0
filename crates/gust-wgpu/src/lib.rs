@@ -407,7 +407,9 @@ impl TypedDevice for HeadlessDevice {
     type Binding<'resources> = BufferBinding<'resources>;
 }
 
-/// The GPU runs every kernel: one blanket implementation. The call goes through `submit_batch`, so
+/// One blanket implementation for every kernel type. A kernel with a uniform parameter has no generated
+/// `call` to reach it, and the runtime rejects its descriptor with `Error::UnsupportedParameter`. The
+/// call goes through `submit_batch`, so
 /// `validate_persistent_dispatch` checks each binding against `call.kernel()` (access, layout, device
 /// instance, length, aliasing), then the launch limits and the pipeline cache take over, exactly as for
 /// `dispatch_buffers`. A hand-built `Call` is therefore never trusted.
@@ -1408,6 +1410,24 @@ impl HeadlessDevice {
         &self,
         dispatches: &[BufferDispatch<'_>],
     ) -> Result<Vec<PreparedDispatch>, Error> {
+        self.prepare_dispatches(dispatches, false)
+    }
+
+    /// Prepare one indirect dispatch: every check of `prepare_batch` except the workgroup count,
+    /// which only the GPU reads, from the arguments buffer. `dispatch.element_count` must be a
+    /// nonzero placeholder; the prepared `workgroup_count` is meaningless (0) and never encoded.
+    fn prepare_indirect(
+        &self,
+        dispatch: &BufferDispatch<'_>,
+    ) -> Result<Vec<PreparedDispatch>, Error> {
+        self.prepare_dispatches(std::slice::from_ref(dispatch), true)
+    }
+
+    fn prepare_dispatches(
+        &self,
+        dispatches: &[BufferDispatch<'_>],
+        indirect: bool,
+    ) -> Result<Vec<PreparedDispatch>, Error> {
         let validated = dispatches
             .iter()
             .map(|dispatch| {
@@ -1417,12 +1437,18 @@ impl HeadlessDevice {
                     dispatch.element_count,
                     dispatch.bindings,
                 )?;
-                let workgroup_count = self.check_launch(
-                    dispatch.kernel,
-                    dispatch.element_count,
-                    &resources,
-                    dispatch.bindings.iter().map(|binding| binding.raw.size()),
-                )?;
+                let binding_bytes = dispatch.bindings.iter().map(|binding| binding.raw.size());
+                let workgroup_count = if indirect {
+                    self.check_indirect_launch(dispatch.kernel, &resources, binding_bytes)?;
+                    0
+                } else {
+                    self.check_launch(
+                        dispatch.kernel,
+                        dispatch.element_count,
+                        &resources,
+                        binding_bytes,
+                    )?
+                };
                 Ok((resources, workgroup_count))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -1473,9 +1499,37 @@ impl HeadlessDevice {
         if element_count == 0 {
             return Ok(0);
         }
+        self.check_launch_limits(kernel, Some(element_count), resources, binding_bytes)
+    }
+
+    /// `check_launch` for an indirect dispatch: every check except the workgroup count, which the
+    /// host never sees (the GPU reads it from the arguments buffer), so a lowered
+    /// `max_compute_workgroups_per_dimension` never rejects an indirect launch.
+    fn check_indirect_launch(
+        &self,
+        kernel: &KernelDescriptor,
+        resources: &[&ParameterDescriptor],
+        binding_bytes: impl IntoIterator<Item = u64>,
+    ) -> Result<(), Error> {
+        self.check_launch_limits(kernel, None, resources, binding_bytes)
+            .map(|_| ())
+    }
+
+    /// The limit checks in their fixed order. `element_count` is `None` for an indirect launch,
+    /// which skips the workgroup count and returns 0.
+    fn check_launch_limits(
+        &self,
+        kernel: &KernelDescriptor,
+        element_count: Option<u32>,
+        resources: &[&ParameterDescriptor],
+        binding_bytes: impl IntoIterator<Item = u64>,
+    ) -> Result<u32, Error> {
         check_kernel_limits(&self.limits, kernel, resources.len())?;
         check_binding_indices(&self.limits, kernel, resources)?;
-        let workgroup_count = workgroup_count(&self.limits, kernel, element_count)?;
+        let workgroup_count = match element_count {
+            Some(count) => workgroup_count(&self.limits, kernel, count)?,
+            None => 0,
+        };
         for bytes in binding_bytes {
             check_binding_size(&self.limits, kernel, bytes)?;
         }

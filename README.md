@@ -188,13 +188,18 @@ independent Rust implementations outside the `#[gpu]` module.
 
 ## Running a kernel: typed calls
 
-Typed calls are the primary dispatch path. For every kernel handle the macro
-generates `call`, `submit` and `dispatch`: `call(element_count, buffers...)`
+Typed calls are the primary dispatch path. For every kernel handle whose resource
+parameters are all storage buffers the macro generates `call`, `submit` and
+`dispatch`: `call(element_count, buffers...)`
 builds a reusable `gust::Call`, `submit(device, element_count, buffers...)` starts
 it and returns a job, and `dispatch(device, element_count, buffers...)` runs it and
 waits. The buffers follow the kernel's storage parameters, one reference each, in
-parameter order. This is `add_on_gpu` from `examples/vector-add` for the kernel
-above:
+parameter order. The exception is a kernel with a uniform parameter
+(`Uniform<T>` or `ConstantBuffer<T>`): its handle and descriptor exist and its Slang
+is emitted, but it has no `call`, `submit` or `dispatch` (calling one is error
+E0599), and the headless runtime rejects such a kernel on every launch path
+(`Error::UnsupportedParameter`), so no kernel with a uniform parameter runs on it
+today. This is `add_on_gpu` from `examples/vector-add` for the kernel above:
 
 ```rust
 let a = device.create_f32_buffer("vector add a", a, GpuBufferAccess::ReadOnly);
@@ -354,9 +359,13 @@ and host-driven geometric growth that copies the live prefix GPU-to-GPU (never a
 readback) and retires the old allocation behind the copy's fence. A buffer from
 `create_indirect_buffer` can drive `StagedGraph::run_indirect` (typed) or
 `dispatch_indirect` (explicit), whose workgroup count the GPU derives. The host
-never sees that count, so it is not checked: wgpu silently zeroes a count above
-the real device's per-dimension limit (a limit lowered with `with_limits` does not
-apply to it), and the kernel that writes the arguments must clamp. See the contract in
+never sees that count, so it is not checked: with wgpu's default instance flags
+(`InstanceFlags::VALIDATION_INDIRECT_CALL`, which `HeadlessDevice` keeps) wgpu
+silently zeroes a count above the real device's per-dimension limit on Vulkan
+(wgpu-core also needs the adapter's `INDIRECT_EXECUTION` and `COMPUTE_SHADERS`
+downlevel flags, which Vulkan adapters set); without that
+flag the count reaches the GPU unvalidated. A limit lowered with `with_limits` does
+not apply to it, and the kernel that writes the arguments must clamp. See the contract in
 [docs/ENGINE_NORTH_STAR.md](docs/ENGINE_NORTH_STAR.md).
 
 ## Examples
@@ -447,7 +456,8 @@ gaps; successful Rust checking does not prove equivalence to Slang inference.
 
 Around the translator, the host side currently provides:
 
-- generated typed `call`, `submit` and `dispatch` per kernel, implemented for the
+- generated typed `call`, `submit` and `dispatch` per kernel without a uniform
+  parameter (a kernel with one has none), implemented for the
   headless wgpu device only; compile-time checks of element type, device type and
   storage-argument count, and run-time checks of access, layout, device instance,
   length and aliasing (see "Running a kernel");

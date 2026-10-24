@@ -81,8 +81,11 @@ workgroup count the GPU supplied; indirect dispatches are not added to
 An indirect dispatch (`run_indirect` or `dispatch_indirect`) is limit-checked on the
 host for kernel shape (workgroup width, invocations per workgroup, storage buffer
 count), binding indices and binding sizes only. The workgroup count
-in the arguments buffer is not checked on the host, and wgpu silently zeroes a
-dispatch whose count exceeds the real device's per-dimension limit, so the kernel
+in the arguments buffer is not checked on the host. With wgpu's default instance
+flags (`InstanceFlags::VALIDATION_INDIRECT_CALL`, which `HeadlessDevice` keeps) wgpu
+silently zeroes a dispatch whose count exceeds the real device's per-dimension limit
+on Vulkan (wgpu-core also needs the adapter's `INDIRECT_EXECUTION` and
+`COMPUTE_SHADERS` downlevel flags, which Vulkan adapters set); without that flag the count reaches the GPU unvalidated. Either way the kernel
 that writes the arguments must clamp. `HeadlessDevice::with_limits` does not apply
 to indirect counts, because wgpu enforces the limits of the device it opened. An
 arguments buffer that the same dispatch also binds read-write is rejected

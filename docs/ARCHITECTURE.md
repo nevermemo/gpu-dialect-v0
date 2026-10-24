@@ -30,7 +30,10 @@ handle generation. Translation happens directly from `syn` nodes; there is no
 intermediate instruction graph between the Rust AST and Slang text.
 
 Host handle generation includes the typed `call`, `submit` and `dispatch` functions
-of each kernel (below, under `gust`) and const assertions, evaluated by rustc, that
+of each kernel that has no uniform parameter (below, under `gust`; a kernel with a
+`Uniform<T>` or `ConstantBuffer<T>` parameter gets its handle and descriptor but none
+of the three, so `K::call(..)` is error E0599 and the headless runtime rejects its
+descriptor with `Error::UnsupportedParameter`) and const assertions, evaluated by rustc, that
 every buffer element type and struct field is a padding-free StorageV1 layout
 matching Rust's size and alignment; a failure is error E0080 that names the field
 or the parameter. The macro still does not reflect: layouts and bindings are
@@ -61,7 +64,8 @@ The typed call surface is what the macro generates `call`, `submit` and `dispatc
 against. `Device` is unchanged; the extension trait `TypedDevice: Device` names the
 erased, `Copy` binding of one device, and `Run<K, N>: TypedDevice` is the executable
 hook for one kernel `K` with `N` storage parameters. A GPU backend can implement `Run`
-once for every kernel (one blanket impl); a backend that cannot run a kernel simply
+once for every kernel (one blanket impl; a kernel with a uniform parameter has the impl
+but no generated `call`, `submit` or `dispatch` to reach it); a backend that cannot run a kernel simply
 lacks the impl, and a generated `submit` or `dispatch` for it does not compile.
 `Resource` is the trait of anything a call can bind (a buffer type of a backend);
 its `Element` and `Device` associated types make a wrong element type or device type
@@ -96,18 +100,24 @@ succeeds after a failed attempt prints one line to stderr, so a transient loader
 stays visible.
 
 `HeadlessDevice` implements `TypedDevice` and, in one blanket impl, `Run<K, N>` for
-every kernel, and `GpuBuffer<T>` is a `Resource`. Every launch (typed call, slice dispatch,
+every kernel type (a kernel with a uniform parameter is still rejected at launch, as
+above), and `GpuBuffer<T>` is a `Resource`. Every launch (typed call, slice dispatch,
 persistent dispatch and graph dispatch node) is checked against the stored limits
 before the pipeline cache is consulted, so an over-limit launch compiles nothing
-and encodes nothing: workgroup width (`max_compute_workgroup_size_x`), invocations
+and encodes nothing (an indirect dispatch node is checked for everything except
+its workgroup count): workgroup width (`max_compute_workgroup_size_x`), invocations
 per workgroup, workgroup count per dimension, storage buffers per shader stage,
 binding index (`max_bindings_per_bind_group`) and storage binding size are
 `Error::DeviceLimit`. The limits are those the device was opened with (wgpu's
 defaults, which GUST requests, not the adapter's); `with_limits` can only lower
 them, to emulate a weaker target. `max_buffer_size` is not checked, because buffer
 creation is infallible. Indirect workgroup counts are written by the GPU and cannot
-be checked on the host: wgpu zeroes a count above the real device's limit, and a
-lowered `with_limits` value does not apply to it. Typed buffer, pool buffer and
+be checked on the host: with wgpu's default instance flags
+(`InstanceFlags::VALIDATION_INDIRECT_CALL`, which `HeadlessDevice` keeps) wgpu zeroes
+a count above the real device's limit on Vulkan (wgpu-core also needs the adapter's
+`INDIRECT_EXECUTION` and `COMPUTE_SHADERS` downlevel flags, which Vulkan adapters set),
+and without that flag the count reaches the GPU
+unvalidated. A lowered `with_limits` value does not apply to it. Typed buffer, pool buffer and
 indirect-arguments buffer creation also assert, at run time, that a hand-written `GpuPod` layout is StorageV1
 and agrees with Rust's size and alignment.
 

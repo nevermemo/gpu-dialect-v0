@@ -96,9 +96,12 @@ pub enum Error {
     /// A launch needs more than a limit of the device (or of the limits installed with
     /// `HeadlessDevice::with_limits`) allows. A single dispatch reports it before any
     /// pipeline is compiled, looked up in the cache or encoded. A multi-node graph
-    /// checks its nodes in order while it encodes, so earlier nodes may already be
-    /// compiled and cached and the encoder created before an over-limit node fails;
-    /// nothing is submitted.
+    /// validates every node, in order, before anything is compiled, cached or encoded
+    /// (the limit pass is part of `validate`), so the error belongs to the first node
+    /// that fails and no node, earlier ones included, has compiled anything, created
+    /// an encoder or submitted work. An indirect dispatch is never
+    /// checked against `max_compute_workgroups_per_dimension`, because the host does
+    /// not see its workgroup count; every other limit GUST checks applies to it.
     DeviceLimit {
         kernel: String,
         limit: &'static str,
