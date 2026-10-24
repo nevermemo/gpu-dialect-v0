@@ -11,8 +11,24 @@ below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fa
 Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
-spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text) and m3.b (`gust::cpu`)
-done; m3.c next.
+spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`)
+and m3.c (macro twins) done; m3.c2 next.
+
+- M3 m3.c (`732c774`): for every kernel with a typed call, the `#[gpu]` macro emits
+  `#[cfg(any(test, gust_dual))] impl Run<K, N> for gust::cpu::CpuDevice`, which runs the
+  shadow body as written. It matches m3.b's hand-written impl token for token. Uniform kernels
+  and `#[kernel(cpu = "unsupported")]` get none; E0709 and E0710 reject bad `cpu` options.
+  `gust::cpu::read`/`write` refuse a binding of the other access. The check-ui fixture
+  `typed-call-no-cpu-twin` proves the twin is absent from a build without `cfg(test)`.
+  vector-add's twin equals the host reference and the GPU exactly. polynomial's twin equals
+  `run_cpu` bit for bit and stays within the derived bound `48 * 2^-24` of the GPU (S4,
+  RTX 5090: max abs 2.38e-7 observed). CPU-only twin tests run without a GPU. Compile time
+  is unchanged (`-p gust-wgpu --no-run`, warm, 18 s). Not covered: E0709/E0710 have unit
+  tests but no check-ui fixture (macro errors carry no rustc code; m3.c2 adds the mode), and
+  the zero-storage twin is only expansion-tested. MSRV is checked by CI only. Evidence: fmt,
+  clippy, gust-macros, gust lib and doctests, rustdoc `-D warnings`, check-ui, bless
+  (unchanged), Unit suite, check-fast, docs-check, both examples with `--ignored`,
+  check-examples; three mutations killed.
 
 - M3 m3.b (`a7dcb95`): `gust::cpu`, the CPU backend the macro twin will use (m3.c, planned).
   It is `#![forbid(unsafe_code)]` with no new dependencies, and the erased-binding downcast is
