@@ -166,8 +166,7 @@ impl Frame {
     }
 }
 
-/// One frame: settings write → prepare_dispatch → indirect integrate → read the
-/// GPU-derived active count back (the only readback; particles stay resident).
+/// [`run_frame_traced`] without the edges.
 #[cfg(test)]
 pub fn run_frame(
     device: &HeadlessDevice,
@@ -179,7 +178,9 @@ pub fn run_frame(
     Ok((count, report))
 }
 
-/// [`run_frame`] plus the dependency edges the graph derived, per node (node indices, ascending).
+/// One frame: settings write → prepare_dispatch → indirect integrate → read the GPU-derived active
+/// count back (the only readback; particles stay resident). Returns the count, the report, and the
+/// dependency edges the graph derived, per node (node indices, ascending).
 ///
 /// The graph is rebuilt every frame: growth replaces the pool's allocation, and the typed calls (locals
 /// built before the graph, which borrows them) bind the allocation the pool holds right now. Nothing
@@ -214,13 +215,7 @@ pub fn run_frame_traced(
     let integrate = graph.run_indirect(&integrate_call, &frame.args);
     let active = graph.read(&frame.active);
     let edges = [write, prepare, integrate, active]
-        .map(|node| {
-            graph
-                .dependencies(node)
-                .iter()
-                .map(|id| id.index())
-                .collect()
-        })
+        .map(|node| graph.dependency_indices(node))
         .to_vec();
     let output = device.execute_graph(&graph)?;
     let count = output.readback::<Active>(active)?[0].count;
@@ -356,15 +351,11 @@ mod tests {
         }
     }
 
-    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
-    /// (gust-wgpu requests the default limits).
-    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
-
     #[test]
     fn the_budget_keeps_the_indirect_dispatch_within_the_default_workgroup_limit() {
         let groups = BUDGET.div_ceil(pool::integrate::DESCRIPTOR.workgroup_size[0]);
         assert!(
-            groups <= MAX_WORKGROUPS_PER_DIMENSION,
+            groups <= gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION,
             "a budget of {BUDGET} particles needs {groups} workgroups"
         );
     }
@@ -625,16 +616,15 @@ mod tests {
         let prepare = derived.run(&prepare_call);
         let integrate = derived.run_indirect(&integrate_call, &frame.args);
         let read = derived.read(&frame.active);
-        let edges = |node| {
-            derived
-                .dependencies(node)
-                .iter()
-                .map(|id| id.index())
-                .collect::<Vec<_>>()
-        };
+        let edges = |node| derived.dependency_indices(node);
         assert_eq!(
             [edges(write), edges(prepare), edges(integrate), edges(read)],
             [vec![], vec![0], vec![0, 1], vec![1]]
+        );
+        assert!(
+            [write, prepare, integrate, read]
+                .into_iter()
+                .all(|node| derived.is_derived(node))
         );
         let output = device.execute_graph(&derived).unwrap();
         assert_eq!(

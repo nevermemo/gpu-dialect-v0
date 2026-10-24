@@ -198,6 +198,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let actual = device.read_typed_buffer(&gpu_snapshot)?;
     let energy = device.read_f32_buffer(&gpu_energy)?;
     assert_matches(&actual, &energy, &expected, &expected_energy);
+    // The trait method submits a whole batch (a generated `submit` covers one kernel); this is the
+    // example that runs a two-kernel batch through the backend-neutral `gust::Device`.
     let job = gust::Device::submit(&device, &batch)?;
     job.wait()?;
     println!(
@@ -264,10 +266,6 @@ mod tests {
         })
     }
 
-    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
-    /// (gust-wgpu requests the default limits).
-    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
-
     #[test]
     fn demo_size_stays_within_the_default_workgroup_limit() {
         for descriptor in [
@@ -278,7 +276,7 @@ mod tests {
                 .unwrap()
                 .div_ceil(descriptor.workgroup_size[0]);
             assert!(
-                groups <= MAX_WORKGROUPS_PER_DIMENSION,
+                groups <= gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION,
                 "{}: {PARTICLE_COUNT} particles need {groups} workgroups",
                 descriptor.entry_point
             );

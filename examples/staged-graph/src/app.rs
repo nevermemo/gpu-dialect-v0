@@ -212,7 +212,7 @@ impl ResidentState {
 /// Per node of a graph, the indices of the nodes it depends on.
 pub type Edges = Vec<Vec<usize>>;
 
-/// Build and run the four-node graph for one settings update.
+/// [`run_graph_traced`] without the edges.
 #[cfg(test)]
 pub fn run_graph(
     device: &HeadlessDevice,
@@ -223,7 +223,9 @@ pub fn run_graph(
     Ok((summaries, report))
 }
 
-/// [`run_graph`] plus the dependency edges the graph derived, per node (node indices, ascending).
+/// Build and run the four-node graph for one settings update: write the settings, run both stages,
+/// read the summaries back. Returns the summaries, the report, and the dependency edges the graph
+/// derived, per node (node indices, ascending).
 ///
 /// The typed calls are locals built before the graph, which borrows them. Nothing is declared by the
 /// host: `write`, `run` and `read` derive each node's edges from the buffers it touches and the access
@@ -251,22 +253,16 @@ pub fn run_graph_traced(
     );
 
     let mut graph = StagedGraph::new();
-    let upload = graph.write(&state.settings, settings);
+    let write = graph.write(&state.settings, settings);
     let stage_a = graph.run(&transform);
     let stage_b = graph.run(&summarize);
-    let readback = graph.read(&state.summaries);
-    let edges = [upload, stage_a, stage_b, readback]
-        .map(|node| {
-            graph
-                .dependencies(node)
-                .iter()
-                .map(|id| id.index())
-                .collect()
-        })
+    let read = graph.read(&state.summaries);
+    let edges = [write, stage_a, stage_b, read]
+        .map(|node| graph.dependency_indices(node))
         .to_vec();
 
     let output = device.execute_graph(&graph)?;
-    Ok((output.readback::<Summary>(readback)?, output.report, edges))
+    Ok((output.readback::<Summary>(read)?, output.report, edges))
 }
 
 pub fn descriptors() -> [&'static KernelDescriptor; 2] {
@@ -391,10 +387,6 @@ mod tests {
     use super::*;
     use gust_wgpu::{Error, TransferDirection};
 
-    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
-    /// (gust-wgpu requests the default limits).
-    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
-
     #[test]
     fn demo_sizes_stay_within_the_default_workgroup_limit() {
         for count in [DEBUG_COUNT, RELEASE_COUNT] {
@@ -408,7 +400,7 @@ mod tests {
                     .unwrap()
                     .div_ceil(descriptor.workgroup_size[0]);
                 assert!(
-                    groups <= MAX_WORKGROUPS_PER_DIMENSION,
+                    groups <= gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION,
                     "{}: {elements} elements need {groups} workgroups",
                     descriptor.entry_point
                 );
@@ -585,13 +577,7 @@ mod tests {
         let stage_a = derived.run(&transform_call);
         let stage_b = derived.run(&summarize_call);
         let read = derived.read(&state.summaries);
-        let edges = |node| {
-            derived
-                .dependencies(node)
-                .iter()
-                .map(|id| id.index())
-                .collect::<Vec<_>>()
-        };
+        let edges = |node| derived.dependency_indices(node);
         assert_eq!(
             [edges(write), edges(stage_a), edges(stage_b), edges(read)],
             [vec![], vec![0], vec![0, 1], vec![2]]

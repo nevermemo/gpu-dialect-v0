@@ -102,7 +102,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-feature loops` | Bounded-loop work | loop golden/rejection test plus GPU loop test |
 | `cargo xtask check-feature gpu-smoke` | Cheapest wgpu runtime sanity | wgpu crate unit tests only |
 | `cargo xtask check-feature gpu-semantics` | GPU semantic differential work | semantics, numeric, option, loops, struct-assignment tests |
-| `cargo xtask check-feature gpu-runtime` | Runtime/reflection gate work | wgpu reflection integration tests |
+| `cargo xtask check-feature gpu-runtime` | Runtime/reflection gate work | wgpu `reflection`, `limits`, `typed` and `graph` integration tests |
 | `cargo xtask check-changed` | Dirty-tree routing | chooses a focused check from changed paths |
 | `cargo xtask check-format` | Formatting only | `cargo fmt --all -- --check` |
 | `cargo xtask check-lints` | Strict lints | workspace Clippy with warnings denied (`--locked`) |
@@ -186,6 +186,59 @@ The source function is retained only as a private Rust type-checking shadow. It 
 not a CPU execution API. CPU comparisons in the benchmark examples are ordinary,
 independent Rust implementations outside the `#[gpu]` module.
 
+## Running a kernel: typed calls
+
+Typed calls are the primary dispatch path. For every kernel handle the macro
+generates `call`, `submit` and `dispatch`: `call(element_count, buffers...)`
+builds a reusable `gust::Call`, `submit(device, element_count, buffers...)` starts
+it and returns a job, and `dispatch(device, element_count, buffers...)` runs it and
+waits. The buffers follow the kernel's storage parameters, one reference each, in
+parameter order. This is `add_on_gpu` from `examples/vector-add` for the kernel
+above:
+
+```rust
+let a = device.create_f32_buffer("vector add a", a, GpuBufferAccess::ReadOnly);
+let b = device.create_f32_buffer("vector add b", b, GpuBufferAccess::ReadOnly);
+let out = device.create_f32_buffer("vector add out", seed, GpuBufferAccess::ReadWrite);
+vector_add::add::dispatch(device, seed.len() as u32, &a, &b, &out)?;
+let result = device.read_f32_buffer(&out)?;
+```
+
+The generated functions check these things when the program is compiled: every
+argument is a buffer of the element type its parameter declares, all buffers
+belong to one device type, there is one argument per storage parameter, and that
+device type can run the kernel (`gust::Run`). They do not check:
+
+- access: a read-only buffer passed where the kernel writes compiles and fails
+  with a run-time error (`Error::PersistentBufferAccess`) before any GPU work;
+- argument order among buffers of the same element type (two read-only `f32`
+  buffers of `signal-pipeline` can be swapped without a compile error);
+- which device instance a buffer came from: a buffer of another `HeadlessDevice`
+  is rejected at submit.
+
+At submit the backend also checks every binding against the kernel descriptor
+(access, element layout, device instance, length) and the launch against the
+device limits, before anything is compiled or encoded. One buffer may be bound
+twice only when both bindings are read-only; if either side writes, the call is
+rejected at run time before it writes anything.
+
+A buffer must hold exactly `element_count` elements unless the argument is
+wrapped as `Independent(&buffer)` at the call site (a settings buffer, a
+reduction's input or output); the kernel must then guard that buffer with its own
+`.len()`, and an empty independent buffer is rejected when the dispatch has work.
+
+Launch limits come from the device `HeadlessDevice` opened (wgpu's default
+limits, not the adapter's); `HeadlessDevice::with_limits` can only lower them to
+emulate a weaker target. A launch whose workgroup width, invocations per
+workgroup, workgroup count, storage buffer count, binding index or binding size
+exceeds them is `Error::DeviceLimit`. Dispatch is one-dimensional, so one launch
+covers at most `workgroup_size[0]` times
+`gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION` (65 535) elements on
+default limits. `max_buffer_size` is not checked by GUST.
+
+The older slice paths (`dispatch_f32`, `dispatch_u32`, `F32Binding`,
+`U32Binding`, `BufferDispatch` built by hand) still work and are not deprecated.
+
 ## Generated Slang
 
 The kernel above becomes source in this shape:
@@ -263,28 +316,55 @@ Persistent typed buffers, heterogeneous struct/scalar bindings, batched command
 encoding, asynchronous jobs, and GPU timestamp queries remain available from
 `gust-wgpu`.
 
-`StagedGraph` is the first explicit execution-graph slice: upload, dispatch, and
-readback nodes with host-declared dependencies, run as one ordered submission.
-Execution rejects a graph whose declared edges do not cover the buffer hazards its
-nodes create, and reports upload/readback bytes and the bytes that stayed resident.
-Nothing is inferred from kernels. `BufferBinding::independent_length()` opts one
-binding out of the shared element-count rule for settings buffers and reductions;
-the kernel must then guard that buffer with its own `.len()`.
+`StagedGraph` is the first execution-graph slice: upload, dispatch, and readback
+nodes, run as one ordered submission in insertion order. The typed methods
+(`write`, `run` for a typed `Call`, `run_indirect`, `read`) derive each node's
+edges from the buffers it touches and the access the kernel declares: for every
+buffer, the latest earlier writer, and for a buffer the node writes, every earlier
+node that touched it since that writer. The set is conservative, not a transitive
+reduction. Edges are derived from typed calls' declared reads and writes, never
+from kernel bodies; explicit edges remain available through `upload`, `dispatch`,
+`dispatch_indirect` and `readback`, which take host-declared dependencies, and
+the two styles can be mixed. Execution rejects a graph, derived or declared, whose
+edges do not cover the buffer hazards its nodes create (a derived node never
+repairs an invalid explicit one), and the report gives upload/readback bytes, the
+bytes that stayed resident, dispatch, indirect dispatch and workgroup counts, and
+how many edges were derived and how many declared. This is the staged-graph
+example's graph:
+
+```rust
+let mut graph = StagedGraph::new();
+// `transform` and `summarize` are typed `Call`s built before the graph.
+graph.write(&settings, &new_settings);
+graph.run(&transform);
+graph.run(&summarize);
+let read = graph.read(&summaries);
+let output = device.execute_graph(&graph)?;
+let summaries = output.readback::<Summary>(read)?;
+```
+
+`Independent(&buffer)` at the call site opts one argument out of the shared
+element-count rule for settings buffers and reductions; the kernel must then guard
+that buffer with its own `.len()`. The explicit
+`BufferBinding::independent_length()` does the same for hand-built dispatches.
 
 `GpuPool<T>` is the first growable resident collection: explicit capacity, a
 host-tracked logical length mirrored into a one-element count buffer for kernels,
 and host-driven geometric growth that copies the live prefix GPU-to-GPU (never a
 readback) and retires the old allocation behind the copy's fence. A buffer from
-`create_indirect_buffer` can drive `StagedGraph::dispatch_indirect`, whose
-workgroup count the GPU derives; see the contract in
+`create_indirect_buffer` can drive `StagedGraph::run_indirect` (typed) or
+`dispatch_indirect` (explicit), whose workgroup count the GPU derives. The host
+never sees that count, so it is not checked: wgpu silently zeroes a count above
+the real device's per-dimension limit (a limit lowered with `with_limits` does not
+apply to it), and the kernel that writes the arguments must clamp. See the contract in
 [docs/ENGINE_NORTH_STAR.md](docs/ENGINE_NORTH_STAR.md).
 
 ## Examples
 
 The workspace contains eight runnable programs:
 
-- `vector-add` uses the preferred Slang-shaped Rust vocabulary and demonstrates
-  artifact export.
+- `vector-add` uses the preferred Slang-shaped Rust vocabulary, runs through the
+  generated typed `dispatch`, and demonstrates artifact export.
 - `polynomial` evaluates a multi-step cubic expression and compares independent
   CPU and GPU implementations, including persistent, batched, timed, and async
   execution.
@@ -297,20 +377,24 @@ The workspace contains eight runnable programs:
   three compute kernels, and one ordered `calibrate → classify → finalize` batch.
   Every stage consumes the previous stage's typed output and exports its own
   Slang, WGSL, SPIR-V, and readable wgpu host code.
-- `staged-graph` runs one CPU settings upload → `transform` → `summarize` → summary
-  readback as an explicit `StagedGraph`, keeping the samples and the intermediate
-  resident and asserting transfer byte counts, ordering across settings updates, and
-  rejection of undeclared dependencies.
+- `staged-graph` runs one CPU settings write → `transform` → `summarize` → summary
+  read as a `StagedGraph` whose edges derive from typed calls, keeping the samples
+  and the intermediate resident and asserting the exact edge sets, transfer byte
+  counts, ordering across settings updates, and rejection of explicit graphs that
+  omit a dependency.
 - `component-pool` grows a `GpuPool<Particle>` every frame while GPU-authored
   positions survive each GPU-to-GPU copy, and integrates through an indirect
-  dispatch whose active count and workgroup arguments a one-invocation kernel
-  derives on the GPU, clamped to the allocation and a settings budget.
+  dispatch (`run_indirect`) whose active count and workgroup arguments a
+  one-invocation kernel derives on the GPU, clamped to the allocation and a
+  settings budget; the graph is rebuilt every frame, and its derived edges are
+  printed and asserted by the tests.
 - `atomic-counter` has 257 invocations increment one shared counter with
   `atomic_add` and checks the total against the host count.
 
 Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function, kept within the default limit of 65 535 workgroups per dispatch
-dimension (a unit test in each affected example checks it); there is currently no
+dimension (`gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION`; a unit test
+in each affected example checks it); there is currently no
 environment-variable size override:
 
 ```sh
@@ -360,6 +444,29 @@ Booleans are expression values, not host-shareable `GpuPod` fields. Only padding
 storage layouts are executable today. Constant-buffer syntax is not yet supported
 by the headless runtime. See [architecture](docs/ARCHITECTURE.md) for known semantic
 gaps; successful Rust checking does not prove equivalence to Slang inference.
+
+Around the translator, the host side currently provides:
+
+- generated typed `call`, `submit` and `dispatch` per kernel, implemented for the
+  headless wgpu device only; compile-time checks of element type, device type and
+  storage-argument count, and run-time checks of access, layout, device instance,
+  length and aliasing (see "Running a kernel");
+- compile-time assertions emitted with `#[gpu]` that every buffer element type and
+  struct field is a padding-free StorageV1 layout matching Rust's size and
+  alignment (a failing one is rustc error E0080 that names the field or the
+  parameter), and a run-time assertion with the same meaning when a typed buffer,
+  pool buffer or indirect-arguments buffer is created for a hand-written `GpuPod`;
+- launch-limit checks (`Error::DeviceLimit`) against the opened device's limits or
+  lower ones from `with_limits`, before compilation and encoding;
+- `StagedGraph` nodes with derived or declared edges, executed in insertion order
+  and checked against the buffer hazards, with a report of transfers, residency and
+  edge counts;
+- `GpuPool<T>` and indirect dispatch whose workgroup count the GPU writes and the
+  host does not check.
+
+It does not yet provide a CPU backend for typed calls, multi-dimensional dispatch
+(roadmap M7), a compile-time portable limit floor (roadmap M8), fallible buffer
+creation against `max_buffer_size`, or an access mode in the buffer type.
 
 ## Workspace
 

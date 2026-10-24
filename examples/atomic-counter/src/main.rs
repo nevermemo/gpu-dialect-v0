@@ -73,15 +73,11 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
-    /// (gust-wgpu requests the default limits).
-    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
-
     #[test]
     fn invocation_count_stays_within_the_default_workgroup_limit() {
         let groups = INVOCATIONS.div_ceil(atomic_counter::increment::DESCRIPTOR.workgroup_size[0]);
         assert!(
-            groups <= MAX_WORKGROUPS_PER_DIMENSION,
+            groups <= gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION,
             "{INVOCATIONS} invocations need {groups} workgroups"
         );
     }

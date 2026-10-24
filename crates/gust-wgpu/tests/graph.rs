@@ -196,11 +196,7 @@ fn device() -> HeadlessDevice {
 /// The edges of `node` as plain indices.
 #[track_caller]
 fn edges(graph: &StagedGraph<'_>, node: NodeId) -> Vec<usize> {
-    graph
-        .dependencies(node)
-        .iter()
-        .map(|dependency| dependency.index())
-        .collect()
+    graph.dependency_indices(node)
 }
 
 // ---- spike S4: the two example shapes, derived against the pre-registered sets ----
