@@ -60,6 +60,7 @@ impl HeadlessDevice {
     }
 
     fn allocate_pool_buffer<T: GpuPod>(&self, label: &str, capacity: usize) -> GpuBuffer<T> {
+        crate::assert_storage_v1_pod::<T>();
         let raw = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: capacity as u64 * u64::from(T::LAYOUT.stride),
@@ -92,6 +93,7 @@ impl HeadlessDevice {
         if !crate::is_indirect_args_layout(T::LAYOUT) {
             return Err(Error::IndirectArgsLayout(T::LAYOUT.name));
         }
+        crate::assert_storage_v1_pod::<T>();
         let usage = wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_DST
             | wgpu::BufferUsages::COPY_SRC

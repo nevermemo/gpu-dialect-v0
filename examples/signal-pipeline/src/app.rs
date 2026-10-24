@@ -381,10 +381,6 @@ fn export_generated_source() -> PathBuf {
 mod tests {
     use super::*;
 
-    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
-    /// (gust-wgpu requests the default limits).
-    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
-
     #[test]
     fn demo_sizes_stay_within_the_default_workgroup_limit() {
         for count in [DEBUG_COUNT, RELEASE_COUNT] {
@@ -392,7 +388,7 @@ mod tests {
                 .unwrap()
                 .div_ceil(signal_pipeline::transform::DESCRIPTOR.workgroup_size[0]);
             assert!(
-                groups <= MAX_WORKGROUPS_PER_DIMENSION,
+                groups <= gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION,
                 "{count} elements need {groups} workgroups"
             );
         }

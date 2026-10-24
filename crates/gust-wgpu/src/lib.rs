@@ -41,6 +41,26 @@ pub use pool::{GpuPool, GrowthRecord};
 
 static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 
+/// wgpu's default `max_compute_workgroups_per_dimension`: the most workgroups one dispatch may
+/// launch along one axis on a device opened with the default limits, which is what
+/// `HeadlessDevice` requests. A single-dimension dispatch of a kernel with workgroup width `w`
+/// therefore covers at most `w * DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION` elements; more
+/// is an `Error::DeviceLimit` (multi-dimensional dispatch is roadmap M7). Pinned to
+/// `wgpu::Limits::default()` by a unit test and to the opened device by the `limits` test.
+pub const DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
+
+/// Panic unless `T`'s `GpuPod::LAYOUT` is StorageV1 and agrees with Rust's size and alignment.
+/// Every typed allocation (`create_typed_buffer`, pool buffers) runs it first, so a hand-written
+/// `GpuPod` that lies is refused at creation instead of failing later in wgpu or at dispatch.
+pub(crate) fn assert_storage_v1_pod<T: GpuPod>() {
+    assert!(
+        T::LAYOUT.is_storage_v1()
+            && T::LAYOUT.size as usize == size_of::<T>()
+            && T::LAYOUT.alignment as usize == align_of::<T>(),
+        "GpuPod implementation must match the Rust StorageV1 representation"
+    );
+}
+
 /// Whether `layout` is exactly `wgpu::util::DispatchIndirectArgs`: three `u32`s.
 fn is_indirect_args_layout(layout: gust::TypeLayout) -> bool {
     use gust::{ScalarKind, TypeLayoutKind};
@@ -732,12 +752,7 @@ impl HeadlessDevice {
         values: &[T],
         access: GpuBufferAccess,
     ) -> GpuBuffer<T> {
-        assert!(
-            T::LAYOUT.is_storage_v1()
-                && T::LAYOUT.size as usize == size_of::<T>()
-                && T::LAYOUT.alignment as usize == align_of::<T>(),
-            "GpuPod implementation must match the Rust StorageV1 representation"
-        );
+        assert_storage_v1_pod::<T>();
         let mut usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         if access == GpuBufferAccess::ReadWrite {
             usage |= wgpu::BufferUsages::COPY_SRC;
@@ -2260,6 +2275,111 @@ mod tests {
         assert!(source.contains("out: f32 [storage-v1; size=4, align=4, stride=4]"));
         assert!(source.contains("pass.dispatch_workgroups(element_count.div_ceil(64), 1, 1);"));
     }
+
+    #[test]
+    fn the_workgroup_constant_is_wgpus_default() {
+        assert_eq!(
+            DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION,
+            wgpu::Limits::default().max_compute_workgroups_per_dimension
+        );
+    }
+
+    /// A hand-written `GpuPod` whose layout claims alignment 8 for a four-byte value.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct LyingAlignment(u32);
+
+    // SAFETY: deliberately dishonest, to exercise the runtime assertion; it is never uploaded.
+    unsafe impl GpuPod for LyingAlignment {
+        const LAYOUT: gust::TypeLayout = gust::TypeLayout {
+            name: "LyingAlignment",
+            size: 4,
+            alignment: 8,
+            stride: 4,
+            kind: gust::TypeLayoutKind::Scalar(gust::ScalarKind::U32),
+        };
+    }
+
+    /// A hand-written `GpuPod` whose layout is a valid StorageV1 struct of two `u32`s (size 8)
+    /// while the Rust type is four bytes.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct LyingSize(u32);
+
+    // SAFETY: deliberately dishonest, to exercise the runtime assertion; it is never uploaded.
+    unsafe impl GpuPod for LyingSize {
+        const LAYOUT: gust::TypeLayout = gust::TypeLayout {
+            name: "LyingSize",
+            size: 8,
+            alignment: 4,
+            stride: 8,
+            kind: gust::TypeLayoutKind::Struct(&[
+                gust::StructFieldLayout {
+                    name: "a",
+                    offset: 0,
+                    ty: gust::TypeLayout::scalar("u32", gust::ScalarKind::U32),
+                },
+                gust::StructFieldLayout {
+                    name: "b",
+                    offset: 4,
+                    ty: gust::TypeLayout::scalar("u32", gust::ScalarKind::U32),
+                },
+            ]),
+        };
+    }
+
+    /// Right size (4) and alignment (4), but the only field sits at offset 2, so the layout is not
+    /// StorageV1: only the `is_storage_v1()` clause of the assertion can refuse it.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct LyingOffset(u32);
+
+    // SAFETY: deliberately dishonest, to exercise the runtime assertion; it is never uploaded.
+    unsafe impl GpuPod for LyingOffset {
+        const LAYOUT: gust::TypeLayout = gust::TypeLayout {
+            name: "LyingOffset",
+            size: 4,
+            alignment: 4,
+            stride: 4,
+            kind: gust::TypeLayoutKind::Struct(&[gust::StructFieldLayout {
+                name: "a",
+                offset: 2,
+                ty: gust::TypeLayout::scalar("u32", gust::ScalarKind::U32),
+            }]),
+        };
+    }
+
+    #[test]
+    fn the_layout_assertion_accepts_honest_types() {
+        assert_storage_v1_pod::<u32>();
+        assert_storage_v1_pod::<f32>();
+    }
+
+    #[test]
+    #[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
+    fn the_layout_assertion_refuses_a_layout_that_is_not_storage_v1() {
+        assert_storage_v1_pod::<LyingAlignment>();
+    }
+
+    #[test]
+    #[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
+    fn the_layout_assertion_refuses_a_bad_offset_with_the_right_size_and_alignment() {
+        assert_eq!(LyingOffset::LAYOUT.size as usize, size_of::<LyingOffset>());
+        assert_eq!(
+            LyingOffset::LAYOUT.alignment as usize,
+            align_of::<LyingOffset>()
+        );
+        assert!(!LyingOffset::LAYOUT.is_storage_v1());
+        assert_storage_v1_pod::<LyingOffset>();
+    }
+
+    #[test]
+    #[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
+    fn the_layout_assertion_refuses_a_size_that_differs_from_rust() {
+        assert!(LyingSize::LAYOUT.is_storage_v1());
+        assert_storage_v1_pod::<LyingSize>();
+    }
+
     #[test]
     fn binding_size_is_checked_against_the_stored_limit() {
         let limits = wgpu::Limits {

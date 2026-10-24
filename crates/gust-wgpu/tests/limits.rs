@@ -140,6 +140,11 @@ fn limits_are_the_opened_devices_and_the_replacement_lowers_them() {
     // reading the device: it fails if wgpu changes its defaults or if GUST starts
     // requesting the adapter's limits, so the other tests' assumptions get re-checked.
     assert_eq!(opened, wgpu::Limits::default());
+    assert_eq!(
+        opened.max_compute_workgroups_per_dimension,
+        gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION,
+        "the exported constant the examples use must be what the opened device reports"
+    );
     println!(
         "adapter {:?}; max_compute_workgroup_size_x={} max_compute_invocations_per_workgroup={} \
          max_compute_workgroups_per_dimension={} max_storage_buffer_binding_size={} \
@@ -494,4 +499,73 @@ fn binding_size_through_dispatch_u32() {
         .dispatch_u32(&descriptor, 4, &[U32Binding::ReadWrite(&[3; 4])])
         .unwrap();
     assert_eq!(output.writable_buffers, [vec![17, 3, 3, 3]]);
+}
+
+/// A hand-written `GpuPod` that claims alignment 8 for a four-byte value, so its layout is not
+/// StorageV1. It is never uploaded: every allocation path must refuse it first.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct LyingPod(u32);
+
+// SAFETY: deliberately dishonest, to prove the runtime layout assertion fires.
+unsafe impl GpuPod for LyingPod {
+    const LAYOUT: TypeLayout = TypeLayout {
+        name: "LyingPod",
+        size: 4,
+        alignment: 8,
+        stride: 4,
+        kind: gust::TypeLayoutKind::Scalar(gust::ScalarKind::U32),
+    };
+}
+
+#[test]
+#[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
+fn typed_buffers_refuse_a_lying_pod() {
+    device().create_typed_buffer("lying", &[LyingPod(1)], GpuBufferAccess::ReadWrite);
+}
+
+#[test]
+#[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
+fn pool_buffers_refuse_a_lying_pod() {
+    device().create_pool("lying", &[LyingPod(1)], 4);
+}
+
+/// A four-byte Rust type whose layout claims to be exactly `DispatchIndirectArgs` (three `u32`s,
+/// size 12), so it passes the indirect-arguments layout check and only the size assertion can
+/// refuse it.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct LyingArgs(u32);
+
+// SAFETY: deliberately dishonest, to prove the runtime layout assertion fires.
+unsafe impl GpuPod for LyingArgs {
+    const LAYOUT: TypeLayout = TypeLayout {
+        name: "LyingArgs",
+        size: 12,
+        alignment: 4,
+        stride: 12,
+        kind: gust::TypeLayoutKind::Struct(&[
+            gust::StructFieldLayout {
+                name: "x",
+                offset: 0,
+                ty: TypeLayout::scalar("u32", gust::ScalarKind::U32),
+            },
+            gust::StructFieldLayout {
+                name: "y",
+                offset: 4,
+                ty: TypeLayout::scalar("u32", gust::ScalarKind::U32),
+            },
+            gust::StructFieldLayout {
+                name: "z",
+                offset: 8,
+                ty: TypeLayout::scalar("u32", gust::ScalarKind::U32),
+            },
+        ]),
+    };
+}
+
+#[test]
+#[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
+fn indirect_buffers_refuse_a_lying_pod() {
+    let _ = device().create_indirect_buffer("lying", &[LyingArgs(1)]);
 }

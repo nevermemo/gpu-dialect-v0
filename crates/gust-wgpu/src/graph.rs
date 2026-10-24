@@ -223,6 +223,18 @@ impl<'a> StagedGraph<'a> {
         &self.nodes[node.0].dependencies
     }
 
+    /// The edges of `node` as node indices (`NodeId::index`), in the order of
+    /// [`dependencies`](Self::dependencies).
+    ///
+    /// # Panics
+    /// If `node` is not a node of this graph.
+    pub fn dependency_indices(&self, node: NodeId) -> Vec<usize> {
+        self.dependencies(node)
+            .iter()
+            .map(|dependency| dependency.index())
+            .collect()
+    }
+
     /// Whether the graph derived the edges of `node` (a typed method built it).
     ///
     /// # Panics
