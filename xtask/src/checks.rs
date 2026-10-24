@@ -54,6 +54,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 "result",
                 "loops",
                 "struct_assignment",
+                "mismatch",
             ] {
                 run_direct(&root, "cargo", &["test", "-p", "gust-wgpu", "--test", test])?;
             }
@@ -359,7 +360,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         "wgpu" => "wgpu: all runtime/GPU integration tests; about 10s on this machine",
         "gpu-smoke" => "gpu-smoke: wgpu crate unit tests only; cheap runtime/cache sanity",
         "gpu-semantics" => {
-            "gpu-semantics: semantics/numeric/option/loops/struct assignment GPU differential tests"
+            "gpu-semantics: semantics/numeric/option/loops/struct assignment GPU differential tests and the known-mismatch ledger"
         }
         "gpu-runtime" => {
             "gpu-runtime: reflection gate, cache/runtime mismatch tests, launch-limit checks and buffer layout assertions, typed calls and derived graph edges"
