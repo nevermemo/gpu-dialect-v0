@@ -11,8 +11,20 @@ below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fa
 Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
-spike S1 passed (decision A); m3.a1 next.
+spike S1 passed (decision A); m3.a1 (ledger) done; m3.a2 next.
 
+- M3 m3.a1 (`96ec90b`): known-mismatch ledger. `tests/fixtures/mismatch.rs` (13 kernels,
+  blessed golden) and `crates/gust-wgpu/tests/mismatch.rs` pin, per row, the GPU outcome and
+  the plain-Rust outcome; the Rust column follows the run-time `overflow-checks` mode (debug
+  run: checked; `--release` run: wrapping). GPU values that WGSL defines are enforced: division
+  and remainder by zero, `MIN / -1`, shift-amount masking, wrapping, and finite out-of-range
+  float-to-int casts (WGSL 15.7.6: 2147483520, 4294967040, `-1e20 -> i32::MIN`). NaN,
+  infinities, subnormals (flushed on the RTX 5090), `NaN != NaN` (false on the GPU) and
+  out-of-bounds access are recorded as unspecified one-adapter observations, not enforced
+  (D39). `docs/SEMANTICS.md` lists them as limitations; an id guard keeps doc and test in step;
+  `verify --mode full` adds a `--release` ledger pass. Spike S2 record: 33 in-domain controls
+  agree; six cast outcomes differed from the body's pre-registration and are listed. Evidence:
+  fmt, clippy, ledger debug and release, docs-check, lint, Unit suite, check-fast green.
 - M3 spike S1 (pre-registered, decision A): a minimal `gust::cpu` (module-level
   `#![forbid(unsafe_code)]`, the erased-binding downcast confined to `gust::cpu::read`
   and `write`) plus a macro-emitted `#[cfg(any(test, gust_dual))] impl Run<K, N> for
