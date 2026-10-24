@@ -69,6 +69,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-call-mismatch"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "typed-call-no-run"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "typed-call-ok"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"

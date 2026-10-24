@@ -1,7 +1,7 @@
 //! Backend-neutral typed dispatch surface (roadmap M2, slice m2.a).
 //!
-//! A `#[gpu]` kernel handle (a [`Kernel`]) gets, in a later slice, a generated `call` function that turns typed
-//! buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
+//! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions; `call` turns
+//! typed buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
 //! storage parameter. This module holds only what that generated code and the backends share:
 //!
 //! - [`TypedDevice`]: extension of [`Device`] that names the erased, `Copy` binding of one device. [`Device`] itself is
@@ -13,7 +13,7 @@
 //! - [`Resource`]: a typed buffer of one device. Through a *generated* `call`, its `Element` and `Device` associated
 //!   types make a buffer of the wrong element type, or of another device *type*, a compile error. `Call::new` and
 //!   `Resource::bind` are public, so hand-built calls are not covered by that check; see the contract below.
-//! - [`Arg`], [`Independent`], [`LengthRule`]: one argument of a call and the call-site opt-in (D15) that lets a
+//! - [`Arg`], [`Independent`], [`LengthRule`]: one argument of a call and the call-site opt-in that lets a
 //!   buffer's length differ from the element count.
 //! - [`Call`]: a plain, reusable value: what the generated `call` returns, what [`Run::submit_call`] consumes and what
 //!   the staged graph (m2.e) records. Its descriptor is taken from `K` and its parameter count from `N`; it cannot be
@@ -58,8 +58,8 @@ pub trait TypedDevice: Device {
 /// A device that can run kernel `K`, which has `N` storage parameters.
 ///
 /// GPU backends implement this for every `K`; a CPU backend implements it per kernel, next to the body it executes
-/// (M3). Generated `submit` and `dispatch` functions require `R0::Device: Run<Self, N>`, so a kernel without an
-/// executable form on a device fails to compile for that device.
+/// (M3). Generated `submit` and `dispatch` functions require the device of their first buffer to implement
+/// `Run<Self, N>`, so a kernel without an executable form on a device fails to compile for that device.
 ///
 /// The returned job is tied to the device (`'d`), not to the borrowed buffers (`'r`), as for [`Device::submit`]: a CPU
 /// backend must finish the work inside `submit_call` (or hold owned handles), because the buffers may be released
@@ -80,7 +80,7 @@ pub trait Run<K: Kernel, const N: usize>: TypedDevice {
     }
 }
 
-/// How a binding's length relates to the call's element count (D15).
+/// How a binding's length relates to the call's element count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LengthRule {
@@ -286,7 +286,7 @@ impl<'r, R: Resource> From<&'r R> for Arg<'r, R> {
     }
 }
 
-/// Call-site opt-in: this buffer's length may differ from the element count (D15).
+/// Call-site opt-in: this buffer's length may differ from the element count.
 ///
 /// `kernel::call(n, &a, Independent(&settings), &out)` marks only `settings`.
 #[derive(Debug)]
@@ -319,22 +319,28 @@ impl<K: Kernel, const N: usize> Described<K, N> {
 
     /// Evaluated whenever `Call::new` is instantiated: the kernel's storage-parameter count must be `N`.
     const STORAGE_PARAMETERS_MATCH: () = assert!(
-        storage_parameters(&K::DESCRIPTOR) == N,
+        K::DESCRIPTOR.storage_parameter_count() == N,
         "Call<_, K, N>: N must equal the number of storage parameters of K::DESCRIPTOR"
     );
 }
 
-/// Number of `Storage` parameters of a descriptor (the ones a typed call binds).
-const fn storage_parameters(descriptor: &KernelDescriptor) -> usize {
-    let mut index = 0;
-    let mut count = 0;
-    while index < descriptor.parameters.len() {
-        if matches!(descriptor.parameters[index].kind, ParameterKind::Storage) {
-            count += 1;
+impl KernelDescriptor {
+    /// Number of `Storage` parameters (the ones a typed call binds).
+    ///
+    /// Not part of the stable surface: `#[gpu]` expansions use it in a constant assertion that the generated
+    /// typed call takes as many arguments as the descriptor has storage parameters.
+    #[doc(hidden)]
+    pub const fn storage_parameter_count(&self) -> usize {
+        let mut index = 0;
+        let mut count = 0;
+        while index < self.parameters.len() {
+            if matches!(self.parameters[index].kind, ParameterKind::Storage) {
+                count += 1;
+            }
+            index += 1;
         }
-        index += 1;
+        count
     }
-    count
 }
 
 /// A typed kernel call: the kernel, the element count and one binding per storage parameter.
@@ -357,7 +363,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// equal the number of `Storage` parameters of that descriptor. A mismatch is a compile error when the call is
     /// instantiated (a failed constant assertion). That is after monomorphisation: `cargo check`, clippy and
     /// rust-analyzer do not report it, and it never fires for a `call` nothing uses. This is therefore a backstop;
-    /// the macro will emit (slice m2.d1) a non-generic `const _: () = assert!(..)` per kernel. The count is the only
+    /// the `#[gpu]` macro also emits a non-generic `const _: () = assert!(..)` per kernel. The count is the only
     /// property of `bindings` that is checked here: order, access, element and device are the generated code's
     /// and the backend's business.
     ///
@@ -1515,10 +1521,10 @@ mod tests {
     }
 
     #[test]
-    fn storage_parameters_counts_only_storage_kind() {
-        assert_eq!(storage_parameters(&Scale::DESCRIPTOR), 3);
-        assert_eq!(storage_parameters(&Swap2::DESCRIPTOR), 2);
-        assert_eq!(storage_parameters(&Nothing::DESCRIPTOR), 0);
+    fn storage_parameter_count_counts_only_storage_kind() {
+        assert_eq!(Scale::DESCRIPTOR.storage_parameter_count(), 3);
+        assert_eq!(Swap2::DESCRIPTOR.storage_parameter_count(), 2);
+        assert_eq!(Nothing::DESCRIPTOR.storage_parameter_count(), 0);
     }
 
     #[test]
