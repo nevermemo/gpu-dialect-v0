@@ -9,6 +9,18 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.e: `StagedGraph` derives dependencies from typed calls. `write`, `run`,
+  `run_indirect` and `read` record the latest earlier writer of every buffer a node
+  touches (RAW, WAW) and, for a writing node, every reader since that writer (WAR); the
+  set is conservative and still validated, and execution stays in insertion order. Mixed
+  graphs work. Measured (spike S4): staged-graph and component-pool derive exactly the
+  pre-registered sets, with GPU readbacks equal to the declared graphs. `validate` now
+  checks device limits for every node before anything compiles (closing the m2.b gap)
+  and rejects an indirect node whose arguments buffer is also bound read-write (measured:
+  a wgpu usage-conflict panic). Indirect counts are known only on the GPU: wgpu zeroes
+  over-limit counts silently and checks the real device limits, so a limit lowered with
+  `with_limits` does not apply to them. `GraphReport` counts derived and declared edges and
+  is `#[non_exhaustive]` (`229bfbf`).
 - M2 m2.d2: const layout assertions. Every `#[gpu]` struct asserts, in one const block,
   each field at its padding-free offset (the message names the field), no tail padding,
   alignment 4 and `LAYOUT.is_storage_v1()`; every kernel asserts per storage parameter
@@ -48,9 +60,9 @@ below. M2 (typed host API) is under way, one slice at a time.
   read-write panicked in wgpu, read-write twice ran with the last writer winning; no
   example binds a buffer twice, and check-examples passes). Binding indices are checked
   against `max_bindings_per_bind_group` on every dispatch path. 19 GPU tests in
-  `tests/typed.rs`. Open for m2.e: a `DispatchIndirect` node whose arguments buffer is
-  also bound read-write in the same node is not checked; the `_` arm on the
-  `#[non_exhaustive]` `LengthRule` would silently accept a new variant (`119ece3`).
+  `tests/typed.rs`. Still open: the `_` arm on the `#[non_exhaustive]` `LengthRule`
+  would silently accept a new variant (the indirect-arguments alias is checked since m2.e)
+  (`119ece3`).
 - M2 m2.a: typed call surface in `gust` (`dispatch.rs`). `TypedDevice` extends
   `Device` (unchanged) with a `Binding<'r>` type; `Resource`, `Arg`, `Independent`,
   `LengthRule` and `Call` describe one typed launch, and `Run<K, N>` submits it.
