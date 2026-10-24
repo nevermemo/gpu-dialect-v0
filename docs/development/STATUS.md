@@ -10,8 +10,15 @@ sanity check by Fable and Opus (both "proceed with fixes") and the full validati
 below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fable and
 Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (owner to
-confirm); spike S1 runs first.
+confirm); spike S1 passed (decision A); m3.a1 next.
 
+- M3 spike S1 (pre-registered, decision A): a minimal `gust::cpu` (module-level
+  `#![forbid(unsafe_code)]`, the erased-binding downcast confined to `gust::cpu::read`
+  and `write`) plus a macro-emitted `#[cfg(any(test, gust_dual))] impl Run<K, N> for
+  gust::cpu::CpuDevice` runs vector-add's shadow body on the CPU. The twin equals the host
+  reference and the GPU exactly at counts 1, 63, 64, 65 and 257 (RTX 5090); no kill rule
+  fired, no manifest changed, clippy and check-fast green. The spike stays on a local branch
+  (`dc2ad87`, not merged); m3.b and m3.c rebuild it with tests.
 - M2 sanity-check fixes (`2d1880b`, D37): indirect launches check everything except the
   workgroup count on both the validation and the execution path, so `with_limits` with a
   lower `max_compute_workgroups_per_dimension` no longer rejects them through a placeholder

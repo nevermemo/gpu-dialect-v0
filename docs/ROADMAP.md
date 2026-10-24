@@ -37,8 +37,8 @@ and fixes the order inside it.
 | Item | Work | Status |
 | --- | --- | --- |
 | M3 plan | Plan with pre-registered spikes; Fable plan, Codex review (adopt with changes), two revisions, Opus re-review in the Codex slot; overflow decision D38 | done (owner to confirm D38) |
-| S1 | Spike: a minimal `gust::cpu` and a macro-emitted `impl Run` for vector-add, compared with the host reference and the GPU (kill: `unsafe`, a new dependency, or the downcast leaking into generated code) | ready |
-| m3.a1 | Known-mismatch ledger: GPU edge-case probes (S2, incl. NaN, subnormal, out-of-bounds), fixture and ledger test keyed on the run-time overflow mode, release ledger pass in `check-full` | planned |
+| S1 | Spike: a minimal `gust::cpu` and a macro-emitted `impl Run` for vector-add, compared with the host reference and the GPU (kill: `unsafe`, a new dependency, or the downcast leaking into generated code) | done (decision A: no kill rule; twin == host reference == GPU exactly at counts 1, 63, 64, 65, 257; local spike commit, not merged; m3.b and m3.c build on it) |
+| m3.a1 | Known-mismatch ledger: GPU edge-case probes (S2, incl. NaN, subnormal, out-of-bounds), fixture and ledger test keyed on the run-time overflow mode, release ledger pass in `check-full` | ready |
 | m3.a2 | `docs/SEMANTICS.md`: the executable-semantics contract with spec-allowed, measured and proven labels, per-operation float bounds with input domains, memory preconditions | planned |
 | m3.b | `gust::cpu`: `CpuDevice`, `CpuBuffer`, bindings, jobs, validation, `overflow_checks()` | planned |
 | m3.c | Macro-emitted CPU twins under `cfg(any(test, gust_dual))`, `#[kernel(cpu = "unsupported")]`, vector-add and polynomial twin assertions with derived bounds | planned |
