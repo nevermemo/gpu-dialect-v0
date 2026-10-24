@@ -62,7 +62,15 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
         "gpu-runtime" => run_direct(
             &root,
             "cargo",
-            &["test", "-p", "gust-wgpu", "--test", "reflection"],
+            &[
+                "test",
+                "-p",
+                "gust-wgpu",
+                "--test",
+                "reflection",
+                "--test",
+                "limits",
+            ],
         ),
         "reflection" => {
             build_slang_reflect(BuildOptions::default())?;
@@ -349,7 +357,9 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         "gpu-semantics" => {
             "gpu-semantics: semantics/numeric/option/loops/struct assignment GPU differential tests"
         }
-        "gpu-runtime" => "gpu-runtime: reflection gate and cache/runtime mismatch tests",
+        "gpu-runtime" => {
+            "gpu-runtime: reflection gate, cache/runtime mismatch tests and launch-limit checks"
+        }
         "reflection" => "reflection: native Slang helper + core/wgpu reflection contract",
         "loops" => "loops: bounded-loop golden/rejection test plus real-GPU loop differential test",
         "result" => {

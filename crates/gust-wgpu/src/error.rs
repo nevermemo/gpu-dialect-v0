@@ -75,6 +75,25 @@ pub enum Error {
         len: usize,
         requested: usize,
     },
+    /// A launch needs more than a limit of the device (or of the limits installed with
+    /// `HeadlessDevice::with_limits`) allows. A single dispatch reports it before any
+    /// pipeline is compiled, looked up in the cache or encoded. A multi-node graph
+    /// checks its nodes in order while it encodes, so earlier nodes may already be
+    /// compiled and cached and the encoder created before an over-limit node fails;
+    /// nothing is submitted.
+    DeviceLimit {
+        kernel: String,
+        limit: &'static str,
+        requested: u64,
+        maximum: u64,
+    },
+    /// `HeadlessDevice::with_limits` may only lower limits; `limit` was raised above the
+    /// value the device was opened with.
+    LimitRaised {
+        limit: &'static str,
+        requested: u64,
+        device: u64,
+    },
     Poll(String),
     Map(String),
 }
@@ -200,6 +219,32 @@ impl fmt::Display for Error {
             Self::PoolTruncateGrows { len, requested } => write!(
                 formatter,
                 "pool truncate to {requested} exceeds the logical length {len}; use push or reserve to grow",
+            ),
+            Self::DeviceLimit {
+                kernel,
+                limit,
+                requested,
+                maximum,
+            } => {
+                write!(
+                    formatter,
+                    "kernel `{kernel}` needs {requested} for `{limit}`, the limit is {maximum}"
+                )?;
+                if *limit == "max_compute_workgroups_per_dimension" {
+                    write!(
+                        formatter,
+                        "; split the work into several dispatches (multi-dimensional dispatch is roadmap M7)"
+                    )?;
+                }
+                Ok(())
+            }
+            Self::LimitRaised {
+                limit,
+                requested,
+                device,
+            } => write!(
+                formatter,
+                "`with_limits` may only lower limits: `{limit}` is {requested}, which is better than the {device} the device was opened with",
             ),
             Self::Poll(error) => write!(formatter, "GPU synchronization failed: {error}"),
             Self::Map(error) => write!(formatter, "GPU readback failed: {error}"),
