@@ -8,8 +8,9 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 2026-10-23 (D33): M1.0 to M1.6 are done (per-item evidence in the roadmap), after a
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fable and
-Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds) is
-being planned.
+Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
+adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (owner to
+confirm); spike S1 runs first.
 
 - M2 sanity-check fixes (`2d1880b`, D37): indirect launches check everything except the
   workgroup count on both the validation and the execution path, so `with_limits` with a

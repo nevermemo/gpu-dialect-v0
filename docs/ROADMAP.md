@@ -31,12 +31,21 @@ framework, and Hurricane, the game engine (today's
 
 ## Now and next
 
-**Now: M3, dual test builds.** Planning next. The M2 sanity check (D37) keeps M3's scope
+**Now: M3, dual test builds.** Plan adopted 2026-10-24 (owner-delegated); slices run one at a time. The M2 sanity check (D37) keeps M3's scope
 and fixes the order inside it.
 
 | Item | Work | Status |
 | --- | --- | --- |
-| M3 plan | Plan for M3 with pre-registered spikes; the first spike has the macro emit `Run` for a CPU device in `gust` on vector-add (kill rule: `unsafe` or a `gust-wgpu` dependency in the macro means redesign `Binding` first); the executable-semantics contract (D22) and a minimal known-mismatch ledger come first; scalar kernels before shadow-type breadth; `--cfg gust_dual` last | ready |
+| M3 plan | Plan with pre-registered spikes; Fable plan, Codex review (adopt with changes), two revisions, Opus re-review in the Codex slot; overflow decision D38 | done (owner to confirm D38) |
+| S1 | Spike: a minimal `gust::cpu` and a macro-emitted `impl Run` for vector-add, compared with the host reference and the GPU (kill: `unsafe`, a new dependency, or the downcast leaking into generated code) | ready |
+| m3.a1 | Known-mismatch ledger: GPU edge-case probes (S2, incl. NaN, subnormal, out-of-bounds), fixture and ledger test keyed on the run-time overflow mode, release ledger pass in `check-full` | planned |
+| m3.a2 | `docs/SEMANTICS.md`: the executable-semantics contract with spec-allowed, measured and proven labels, per-operation float bounds with input domains, memory preconditions | planned |
+| m3.b | `gust::cpu`: `CpuDevice`, `CpuBuffer`, bindings, jobs, validation, `overflow_checks()` | planned |
+| m3.c | Macro-emitted CPU twins under `cfg(any(test, gust_dual))`, `#[kernel(cpu = "unsupported")]`, vector-add and polynomial twin assertions with derived bounds | planned |
+| m3.c2 | `cargo xtask check-cpu` in the Unit suite | planned |
+| m3.d | Shadow-type breadth (T01-T12): executable atomics, twin assertions in the fixture tests, ledger twin column | planned |
+| m3.e1, m3.e2 | Remaining examples: per-kernel twins or explicit opt-outs (graph examples use read-back intermediates) | planned |
+| m3.f1, m3.f2 | `--cfg gust_dual`: a cross-crate fixture proving the twin is absent from production builds, `check-dual`, check-cfg lints, example mains, CI step | planned |
 
 **Done: M2, typed host API** (closed 2026-10-24, D37). Plan adopted after two Codex reviews (owner-delegated); slices
 ran one at a time, and each landed slice is recorded in STATUS.
@@ -102,7 +111,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M0 Close-out and housekeeping | See Now and next | done (D28; M0.15 waits for 2026-10-30) |
 | M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | done (D33; M1.0 to M1.6) |
 | M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | done (D37) |
-| M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[gpu(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[gpu(cpu = "unsupported")]` is the absence of the `Run` impl | planned |
+| M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[gpu(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[gpu(cpu = "unsupported")]` is the absence of the `Run` impl | in progress |
 | M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run | planned |
 | M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; known-mismatch file; scalar `coretests` cases on the GPU | planned |
 | M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`) | planned |
