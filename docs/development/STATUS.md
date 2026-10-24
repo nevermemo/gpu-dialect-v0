@@ -9,6 +9,18 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.c: `gust-wgpu` implements the typed surface. `HeadlessDevice` is a
+  `TypedDevice` with a `Run<K, N>` for every kernel, and `GpuBuffer<T>` is a `Resource`;
+  every typed call goes through the existing persistent-binding validation (layout,
+  device, access, current length) before any wgpu object. One buffer bound to two
+  parameters is now rejected as `Error::AliasedBinding` when either binding is
+  read-write, on typed, untyped and graph paths (measured before: read-only plus
+  read-write panicked in wgpu, read-write twice ran with the last writer winning; no
+  example binds a buffer twice, and check-examples passes). Binding indices are checked
+  against `max_bindings_per_bind_group` on every dispatch path. 19 GPU tests in
+  `tests/typed.rs`. Open for m2.e: a `DispatchIndirect` node whose arguments buffer is
+  also bound read-write in the same node is not checked; the `_` arm on the
+  `#[non_exhaustive]` `LengthRule` would silently accept a new variant (`119ece3`).
 - M2 m2.a: typed call surface in `gust` (`dispatch.rs`). `TypedDevice` extends
   `Device` (unchanged) with a `Binding<'r>` type; `Resource`, `Arg`, `Independent`,
   `LengthRule` and `Call` describe one typed launch, and `Run<K, N>` submits it.
@@ -24,9 +36,9 @@ below. M2 (typed host API) is under way, one slice at a time.
   default limits, not the adapter's. `HeadlessDevice::with_limits` only lowers limits
   (five fields honoured). Known gaps: in a multi-node graph earlier nodes may compile
   before an over-limit node fails (nothing is submitted; m2.e moves the check into graph
-  validation); the dispatch emitted by `render_wgpu_source`, binding indices at or above
-  `max_bindings_per_bind_group` in hand-written descriptors, and buffers above
-  `max_buffer_size` are not checked yet (`151ef56`).
+  validation); the dispatch emitted by `render_wgpu_source` and buffers above
+  `max_buffer_size` are not checked yet; binding indices are checked since m2.c
+  (`151ef56`).
 
 - M1.6: sanity-check fixes. Clippy `disallowed-methods`/`disallowed-macros` replace the
   hand-written uncoded-error scanner, and the exception is confined to `diagnostics.rs`

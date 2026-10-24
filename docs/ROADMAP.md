@@ -39,7 +39,8 @@ run one at a time, and each landed slice is recorded in STATUS.
 | S0 | Spike outside the repository: the typed call surface executes on a CPU-shaped device with safe Rust, and pins aliasing (read/read accepted, read/write and write/write rejected at run time) | done (decision A: the planned shape stands; `'r` bounds on generated signatures) |
 | m2.b | Launch-limit checks: workgroup width, invocations, storage-buffer count, workgroup count and binding size checked against the opened device before any compile, returning `Error::DeviceLimit` instead of a wgpu panic; `HeadlessDevice::with_limits` lowers limits | done (Gpu: check-fast RTX 5090; Opus keep after fixes; `151ef56`) |
 | m2.a | Typed call surface in `gust`: `TypedDevice` (extends `Device`), `Resource`, `Arg`, `Independent`, `Call`, the `Run<K, N>` hook; the backend contract checks bindings against the kernel at submit | done (Unit + check-fast; Opus keep after one fix round; `3060072`) |
-| m2.c, m2.d0, m2.d1, m2.d2, m2.e, m2.g, m2.f1, m2.f2 | Its `gust-wgpu` implementation, check-ui on JSON, generated calls, const layout assertions, derived graph edges, a hand-written-descriptor diagnostics test, examples | planned, in this order |
+| m2.c | `gust-wgpu` implements the typed surface: `HeadlessDevice` is a `TypedDevice` and runs `Call`s through the existing binding validation; one buffer bound twice is rejected when either binding writes; binding indices checked against the device limit | done (Gpu: check-fast and check-examples RTX 5090; Opus keep after one fix round; `119ece3`) |
+| m2.d0, m2.d1, m2.d2, m2.e, m2.g, m2.f1, m2.f2 | check-ui on JSON, generated calls, const layout assertions, derived graph edges, a hand-written-descriptor diagnostics test, examples | planned, in this order |
 
 **Done: M1, diagnostics** (closed 2026-10-23, D33). Plan adopted 2026-10-23 (owner-delegated); slice details are in the
 coordinator's plan file, and each landed slice is recorded in STATUS.
