@@ -1780,3 +1780,301 @@ fn accepted_module_is_identical_to_the_expansion_and_has_no_error() {
     assert!(!actual.contains("compile_error"), "{actual}");
     assert_eq!(actual, expected);
 }
+
+// ---- typed host API (roadmap M2, slice m2.d1): the generated `call`, `submit` and `dispatch` ----
+
+/// The expansion of an inline module given as source text.
+fn expansion(source: &str) -> proc_macro2::TokenStream {
+    let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
+    crate::expand::expand(module).unwrap()
+}
+
+/// The inherent `impl <kernel>` block that holds the generated typed functions, if any.
+fn typed_impl(output: &proc_macro2::TokenStream, kernel: &str) -> Option<syn::ItemImpl> {
+    let module: syn::ItemMod =
+        crate::diagnostics::parse2(Code::ItemNotModule, output.clone()).unwrap();
+    module
+        .content
+        .unwrap()
+        .1
+        .into_iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(item) if item.trait_.is_none() => Some(item),
+            _ => None,
+        })
+        .find(|item| {
+            matches!(item.self_ty.as_ref(), syn::Type::Path(path) if path.path.is_ident(kernel))
+                && item
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, syn::ImplItem::Fn(function) if function.sig.ident == "call"))
+        })
+}
+
+/// One generated function of a kernel's typed impl, as text, and its parameter names.
+fn typed_fn(item: &syn::ItemImpl, name: &str) -> (String, Vec<String>) {
+    use quote::ToTokens as _;
+    let function = item
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::ImplItem::Fn(function) if function.sig.ident == name => Some(function),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no generated `{name}`"));
+    let parameters = function
+        .sig
+        .inputs
+        .iter()
+        .map(|input| match input {
+            syn::FnArg::Typed(input) => match input.pat.as_ref() {
+                syn::Pat::Ident(pattern) => pattern.ident.to_string(),
+                other => panic!("unexpected pattern {}", other.to_token_stream()),
+            },
+            syn::FnArg::Receiver(_) => panic!("generated functions take no receiver"),
+        })
+        .collect();
+    (function.to_token_stream().to_string(), parameters)
+}
+
+const VECTOR_ADD: &str = "mod vector_add { \
+    #[kernel] \
+    pub fn add(id: SV_DispatchThreadID, a: StructuredBuffer<float>, b: StructuredBuffer<float>, \
+               mut out: RWStructuredBuffer<float>) { \
+        let i = id.x; \
+        if i < out.len() { out[i] = a[i] + b[i]; } \
+    } \
+}";
+
+#[test]
+fn a_kernel_gets_call_submit_and_dispatch_with_prefixed_generated_names() {
+    let output = expansion(VECTOR_ADD);
+    let item = typed_impl(&output, "add").expect("typed impl of `add`");
+    let (_, call) = typed_fn(&item, "call");
+    let (_, submit) = typed_fn(&item, "submit");
+    let (_, dispatch) = typed_fn(&item, "dispatch");
+    assert_eq!(call, ["__gust_element_count", "a", "b", "out"]);
+    assert_eq!(
+        submit,
+        ["__gust_device", "__gust_element_count", "a", "b", "out"]
+    );
+    assert_eq!(
+        dispatch,
+        ["__gust_device", "__gust_element_count", "a", "b", "out"]
+    );
+    assert_eq!(item.items.len(), 3);
+}
+
+#[test]
+fn call_binds_each_storage_parameter_with_its_access_in_declaration_order() {
+    let output = expansion(VECTOR_ADD);
+    let item = typed_impl(&output, "add").unwrap();
+    let (call, _) = typed_fn(&item, "call");
+    let body = call
+        .split_once("Call :: new")
+        .unwrap_or_else(|| panic!("no Call::new in {call}"))
+        .1;
+    assert_eq!(
+        body,
+        " (__gust_element_count , [:: core :: convert :: Into :: into (a) . bind (:: gust :: Access :: ReadOnly) , \
+         :: core :: convert :: Into :: into (b) . bind (:: gust :: Access :: ReadOnly) , \
+         :: core :: convert :: Into :: into (out) . bind (:: gust :: Access :: ReadWrite)]) }"
+    );
+    assert!(call.contains(":: gust :: Call < 'r ,"), "{call}");
+    assert!(call.contains(", Self , 3 >"), "{call}");
+}
+
+#[test]
+fn every_bound_names_the_element_type_the_device_and_the_call_lifetime() {
+    let output = expansion(VECTOR_ADD);
+    let item = typed_impl(&output, "add").unwrap();
+    for name in ["call", "submit", "dispatch"] {
+        let (function, _) = typed_fn(&item, name);
+        // Three resources, three bounds on `float`, and each bound ends in `+ 'r` (S0 decision A).
+        assert_eq!(
+            function.matches("Resource < Element = float").count(),
+            3,
+            "{name}"
+        );
+        assert_eq!(function.matches("> + 'r").count(), 3, "{name}: {function}");
+        // The two later arguments must be buffers of the first argument's device type.
+        assert_eq!(
+            function
+                .matches("Device = < __GustR0 as :: gust :: Resource > :: Device")
+                .count(),
+            2,
+            "{name}"
+        );
+    }
+    for name in ["submit", "dispatch"] {
+        let (function, _) = typed_fn(&item, name);
+        assert!(
+            function.contains(":: gust :: Run < Self , 3 >"),
+            "{name}: {function}"
+        );
+    }
+}
+
+#[test]
+fn submit_and_dispatch_call_the_run_methods_by_path() {
+    // Neither `Run` nor `Device` is in the user's module, so a method call would not resolve.
+    let output = expansion(VECTOR_ADD);
+    let item = typed_impl(&output, "add").unwrap();
+    let (submit, _) = typed_fn(&item, "submit");
+    let (dispatch, _) = typed_fn(&item, "dispatch");
+    assert!(submit.contains(":: submit_call ("), "{submit}");
+    assert!(!submit.contains(". submit_call"), "{submit}");
+    assert!(dispatch.contains(":: dispatch_call ("), "{dispatch}");
+    assert!(!dispatch.contains(". dispatch_call"), "{dispatch}");
+}
+
+#[test]
+fn the_storage_parameter_count_is_asserted_in_a_non_generic_const() {
+    let output = expansion(VECTOR_ADD);
+    let module: syn::ItemMod = crate::diagnostics::parse2(Code::ItemNotModule, output).unwrap();
+    let constants: Vec<String> = module
+        .content
+        .unwrap()
+        .1
+        .into_iter()
+        .filter_map(|item| match item {
+            syn::Item::Const(item) if item.ident == "_" => {
+                assert!(item.generics.params.is_empty());
+                Some(quote::ToTokens::to_token_stream(&item).to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    // `add` has one invocation parameter and three storage parameters.
+    let [constant] = constants.as_slice() else {
+        panic!("expected one `const _` in the module: {constants:?}");
+    };
+    assert!(
+        constant.contains(
+            "< add as :: gust :: Kernel > :: DESCRIPTOR . storage_parameter_count () == 3 ,"
+        ),
+        "{constant}"
+    );
+}
+
+#[test]
+fn a_kernel_without_storage_parameters_takes_the_device_type_as_a_parameter() {
+    let output = expansion(
+        "mod empty { #[kernel] pub fn nothing(id: SV_DispatchThreadID) { let i = id.x; if i < 1u32 {} } }",
+    );
+    let item = typed_impl(&output, "nothing").expect("typed impl of `nothing`");
+    let (call, parameters) = typed_fn(&item, "call");
+    assert_eq!(parameters, ["__gust_element_count"]);
+    assert!(
+        call.contains(":: gust :: Call < 'r , __GustD , Self , 0 >"),
+        "{call}"
+    );
+    let (dispatch, parameters) = typed_fn(&item, "dispatch");
+    assert_eq!(parameters, ["__gust_device", "__gust_element_count"]);
+    assert!(
+        dispatch.contains(":: gust :: Run < Self , 0 >"),
+        "{dispatch}"
+    );
+    assert!(
+        output
+            .to_string()
+            .contains("storage_parameter_count () == 0 ,")
+    );
+}
+
+#[test]
+fn a_kernel_with_a_uniform_parameter_gets_no_typed_call() {
+    let output = expansion(
+        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
+         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }",
+    );
+    assert!(typed_impl(&output, "run").is_none());
+    let text = output.to_string();
+    // The handle and its descriptor are unchanged.
+    assert!(text.contains("impl :: gust :: Kernel for run"));
+    assert!(text.contains("ParameterKind :: Uniform"));
+    assert!(!text.contains("fn call"));
+    assert!(!text.contains("storage_parameter_count"));
+}
+
+#[test]
+fn a_plain_value_parameter_never_reaches_the_typed_call() {
+    // The emitter rejects it first (GUST-E0801), so `typed_call_items` never sees a `Value` flavour;
+    // its guard for that flavour is defensive.
+    let module: syn::ItemMod = crate::diagnostics::testing::parse_str(
+        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, scale: float, \
+         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }",
+    )
+    .unwrap();
+    let error = crate::expand::expand(module).unwrap_err();
+    assert_code(&error, Code::EntryPointParameter);
+}
+
+#[test]
+fn user_parameters_named_element_count_and_device_are_kept() {
+    let output = expansion(
+        "mod clash { #[kernel] pub fn run(id: SV_DispatchThreadID, element_count: StructuredBuffer<float>, \
+         mut device: RWStructuredBuffer<float>) { let i = id.x; if i < device.len() {} } }",
+    );
+    let item = typed_impl(&output, "run").unwrap();
+    let (_, call) = typed_fn(&item, "call");
+    assert_eq!(call, ["__gust_element_count", "element_count", "device"]);
+    let (_, dispatch) = typed_fn(&item, "dispatch");
+    assert_eq!(
+        dispatch,
+        [
+            "__gust_device",
+            "__gust_element_count",
+            "element_count",
+            "device"
+        ]
+    );
+}
+
+#[test]
+fn the_element_type_is_the_type_written_in_the_module() {
+    let output = expansion(
+        "mod pool { pub struct Particle { pub x: float } \
+         #[kernel] pub fn step(id: SV_DispatchThreadID, input: StructuredBuffer<Particle>, \
+         mut out: RWStructuredBuffer<super::Outside>) { let i = id.x; if i < out.len() {} } }",
+    );
+    let item = typed_impl(&output, "step").unwrap();
+    let (call, _) = typed_fn(&item, "call");
+    assert!(call.contains("Resource < Element = Particle >"), "{call}");
+    assert!(
+        call.contains("Resource < Element = super :: Outside ,"),
+        "{call}"
+    );
+}
+
+#[test]
+fn the_handle_and_its_calls_document_the_rules_users_hit() {
+    let add = expansion(VECTOR_ADD).to_string();
+    assert!(
+        add.contains("Handle of the GUST kernel `add`, with the typed host API"),
+        "{add}"
+    );
+    assert!(!add.contains("call::<Device>"), "{add}");
+    assert!(!add.contains("(D15)"), "{add}");
+    // `u32` is spelled by path, so a user's own `u32` cannot shadow it.
+    assert!(
+        add.contains("__gust_element_count : :: core :: primitive :: u32"),
+        "{add}"
+    );
+
+    let nothing = expansion(
+        "mod empty { #[kernel] pub fn nothing(id: SV_DispatchThreadID) { let i = id.x; if i < 1u32 {} } }",
+    )
+    .to_string();
+    assert!(nothing.contains("call::<Device>(..)"), "{nothing}");
+
+    let uniform = expansion(
+        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
+         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }",
+    )
+    .to_string();
+    assert!(
+        uniform.contains("has a uniform parameter, so it has no typed"),
+        "{uniform}"
+    );
+}

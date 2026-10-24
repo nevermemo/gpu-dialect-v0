@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). Only the wording of `#[diagnostic::on_unimplemented]` on `Run` and the
+# user's file and line (the device argument of the generated `dispatch`) are compared.
+code: E0277
+file: typed-call-no-run/src/main.rs
+line: 70
+message: `Mock` cannot run the kernel `scale`
+label: this device has no executable form of the kernel; GPU devices run every kernel, CPU twins only those emitted for them

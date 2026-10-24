@@ -1,5 +1,5 @@
 use proc_macro2::TokenStream;
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 
 use crate::{
     diagnostics::{self, Code},
@@ -46,6 +46,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
         let source_origin = source_origin(original_kernel, &emitted.lines);
         let slang_source = emitted.source;
         let [x, y, z] = options.workgroup_size;
+        let (handle_doc, typed_calls) = typed_call_items(&original_name, &function.sig.inputs)?;
 
         function
             .attrs
@@ -55,6 +56,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
 
         descriptor_paths.push(original_name.clone());
         generated.push(quote! {
+            #[doc = #handle_doc]
             #[allow(non_camel_case_types)]
             #visibility struct #original_name;
 
@@ -74,6 +76,8 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
                     source: #source_origin,
                 };
             }
+
+            #typed_calls
         });
     }
 
@@ -489,6 +493,237 @@ fn parameter_descriptors(
             })
         })
         .collect()
+}
+
+/// One storage parameter of a kernel, as the typed call needs it.
+struct StorageArgument {
+    name: syn::Ident,
+    element: syn::Type,
+    access: TokenStream,
+}
+
+/// The typed host API of one kernel (roadmap M2): `call`, `submit` and `dispatch` on the handle, plus a
+/// non-generic constant assertion that the generated argument count equals the descriptor's number of
+/// storage parameters (so `cargo check` catches a mismatch, not only monomorphisation).
+///
+/// Each storage parameter becomes one `impl Into<Arg<'r, Ri>>` argument, in declaration order, under its
+/// own name. `Ri` must be a `gust::Resource` of the parameter's element type and of the device of the
+/// first argument; every `Ri` carries `'r` (S0 decision A: `Arg<'r, Ri>` needs `Ri: 'r`, and rustc does not
+/// infer that for a function signature). Generated value names carry the reserved `__gust_` prefix (the
+/// validator rejects it in user code) and the generic parameters carry `__Gust`, so a user parameter named
+/// `element_count` or `device`, or an element type named `R0` or `D`, cannot collide with them.
+///
+/// A kernel with a `Uniform` or plain value parameter gets none of this: the runtime rejects non-storage
+/// resources (`UnsupportedResourceLayout`), so a typed call could never run. The handle and its
+/// descriptor are unchanged.
+///
+/// Returns the doc text for the kernel's handle struct (users read it on `kernel_name`; it states both
+/// rules above for the user) and the items.
+fn typed_call_items(
+    kernel: &syn::Ident,
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+) -> syn::Result<(String, TokenStream)> {
+    let mut arguments = Vec::new();
+    for input in inputs {
+        // `parameter_descriptors` has already rejected a receiver or a non-identifier pattern.
+        let syn::FnArg::Typed(input) = input else {
+            continue;
+        };
+        let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
+            continue;
+        };
+        let access = match crate::slang::parameter_flavor(&input.ty) {
+            ParameterFlavor::Invocation => continue,
+            ParameterFlavor::StorageRead => quote!(::gust::Access::ReadOnly),
+            ParameterFlavor::StorageReadWrite => quote!(::gust::Access::ReadWrite),
+            ParameterFlavor::Uniform | ParameterFlavor::Value => {
+                return Ok((
+                    format!(
+                        "Handle of the GUST kernel `{kernel}`. It has a uniform parameter, so it has no typed \
+                         `call`, `submit` or `dispatch` (a call such as `{kernel}::call(..)` is error E0599); \
+                         the typed host API covers storage parameters only."
+                    ),
+                    TokenStream::new(),
+                ));
+            }
+        };
+        arguments.push(StorageArgument {
+            name: pattern.ident.clone(),
+            element: crate::slang::wrapper_element_type(&input.ty)?.clone(),
+            access,
+        });
+    }
+    let total = arguments.len();
+    let count = proc_macro2::Literal::usize_unsuffixed(total);
+    let count_message = format!(
+        "`{kernel}`: the generated typed call takes a different number of arguments than its descriptor has storage parameters"
+    );
+    let names: Vec<String> = arguments.iter().map(|a| a.name.to_string()).collect();
+    let order = if names.is_empty() {
+        "no storage arguments".to_owned()
+    } else {
+        format!(
+            "then the storage arguments in declaration order: {}",
+            names.join(", ")
+        )
+    };
+    let turbofish = if arguments.is_empty() {
+        " The kernel has no storage arguments to infer the device from, so name it: `call::<Device>(..)`."
+    } else {
+        ""
+    };
+    let call_doc = format!(
+        "Typed call of `{kernel}`: `__gust_element_count`, {order}. Each storage argument is a reference to a \
+         buffer of the kernel's element type, optionally wrapped in `gust::Independent` to let its length \
+         differ from the element count.{turbofish}"
+    );
+    let handle_doc = format!(
+        "Handle of the GUST kernel `{kernel}`, with the typed host API `call`, `submit` and `dispatch` \
+         (storage parameters only: a kernel with a uniform parameter has none of them).{turbofish}"
+    );
+    let submit_doc = format!(
+        "Submit `{kernel}`: `__gust_device`, `__gust_element_count`, {order}. Returns a job to wait on."
+    );
+    let dispatch_doc =
+        format!("Run `{kernel}` and wait: `__gust_device`, `__gust_element_count`, {order}.");
+
+    let assertion = quote! {
+        const _: () = ::core::assert!(
+            <#kernel as ::gust::Kernel>::DESCRIPTOR.storage_parameter_count() == #count,
+            #count_message
+        );
+    };
+
+    if arguments.is_empty() {
+        return Ok((
+            handle_doc,
+            quote! {
+                #assertion
+
+                impl #kernel {
+                    #[doc = #call_doc]
+                    pub fn call<'r, __GustD: ::gust::TypedDevice>(
+                        __gust_element_count: ::core::primitive::u32,
+                    ) -> ::gust::Call<'r, __GustD, Self, 0> {
+                        ::gust::Call::new(__gust_element_count, [])
+                    }
+
+                    #[doc = #submit_doc]
+                    #[allow(clippy::type_complexity)]
+                    pub fn submit<'d, __GustD: ::gust::Run<Self, 0>>(
+                        __gust_device: &'d __GustD,
+                        __gust_element_count: ::core::primitive::u32,
+                    ) -> ::core::result::Result<
+                        <__GustD as ::gust::Device>::Job<'d>,
+                        <__GustD as ::gust::Device>::Error,
+                    > {
+                        <__GustD as ::gust::Run<Self, 0>>::submit_call(__gust_device, &Self::call(__gust_element_count))
+                    }
+
+                    #[doc = #dispatch_doc]
+                    pub fn dispatch<__GustD: ::gust::Run<Self, 0>>(
+                        __gust_device: &__GustD,
+                        __gust_element_count: ::core::primitive::u32,
+                    ) -> ::core::result::Result<(), <__GustD as ::gust::Device>::Error> {
+                        <__GustD as ::gust::Run<Self, 0>>::dispatch_call(__gust_device, &Self::call(__gust_element_count))
+                    }
+                }
+            },
+        ));
+    }
+
+    let resources: Vec<syn::Ident> = (0..total)
+        .map(|index| format_ident!("__GustR{}", index))
+        .collect();
+    let first = &resources[0];
+    let device = quote!(<#first as ::gust::Resource>::Device);
+    let parameters: Vec<TokenStream> = arguments
+        .iter()
+        .zip(&resources)
+        .map(|(argument, resource)| {
+            let name = &argument.name;
+            quote!(#name: impl ::core::convert::Into<::gust::Arg<'r, #resource>>)
+        })
+        .collect();
+    let bounds: Vec<TokenStream> = arguments
+        .iter()
+        .zip(&resources)
+        .enumerate()
+        .map(|(index, (argument, resource))| {
+            let element = &argument.element;
+            // Spanned on the parameter, so rustc's "required by this bound" note points at the
+            // kernel parameter the bound belongs to, not at `#[gpu]`.
+            let span = argument.name.span();
+            if index == 0 {
+                quote_spanned!(span=> #resource: ::gust::Resource<Element = #element> + 'r)
+            } else {
+                quote_spanned!(span=> #resource: ::gust::Resource<Element = #element, Device = #device> + 'r)
+            }
+        })
+        .collect();
+    let forwarded: Vec<&syn::Ident> = arguments.iter().map(|argument| &argument.name).collect();
+    let bindings = arguments.iter().map(|argument| {
+        let (name, access) = (&argument.name, &argument.access);
+        quote!(::core::convert::Into::into(#name).bind(#access))
+    });
+
+    Ok((
+        handle_doc,
+        quote! {
+            #assertion
+
+            impl #kernel {
+                #[doc = #call_doc]
+                #[allow(clippy::too_many_arguments)]
+                pub fn call<'r, #(#resources),*>(
+                    __gust_element_count: ::core::primitive::u32,
+                    #(#parameters),*
+                ) -> ::gust::Call<'r, #device, Self, #count>
+                where
+                    #(#bounds,)*
+                {
+                    ::gust::Call::new(__gust_element_count, [#(#bindings),*])
+                }
+
+                #[doc = #submit_doc]
+                #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+                pub fn submit<'d, 'r, #(#resources),*>(
+                    __gust_device: &'d #device,
+                    __gust_element_count: ::core::primitive::u32,
+                    #(#parameters),*
+                ) -> ::core::result::Result<
+                    <#device as ::gust::Device>::Job<'d>,
+                    <#device as ::gust::Device>::Error,
+                >
+                where
+                    #(#bounds,)*
+                    #device: ::gust::Run<Self, #count>,
+                {
+                    <#device as ::gust::Run<Self, #count>>::submit_call(
+                        __gust_device,
+                        &Self::call(__gust_element_count, #(#forwarded),*),
+                    )
+                }
+
+                #[doc = #dispatch_doc]
+                #[allow(clippy::too_many_arguments)]
+                pub fn dispatch<'r, #(#resources),*>(
+                    __gust_device: &#device,
+                    __gust_element_count: ::core::primitive::u32,
+                    #(#parameters),*
+                ) -> ::core::result::Result<(), <#device as ::gust::Device>::Error>
+                where
+                    #(#bounds,)*
+                    #device: ::gust::Run<Self, #count>,
+                {
+                    <#device as ::gust::Run<Self, #count>>::dispatch_call(
+                        __gust_device,
+                        &Self::call(__gust_element_count, #(#forwarded),*),
+                    )
+                }
+            }
+        },
+    ))
 }
 
 fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {

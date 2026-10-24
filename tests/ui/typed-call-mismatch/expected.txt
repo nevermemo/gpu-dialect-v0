@@ -1,0 +1,10 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). The primary span is the user's call expression in this file (the
+# probe for m2.d1 found no macro `expansion` on it), so `file` and `line` need no macro-aware
+# matching; the generated bound shows up only as the child note that names `scale::call`.
+code: E0271
+file: typed-call-mismatch/src/main.rs
+line: 76
+message: type mismatch resolving `<Buffer<u32> as Resource>::Element == f32`
+message: required by a bound in `scale::call`
+label: Element == f32
