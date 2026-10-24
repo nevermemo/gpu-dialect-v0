@@ -3,9 +3,9 @@
 //! `call.kernel()`, rejects one buffer bound twice when either side is written, and checks binding
 //! indices against `max_bindings_per_bind_group` before any wgpu object exists.
 //!
-//! `semantics_call` below is the hand-written form of the `call` function that the macro will generate
-//! (slice m2.d1); it is that slice's specification. The other kernels are hand-written descriptors
-//! (Slang source included) built for one property each, with calls from the small `f32_call!` macro.
+//! `semantics::run::call` is the `call` function the macro generates (slice m2.d1; m2.f1 swapped the hand-written
+//! form for it). The other kernels are hand-written descriptors (Slang source included) built for one property
+//! each, with calls from the small `f32_call!` macro.
 //! Expectations come from independent host references, not from running a shader shadow body.
 
 include!("../../../tests/fixtures/semantics.rs");
@@ -19,29 +19,6 @@ use gust_wgpu::{
     BufferBinding, BufferDispatch, Error, F32Binding, GpuBuffer, GpuBufferAccess, HeadlessDevice,
     StagedGraph, U32Binding,
 };
-
-// ---- the semantics fixture, called the way generated code will call it ----
-
-fn semantics_call<'r, R0, R1, R2>(
-    __gust_element_count: u32,
-    values: impl Into<Arg<'r, R0>>,
-    floats: impl Into<Arg<'r, R1>>,
-    integers: impl Into<Arg<'r, R2>>,
-) -> Call<'r, <R0 as Resource>::Device, semantics::run, 3>
-where
-    R0: Resource<Element = f32> + 'r,
-    R1: Resource<Element = f32, Device = <R0 as Resource>::Device> + 'r,
-    R2: Resource<Element = u32, Device = <R0 as Resource>::Device> + 'r,
-{
-    Call::new(
-        __gust_element_count,
-        [
-            values.into().bind(Access::ReadOnly),
-            floats.into().bind(Access::ReadWrite),
-            integers.into().bind(Access::ReadWrite),
-        ],
-    )
-}
 
 // ---- hand-written kernels over f32 storage buffers ----
 
@@ -361,7 +338,7 @@ fn typed_call_reproduces_the_semantics_fixture() {
             &vec![0u32; count],
             GpuBufferAccess::ReadWrite,
         );
-        let call = semantics_call(count as u32, &input, &floats, &integers);
+        let call = semantics::run::call(count as u32, &input, &floats, &integers);
         assert_eq!(call.element_count(), count as u32);
         assert_eq!(call.kernel().qualified_name().to_string(), "semantics::run");
         device.dispatch_call(&call).unwrap();
@@ -720,7 +697,7 @@ fn a_read_only_buffer_where_the_call_binds_read_write_is_a_runtime_error() {
     let floats = buffer(&device, "floats", &values, GpuBufferAccess::ReadOnly);
     let integers = device.create_typed_buffer("integers", &[0u32; 4], GpuBufferAccess::ReadWrite);
     let error = device
-        .dispatch_call(&semantics_call(4, &input, &floats, &integers))
+        .dispatch_call(&semantics::run::call(4, &input, &floats, &integers))
         .unwrap_err();
     match error {
         Error::PersistentBufferAccess {

@@ -2,11 +2,13 @@ use std::{path::PathBuf, time::Instant};
 
 use gust::{JobStatus, gpu};
 use gust_wgpu::{
-    F32Binding, F32BufferBinding, F32BufferDispatch, GpuBufferAccess, HeadlessDevice,
-    TransferTiming, render_wgpu_source,
+    BufferDispatch, GpuBufferAccess, HeadlessDevice, TransferTiming, render_wgpu_source,
 };
 
 const PERSISTENT_ITERATIONS: u32 = 20;
+const DEBUG_COUNT: usize = 1 << 18;
+/// 32 768 workgroups of 128 invocations, within the 65 535 workgroups per dimension of the default limits.
+const RELEASE_COUNT: usize = 1 << 22;
 
 #[gpu]
 mod polynomial {
@@ -41,30 +43,12 @@ pub fn main() {
 
     let device = HeadlessDevice::new().expect("a Vulkan compute adapter should be available");
     let initial_output = vec![0.0; element_count];
-    let _warmup = device
-        .dispatch_f32(
-            &polynomial::evaluate::DESCRIPTOR,
-            element_count as u32,
-            &[
-                F32Binding::ReadOnly(&input),
-                F32Binding::ReadWrite(&initial_output),
-            ],
-        )
-        .expect("polynomial GPU warmup");
+    let _warmup = dispatch_gpu(&device, &input, &initial_output).expect("polynomial GPU warmup");
     let gpu_started = Instant::now();
-    let gpu_result = device
-        .dispatch_f32(
-            &polynomial::evaluate::DESCRIPTOR,
-            element_count as u32,
-            &[
-                F32Binding::ReadOnly(&input),
-                F32Binding::ReadWrite(&initial_output),
-            ],
-        )
-        .expect("polynomial GPU dispatch");
+    let gpu_output =
+        dispatch_gpu(&device, &input, &initial_output).expect("polynomial GPU dispatch");
     let gpu_elapsed = gpu_started.elapsed();
-    let gpu_output = &gpu_result.writable_buffers[0];
-    let error = max_abs_error(&cpu_output, gpu_output);
+    let error = max_abs_error(&cpu_output, &gpu_output);
     assert!(error <= 1.0e-5, "CPU/GPU error was {error}");
 
     let persistent_input =
@@ -77,48 +61,40 @@ pub fn main() {
     let upload_timing = device
         .write_f32_buffer_timed(&persistent_input, &input)
         .expect("timed polynomial upload");
-    let persistent_bindings = [
-        F32BufferBinding::ReadOnly(&persistent_input),
-        F32BufferBinding::ReadWrite(&persistent_output),
-    ];
-    device
-        .dispatch_f32_buffers(
-            &polynomial::evaluate::DESCRIPTOR,
-            element_count as u32,
-            &persistent_bindings,
-        )
-        .expect("persistent polynomial warmup");
+    polynomial::evaluate::dispatch(
+        &device,
+        element_count as u32,
+        &persistent_input,
+        &persistent_output,
+    )
+    .expect("persistent polynomial warmup");
     let persistent_started = Instant::now();
     for _ in 0..PERSISTENT_ITERATIONS {
-        device
-            .dispatch_f32_buffers(
-                &polynomial::evaluate::DESCRIPTOR,
-                element_count as u32,
-                &persistent_bindings,
-            )
-            .expect("persistent polynomial dispatch");
+        polynomial::evaluate::dispatch(
+            &device,
+            element_count as u32,
+            &persistent_input,
+            &persistent_output,
+        )
+        .expect("persistent polynomial dispatch");
     }
     let persistent_elapsed = persistent_started.elapsed() / PERSISTENT_ITERATIONS;
-    let batch = vec![
-        F32BufferDispatch::new(
-            &polynomial::evaluate::DESCRIPTOR,
-            element_count as u32,
-            &persistent_bindings,
-        );
-        PERSISTENT_ITERATIONS as usize
-    ];
+    // One typed call, repeated: a `Call` is a reusable value and converts to a batch entry.
+    let call =
+        polynomial::evaluate::call(element_count as u32, &persistent_input, &persistent_output);
+    let batch = vec![BufferDispatch::from(&call); PERSISTENT_ITERATIONS as usize];
     let batch_started = Instant::now();
     device
-        .dispatch_f32_batch(&batch)
+        .dispatch_batch(&batch)
         .expect("batched polynomial dispatch");
     let batch_elapsed = batch_started.elapsed();
     let profiled_batch = device
-        .dispatch_f32_batch_timed(&batch)
+        .dispatch_batch_timed(&batch)
         .expect("timestamped polynomial batch");
     let mut overlap_output = vec![0.0; element_count];
     let async_submit_started = Instant::now();
     let async_job = device
-        .submit_f32_batch(&batch)
+        .submit_batch(&batch)
         .expect("asynchronous polynomial batch");
     let async_submit_elapsed = async_submit_started.elapsed();
     let status_after_submit = async_job.status().expect("polynomial job status");
@@ -189,11 +165,31 @@ fn run_cpu(input: &[f32], output: &mut [f32]) {
     }
 }
 
+/// One-shot GPU path: upload both host slices, run the generated typed `dispatch`, read the output back.
+fn dispatch_gpu(
+    device: &HeadlessDevice,
+    input: &[f32],
+    initial_output: &[f32],
+) -> Result<Vec<f32>, gust_wgpu::Error> {
+    let input = device.create_f32_buffer(
+        "polynomial one-shot input",
+        input,
+        GpuBufferAccess::ReadOnly,
+    );
+    let output = device.create_f32_buffer(
+        "polynomial one-shot output",
+        initial_output,
+        GpuBufferAccess::ReadWrite,
+    );
+    polynomial::evaluate::dispatch(device, initial_output.len() as u32, &input, &output)?;
+    device.read_f32_buffer(&output)
+}
+
 fn benchmark_element_count() -> usize {
     if cfg!(debug_assertions) {
-        1 << 18
+        DEBUG_COUNT
     } else {
-        1 << 22
+        RELEASE_COUNT
     }
 }
 
@@ -309,6 +305,23 @@ fn export_generated_source() -> PathBuf {
 mod tests {
     use super::*;
 
+    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
+    /// (gust-wgpu requests the default limits).
+    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
+
+    #[test]
+    fn demo_sizes_stay_within_the_default_workgroup_limit() {
+        for count in [DEBUG_COUNT, RELEASE_COUNT] {
+            let groups = u32::try_from(count)
+                .unwrap()
+                .div_ceil(polynomial::evaluate::DESCRIPTOR.workgroup_size[0]);
+            assert!(
+                groups <= MAX_WORKGROUPS_PER_DIMENSION,
+                "{count} elements need {groups} workgroups"
+            );
+        }
+    }
+
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn cpu_reference_evaluates_all_steps() {
@@ -335,17 +348,9 @@ mod tests {
         let mut cpu_output = [0.0; 6];
         let initial_output = [0.0; 6];
         run_cpu(&input, &mut cpu_output);
-        let gpu_output = device
-            .dispatch_f32(
-                &polynomial::evaluate::DESCRIPTOR,
-                input.len() as u32,
-                &[
-                    F32Binding::ReadOnly(&input),
-                    F32Binding::ReadWrite(&initial_output),
-                ],
-            )
-            .expect("GPU polynomial dispatch");
-        assert!(max_abs_error(&cpu_output, &gpu_output.writable_buffers[0]) <= 1.0e-6);
+        let gpu_output =
+            dispatch_gpu(&device, &input, &initial_output).expect("GPU polynomial dispatch");
+        assert!(max_abs_error(&cpu_output, &gpu_output) <= 1.0e-6);
     }
 
     #[test]
