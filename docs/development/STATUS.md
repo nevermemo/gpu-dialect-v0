@@ -9,6 +9,17 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.d2: const layout assertions. Every `#[gpu]` struct asserts, in one const block,
+  each field at its padding-free offset (the message names the field), no tail padding,
+  alignment 4 and `LAYOUT.is_storage_v1()`; every kernel asserts per storage parameter
+  that the element layout is StorageV1 and matches its Rust size, alignment and stride.
+  `cargo check` now reports what only the runtime asserts caught. The plan's premise that
+  no accepted struct could fail was false: a `#[gpu]` struct with a hand-written outside
+  `GpuPod` field of alignment 8 passes the validator; it is now E0080 at compile time
+  (fixtures `layout-outside-field`, `layout-outside-element`). check-ui follows a primary
+  span's macro expansion to the outermost site inside the case (const-eval panics point
+  into core). Open for m2.f2: pool buffers (`gust-wgpu/src/pool.rs`) skip the runtime
+  layout assert that `create_typed_buffer` has (`adeb7be`).
 - M2 m2.d1: `#[gpu]` generates `call`, `submit` and `dispatch` on every kernel handle:
   one argument per storage parameter in declaration order, element and device pinned by
   `Resource` bounds (each spanned on its parameter), access from the parameter. A
