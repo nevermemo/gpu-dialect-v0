@@ -7,7 +7,18 @@ The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed o
 which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 2026-10-23 (D33): M1.0 to M1.6 are done (per-item evidence in the roadmap), after a
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
-below. M2 (typed host API) is being planned; its plan is under review.
+below. M2 (typed host API) is under way, one slice at a time.
+
+- M2 m2.b: launch-limit checks. Every dispatch path checks the kernel and its bindings
+  against the opened device's limits before any compile or cache lookup and returns
+  `Error::DeviceLimit`; before, wgpu panicked (measured: workgroup size 512 at pipeline
+  creation, 65 536 workgroups at dispatch). The opened RTX 5090 device carries wgpu's
+  default limits, not the adapter's. `HeadlessDevice::with_limits` only lowers limits
+  (five fields honoured). Known gaps: in a multi-node graph earlier nodes may compile
+  before an over-limit node fails (nothing is submitted; m2.e moves the check into graph
+  validation); the dispatch emitted by `render_wgpu_source`, binding indices at or above
+  `max_bindings_per_bind_group` in hand-written descriptors, and buffers above
+  `max_buffer_size` are not checked yet (`151ef56`).
 
 - M1.6: sanity-check fixes. Clippy `disallowed-methods`/`disallowed-macros` replace the
   hand-written uncoded-error scanner, and the exception is confined to `diagnostics.rs`

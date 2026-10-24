@@ -31,8 +31,14 @@ framework, and Hurricane, the game engine (today's
 
 ## Now and next
 
-**Now: M2, typed host API.** The plan is being revised after its Codex review (adopt with
-changes); slices start after the re-review, m2.a (after spike S0) and m2.b in parallel lanes.
+**Now: M2, typed host API.** Plan adopted after two Codex reviews (owner-delegated); slices
+run one at a time, and each landed slice is recorded in STATUS.
+
+| Item | Work | Status |
+| --- | --- | --- |
+| S0 | Spike outside the repository: the typed call surface executes on a CPU-shaped device with safe Rust, and pins aliasing (read/read accepted, read/write and write/write rejected at run time) | done (decision A: the planned shape stands; `'r` bounds on generated signatures) |
+| m2.b | Launch-limit checks: workgroup width, invocations, storage-buffer count, workgroup count and binding size checked against the opened device before any compile, returning `Error::DeviceLimit` instead of a wgpu panic; `HeadlessDevice::with_limits` lowers limits | done (Gpu: check-fast RTX 5090; Opus keep after fixes; `151ef56`) |
+| m2.a, m2.c, m2.d0, m2.d1, m2.d2, m2.e, m2.g, m2.f1, m2.f2 | Typed surface in `gust`, its `gust-wgpu` implementation, check-ui on JSON, generated calls, const layout assertions, derived graph edges, a hand-written-descriptor diagnostics test, examples | planned, in this order |
 
 **Done: M1, diagnostics** (closed 2026-10-23, D33). Plan adopted 2026-10-23 (owner-delegated); slice details are in the
 coordinator's plan file, and each landed slice is recorded in STATUS.
