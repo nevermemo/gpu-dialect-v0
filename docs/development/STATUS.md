@@ -11,8 +11,20 @@ below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fa
 Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
-spike S1 passed (decision A); m3.a1 (ledger) and m3.a2 (contract text) done; m3.b next.
+spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text) and m3.b (`gust::cpu`)
+done; m3.c next.
 
+- M3 m3.b (`a7dcb95`): `gust::cpu`, the CPU backend the macro twin will use (m3.c, planned).
+  It is `#![forbid(unsafe_code)]` with no new dependencies, and the erased-binding downcast is
+  confined to `read`/`write`. Public items: `CpuDevice`, `CpuBuffer<T>`, `CpuBinding`,
+  `CpuJob`, a non-exhaustive `Error`, and `ulps`. The `#[doc(hidden)]` macro support is
+  `validate`, `read`, `write`, `invocations` and `FromGlobalId`. `validate` follows
+  gust-wgpu's check order (aliasing last) and returns `DeviceLimit` above 2^32 invocations.
+  Overflow mode: `overflow_checks()` reports `gust`'s own build, and `overflow_checks!()`
+  reports the calling crate's (plan Revision 5; the cross-crate proof is due in m3.f1). The
+  `dispatch.rs` tests run on `gust::cpu` instead of a mock. Evidence: fmt, clippy, `gust` lib
+  and doctests (debug and release), check-feature core, check-arch, Unit suite, check-fast,
+  docs-check, rustdoc `-D warnings`; 8 mutations killed.
 - M3 m3.a2 (`cc88b1a`, docs only): `docs/SEMANTICS.md` is the executable-semantics
   contract. It states the scope, the labels (spec-allowed, measured, proven; nothing is
   proven yet), the defined domain with D22's narrowing (D38, D39), WGSL float rules quoted by
