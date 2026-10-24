@@ -355,6 +355,7 @@ not guaranteed to preserve Rust semantics in this GPU subset. Rust itself define
 integer division/remainder by zero as a panic and float-to-integer `as` casts as
 saturating (NaN maps to zero); do not describe those Rust operations as undefined.
 See the [Rust operator reference](https://doc.rust-lang.org/reference/expressions/operator-expr.html).
+The defined domain, the float bounds and the known-mismatch ledger are in [SEMANTICS.md](SEMANTICS.md).
 
 Primitive type names and cast targets are fail-closed at the macro boundary; tuples,
 slices, and other standard-prelude names without a proven lowering remain rejected.

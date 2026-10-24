@@ -452,7 +452,7 @@ work. Option and Result values cannot be struct fields or buffer elements.
 Booleans are expression values, not host-shareable `GpuPod` fields. Only padding-free 32-bit scalar/nested-struct
 storage layouts are executable today. Constant-buffer syntax is not yet supported
 by the headless runtime. See [architecture](docs/ARCHITECTURE.md) for known semantic
-gaps; successful Rust checking does not prove equivalence to Slang inference.
+gaps (and [SEMANTICS](docs/SEMANTICS.md) for limits); successful Rust checking does not prove equivalence to Slang inference.
 
 Around the translator, the host side currently provides:
 
