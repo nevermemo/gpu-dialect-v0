@@ -6,7 +6,10 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::process::{CheckRecord, report_check};
+use crate::{
+    json::{self, Json},
+    process::{CheckRecord, report_check},
+};
 
 /// The fixture workspace, relative to the repository root. It has a `[workspace]` of its own
 /// and is not a member of the root workspace, so `cargo test --workspace` never builds it.
@@ -17,9 +20,27 @@ pub(crate) const UI_DIR: &str = "tests/ui";
 pub(crate) enum Expectation {
     /// No `expected.txt`: the crate must compile.
     Compiles,
-    /// `expected.txt` lists substrings: the crate must fail and one single rustc diagnostic must
-    /// contain them all (location, error code and custom message), not just the output as a whole.
-    Fails(Vec<String>),
+    /// `expected.txt` lists keys: the crate must fail with exactly one error, and that error must
+    /// satisfy all of them (code, location, message and label), not just the output as a whole.
+    Fails(Expected),
+}
+
+/// The keys of an `expected.txt`, all to hold in the one error of the crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Expected {
+    /// `code: E0277`: the diagnostic's `code.code`. Required.
+    pub(crate) code: String,
+    /// `file: gpupod-missing/src/main.rs`: the `file_name` of a primary span, with slashes.
+    /// Required, so that a fixture cannot pass on a diagnostic from somewhere else.
+    pub(crate) file: String,
+    /// `line: 13`: the `line_start` of the same primary span. Required.
+    pub(crate) line: u64,
+    /// `message: <text>`, any number: a substring of the diagnostic's `message` or of one of
+    /// its `children[].message`.
+    pub(crate) messages: Vec<String>,
+    /// `label: <text>`, any number: a substring of the `label` of the primary span that carries
+    /// `file` and `line` (`#[diagnostic::on_unimplemented]`'s `label` lands there, not in a child).
+    pub(crate) labels: Vec<String>,
 }
 
 /// One fixture crate under `tests/ui/`.
@@ -27,6 +48,32 @@ pub(crate) enum Expectation {
 pub(crate) struct Case {
     pub(crate) name: String,
     pub(crate) expectation: Expectation,
+}
+
+/// One span of a rustc diagnostic, as far as `expected.txt` can name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Span {
+    /// `file_name` with backslashes read as slashes (relative to the fixture workspace).
+    pub(crate) file: String,
+    pub(crate) line: Option<u64>,
+    pub(crate) primary: bool,
+    pub(crate) label: Option<String>,
+}
+
+/// One `compiler-message` of `cargo check --message-format json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Diagnostic {
+    /// The cargo target (`target.name`) the message belongs to; a dependency's own diagnostics
+    /// carry its name, not the fixture's.
+    pub(crate) target: String,
+    pub(crate) level: String,
+    /// `code.code`; `None` where rustc prints `"code": null` (summary notes, some errors).
+    pub(crate) code: Option<String>,
+    pub(crate) message: String,
+    pub(crate) child_messages: Vec<String>,
+    pub(crate) spans: Vec<Span>,
+    /// The text rustc rendered for humans, with backslashes read as slashes.
+    pub(crate) rendered: String,
 }
 
 /// `cargo xtask check-ui`: `cargo check` of each fixture crate under `tests/ui/`, compared with
@@ -60,13 +107,20 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
             &case.name,
             &case.expectation,
             output.status.success(),
+            &stdout,
             &stderr,
         ));
+        // The record keeps what a reader of the output would see: the rendered diagnostics
+        // (not the JSON, whose artifact lines carry absolute paths and are of no use here).
+        let rendered = parse_diagnostics(&stdout)
+            .iter()
+            .map(|diagnostic| diagnostic.rendered.as_str())
+            .collect::<String>();
         checks.push(CheckRecord {
             program: "cargo".to_owned(),
             arguments: args,
             exit_code: output.status.code(),
-            stdout,
+            stdout: rendered,
             stderr,
         });
     }
@@ -78,13 +132,14 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         .filter(|case| matches!(case.expectation, Expectation::Fails(_)))
         .count();
     Ok(format!(
-        "UI check passed: {failing} fixture crate(s) failed to compile with the expected rustc output and {} compiled cleanly (tests/ui, `cargo check --locked`). Only the substrings of each expected.txt are compared, all within one rustc diagnostic, not the whole rustc output; no slangc and no GPU were involved.\n",
+        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; no slangc and no GPU were involved.\n",
         cases.len() - failing
     ))
 }
 
 /// The arguments after `cargo` that check one fixture crate. `--locked` keeps the fixture's own
-/// `Cargo.lock` honest, and `--color never` keeps ANSI codes out of the compared text.
+/// `Cargo.lock` honest, `--color never` keeps ANSI codes out of the rendered text and
+/// `--message-format json` makes cargo print one JSON object per line on stdout.
 pub(crate) fn cargo_args(case: &str) -> Vec<String> {
     [
         "check",
@@ -96,7 +151,7 @@ pub(crate) fn cargo_args(case: &str) -> Vec<String> {
         "-p",
         case,
         "--message-format",
-        "short",
+        "json",
     ]
     .iter()
     .map(|arg| (*arg).to_owned())
@@ -138,119 +193,307 @@ pub(crate) fn discover_cases(ui_root: &Path) -> Result<Vec<Case>, String> {
         .collect()
 }
 
-/// The required substrings of an `expected.txt`: one per line, blank lines and lines starting
-/// with `#` ignored. A file with no substring is an error, since it would accept any failure.
-pub(crate) fn parse_expected(text: &str) -> Result<Vec<String>, String> {
-    let substrings: Vec<String> = text
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
-        .map(str::to_owned)
-        .collect();
-    if substrings.is_empty() {
-        return Err(
-            "expected.txt lists no substring; delete it if the crate must compile".to_owned(),
-        );
+/// The keys of an `expected.txt`: `key: value` lines, blank lines and lines starting with `#`
+/// ignored. `code`, `file` and `line` are required (a file without them would accept almost any
+/// failure) and may appear once; `message` and `label` may repeat. Unknown keys, empty values, a
+/// `line` that is not a positive number and an absolute `file` are errors.
+pub(crate) fn parse_expected(text: &str) -> Result<Expected, String> {
+    let mut code: Option<String> = None;
+    let mut file: Option<String> = None;
+    let mut line: Option<u64> = None;
+    let mut messages = Vec::new();
+    let mut labels = Vec::new();
+    let mut listed = 0_usize;
+    for raw in text.trim_start_matches('\u{feff}').lines() {
+        let entry = raw.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        listed += 1;
+        let Some((key, value)) = entry.split_once(':') else {
+            return Err(format!(
+                "expected.txt line `{entry}` is not a `key: value` pair (keys: code, file, line, message, label)"
+            ));
+        };
+        let (key, value) = (key.trim(), value.trim());
+        if !matches!(key, "code" | "file" | "line" | "message" | "label") {
+            return Err(format!(
+                "expected.txt has an unknown key `{key}` (keys: code, file, line, message, label)"
+            ));
+        }
+        if value.is_empty() {
+            return Err(format!("expected.txt: `{key}` has no value"));
+        }
+        let twice = || format!("expected.txt: `{key}` appears twice");
+        match key {
+            "code" => {
+                if code.replace(value.to_owned()).is_some() {
+                    return Err(twice());
+                }
+            }
+            "file" => {
+                let path = value.replace('\\', "/");
+                if is_absolute(&path) {
+                    return Err(format!(
+                        "expected.txt: `file: {value}` must be relative to tests/ui (an absolute path is machine specific)"
+                    ));
+                }
+                if file.replace(path).is_some() {
+                    return Err(twice());
+                }
+            }
+            "line" => {
+                let Some(number) = value.parse::<u64>().ok().filter(|number| *number > 0) else {
+                    return Err(format!(
+                        "expected.txt: `line: {value}` is not a positive line number"
+                    ));
+                };
+                if line.replace(number).is_some() {
+                    return Err(twice());
+                }
+            }
+            "message" => messages.push(value.to_owned()),
+            _ => labels.push(value.to_owned()),
+        }
     }
-    Ok(substrings)
+    if listed == 0 {
+        return Err("expected.txt lists no key; delete it if the crate must compile".to_owned());
+    }
+    let Some(code) = code else {
+        return Err(
+            "expected.txt has no `code:` line; without it any diagnostic would do".to_owned(),
+        );
+    };
+    let Some(file) = file else {
+        return Err(
+            "expected.txt has no `file:` line; without it a diagnostic from anywhere would do"
+                .to_owned(),
+        );
+    };
+    let Some(line) = line else {
+        return Err(
+            "expected.txt has no `line:` line; without it any line of the file would do".to_owned(),
+        );
+    };
+    Ok(Expected {
+        code,
+        file,
+        line,
+        messages,
+        labels,
+    })
 }
 
-/// The problems of one fixture run: none when the outcome matches the expectation. Backslashes
-/// in `stderr` count as slashes, so an expected path reads the same on every platform.
+/// Whether a slash-separated path is absolute: a leading slash (also `//host/share`) or a
+/// drive letter.
+fn is_absolute(path: &str) -> bool {
+    path.starts_with('/') || path.as_bytes().get(1) == Some(&b':')
+}
+
+/// The problems of one fixture run: none when the outcome matches the expectation.
+///
+/// Only the case's own diagnostics count (`target.name` is the case), so a dependency's error
+/// never satisfies an expectation. A failing case must report exactly one error-level message;
+/// warnings and the summary `failure-note` are ignored, and a second error is a problem of its
+/// own that names it.
 pub(crate) fn judge(
     case: &str,
     expectation: &Expectation,
     success: bool,
+    stdout: &str,
     stderr: &str,
 ) -> Vec<String> {
-    let shown = stderr.replace('\\', "/");
+    let diagnostics = parse_diagnostics(stdout);
+    let errors: Vec<&Diagnostic> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.target == case && diagnostic.level == "error")
+        .collect();
+    let shown = || indent(&output_shown(&diagnostics, stderr));
     match expectation {
         Expectation::Compiles if success => Vec::new(),
         Expectation::Compiles => vec![format!(
             "{case}: has no expected.txt so it must compile, but `cargo check` failed:\n{}",
-            indent(&shown)
+            shown()
         )],
         Expectation::Fails(_) if success => vec![format!(
             "{case}: has an expected.txt so `cargo check` must fail, but it compiled"
         )],
-        Expectation::Fails(wanted) => {
-            // Every substring must sit in one and the same diagnostic: the location, the error
-            // code and the custom message together. The diagnostic that matches most of them is
-            // the one whose gaps are reported.
-            let diagnostics = split_diagnostics(&shown);
-            let contains_all = |diagnostic: &String| {
-                wanted
+        Expectation::Fails(_) if errors.is_empty() => vec![format!(
+            "{case}: `cargo check` failed but printed no error-level compiler-message of its own, so expected.txt cannot match; cargo said:\n{}",
+            shown()
+        )],
+        Expectation::Fails(_) if errors.len() > 1 => vec![
+            format!(
+                "{case}: expected.txt describes one error, but rustc reported {} errors: {}",
+                errors.len(),
+                errors
                     .iter()
-                    .all(|substring| diagnostic.contains(substring.as_str()))
-            };
-            if diagnostics.iter().any(contains_all) {
+                    .map(|error| describe(error))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+            format!("{case}: rustc output was:\n{}", shown()),
+        ],
+        Expectation::Fails(wanted) => {
+            let error = errors[0];
+            let missing = gaps(wanted, error);
+            if missing.is_empty() {
                 return Vec::new();
             }
-            let matched = |diagnostic: &String| {
-                wanted
-                    .iter()
-                    .filter(|substring| diagnostic.contains(substring.as_str()))
-                    .count()
-            };
-            let closest = diagnostics.iter().rev().max_by_key(|d| matched(d));
-            let mut problems: Vec<String> = wanted
+            let mut problems: Vec<String> = missing
                 .iter()
-                .filter(|substring| closest.is_none_or(|d| !d.contains(substring.as_str())))
-                .map(|substring| match closest {
-                    Some(diagnostic) => format!(
-                        "{case}: no single rustc diagnostic contains `{substring}` together with the rest of expected.txt (closest: `{}`)",
-                        diagnostic.lines().next().unwrap_or_default()
-                    ),
-                    None => format!("{case}: rustc output has no diagnostic containing `{substring}` (expected.txt)"),
+                .map(|gap| {
+                    format!(
+                        "{case}: the rustc error does not satisfy `{gap}` of expected.txt (error was: {})",
+                        describe(error)
+                    )
                 })
                 .collect();
-            problems.push(format!("{case}: rustc output was:\n{}", indent(&shown)));
+            problems.push(format!("{case}: rustc output was:\n{}", shown()));
             problems
         }
     }
 }
 
-/// The rustc diagnostics of `cargo check --message-format short` output. Each starts at a line
-/// with a severity (`error`, `warning`, `note`, `help`), optionally after a `path:line:col: `
-/// location, and takes the lines up to the next such line. Cargo's own status lines
-/// (`Checking ...`) have no severity and join the preceding diagnostic or are dropped before the
-/// first one, which is harmless since no expectation can name a fixture file there.
-fn split_diagnostics(output: &str) -> Vec<String> {
-    let mut diagnostics: Vec<String> = Vec::new();
-    for line in output.lines() {
-        if starts_diagnostic(line) {
-            diagnostics.push(line.to_owned());
-        } else if let Some(last) = diagnostics.last_mut() {
-            last.push('\n');
-            last.push_str(line);
+/// The keys of `wanted` that `error` does not satisfy, each written as in expected.txt.
+fn gaps(wanted: &Expected, error: &Diagnostic) -> Vec<String> {
+    let mut gaps = Vec::new();
+    if error.code.as_deref() != Some(wanted.code.as_str()) {
+        gaps.push(format!("code: {}", wanted.code));
+    }
+    // `file` and `line` say where the error is reported: one primary span must carry both. A
+    // wrong file hides the line, and without a located span there is no label to look at.
+    let on_file: Vec<&Span> = error
+        .spans
+        .iter()
+        .filter(|span| span.primary && span.file == wanted.file)
+        .collect();
+    let located: Vec<&Span> = on_file
+        .iter()
+        .copied()
+        .filter(|span| span.line == Some(wanted.line))
+        .collect();
+    if on_file.is_empty() {
+        gaps.push(format!("file: {}", wanted.file));
+    } else if located.is_empty() {
+        gaps.push(format!("line: {}", wanted.line));
+    }
+    for text in &wanted.messages {
+        let found = error.message.contains(text.as_str())
+            || error
+                .child_messages
+                .iter()
+                .any(|child| child.contains(text.as_str()));
+        if !found {
+            gaps.push(format!("message: {text}"));
         }
     }
-    diagnostics
+    if !located.is_empty() {
+        for text in &wanted.labels {
+            let found = located.iter().any(|span| {
+                span.label
+                    .as_deref()
+                    .is_some_and(|label| label.contains(text.as_str()))
+            });
+            if !found {
+                gaps.push(format!("label: {text}"));
+            }
+        }
+    }
+    gaps
 }
 
-/// Whether `line` opens a diagnostic: `error...`, `warning...`, `note...` or `help...` at the
-/// start of the line or right after a `: ` that ends a location, followed by `:` or `[`.
-fn starts_diagnostic(line: &str) -> bool {
-    const SEVERITIES: [&str; 4] = ["error", "warning", "note", "help"];
-    let opens = |text: &str| {
-        SEVERITIES.iter().any(|severity| {
-            text.strip_prefix(severity)
-                .is_some_and(|rest| rest.starts_with([':', '[']))
+/// `error[E0277] message at file:line`, for naming a diagnostic.
+fn describe(diagnostic: &Diagnostic) -> String {
+    let code = diagnostic
+        .code
+        .as_deref()
+        .map_or_else(String::new, |code| format!("[{code}]"));
+    let place = diagnostic
+        .spans
+        .iter()
+        .find(|span| span.primary)
+        .map_or_else(String::new, |span| {
+            let line = span
+                .line
+                .map_or_else(|| "?".to_owned(), |line| line.to_string());
+            format!(" at {}:{line}", span.file)
+        });
+    format!("{}{code} {}{place}", diagnostic.level, diagnostic.message)
+}
+
+/// What a reader sees of a run: the rendered diagnostics, then cargo's own stderr (backslashes
+/// read as slashes). Cargo's JSON has no text of its own beyond the diagnostics.
+fn output_shown(diagnostics: &[Diagnostic], stderr: &str) -> String {
+    let mut shown: String = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.rendered.as_str())
+        .collect();
+    shown.push_str(&stderr.replace('\\', "/"));
+    shown.trim_end().to_owned()
+}
+
+/// The `compiler-message` lines of `cargo check --message-format json` stdout. Every other
+/// line (artifacts, `build-finished`, text that is not JSON, a JSON line cut short) is skipped,
+/// and so is a message without a `target.name` or `message` text.
+pub(crate) fn parse_diagnostics(stdout: &str) -> Vec<Diagnostic> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('{'))
+        .filter_map(|line| json::parse(line).ok())
+        .filter(|line| line.get("reason").and_then(Json::as_str) == Some("compiler-message"))
+        .filter_map(|line| {
+            let target = line.get("target")?.get("name")?.as_str()?;
+            diagnostic_of(target, line.get("message")?)
         })
-    };
-    if line.starts_with(char::is_whitespace) {
-        return false;
-    }
-    if opens(line) {
-        return true;
-    }
-    // `<path>:<line>:<col>: error[E0277]: ...`: the severity follows the first `:<digits>:<digits>: `.
-    let is_number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
-    line.match_indices(": ").any(|(split, _)| {
-        let mut parts = line[..split].rsplitn(3, ':');
-        let (column, row, path) = (parts.next(), parts.next(), parts.next());
-        matches!((column, row, path), (Some(c), Some(r), Some(p)) if is_number(c) && is_number(r) && !p.is_empty())
-            && opens(&line[split + 2..])
+        .collect()
+}
+
+fn diagnostic_of(target: &str, message: &Json) -> Option<Diagnostic> {
+    let text = |value: Option<&Json>| value.and_then(Json::as_str).map(str::to_owned);
+    let spans = message
+        .get("spans")
+        .and_then(Json::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(span_of)
+        .collect();
+    let child_messages = message
+        .get("children")
+        .and_then(Json::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|child| text(child.get("message")))
+        .collect();
+    Some(Diagnostic {
+        target: target.to_owned(),
+        level: text(message.get("level")).unwrap_or_default(),
+        code: message
+            .get("code")
+            .and_then(|code| code.get("code"))
+            .and_then(Json::string_or_null),
+        message: text(message.get("message"))?,
+        child_messages,
+        spans,
+        rendered: text(message.get("rendered"))
+            .unwrap_or_default()
+            .replace('\\', "/"),
+    })
+}
+
+fn span_of(span: &Json) -> Option<Span> {
+    Some(Span {
+        file: span
+            .get("file_name")
+            .and_then(Json::as_str)?
+            .replace('\\', "/"),
+        line: match span.get("line_start") {
+            Some(Json::Number(text)) => text.parse().ok(),
+            _ => None,
+        },
+        primary: matches!(span.get("is_primary"), Some(Json::Bool(true))),
+        label: span.get("label").and_then(Json::string_or_null),
     })
 }
 
