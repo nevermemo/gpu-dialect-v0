@@ -31,8 +31,15 @@ framework, and Hurricane, the game engine (today's
 
 ## Now and next
 
-**Now: M2, typed host API.** Plan adopted after two Codex reviews (owner-delegated); slices
-run one at a time, and each landed slice is recorded in STATUS.
+**Now: M3, dual test builds.** Planning next. The M2 sanity check (D37) keeps M3's scope
+and fixes the order inside it.
+
+| Item | Work | Status |
+| --- | --- | --- |
+| M3 plan | Plan for M3 with pre-registered spikes; the first spike has the macro emit `Run` for a CPU device in `gust` on vector-add (kill rule: `unsafe` or a `gust-wgpu` dependency in the macro means redesign `Binding` first); the executable-semantics contract (D22) and a minimal known-mismatch ledger come first; scalar kernels before shadow-type breadth; `--cfg gust_dual` last | ready |
+
+**Done: M2, typed host API** (closed 2026-10-24, D37). Plan adopted after two Codex reviews (owner-delegated); slices
+ran one at a time, and each landed slice is recorded in STATUS.
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -41,13 +48,14 @@ run one at a time, and each landed slice is recorded in STATUS.
 | m2.a | Typed call surface in `gust`: `TypedDevice` (extends `Device`), `Resource`, `Arg`, `Independent`, `Call`, the `Run<K, N>` hook; the backend contract checks bindings against the kernel at submit | done (Unit + check-fast; Opus keep after one fix round; `3060072`) |
 | m2.c | `gust-wgpu` implements the typed surface: `HeadlessDevice` is a `TypedDevice` and runs `Call`s through the existing binding validation; one buffer bound twice is rejected when either binding writes; binding indices checked against the device limit | done (Gpu: check-fast and check-examples RTX 5090; Opus keep after one fix round; `119ece3`) |
 | m2.d0 | `check-ui` on JSON diagnostics: a failing case has exactly one error, pinned by `code`, `file`, `line`, `message` and `label` keys on one primary span (D33, M1 risk 6) | done (Unit: check-ui and xtask tests; Opus keep after one fix round; `a8b074f`) |
-| m2.d1 | Generated `call`, `submit`, `dispatch` on every kernel handle, with a per-kernel const assert of the storage count; spike S3: a five-parameter kernel infers without turbofish | done (Unit: check-ui fixtures, expansion tests, bless unchanged; Opus keep after one fix round; `a83a96e`) |
+| m2.d1 | Generated `call`, `submit`, `dispatch` on every storage-only kernel handle (uniform kernels get none), with a per-kernel const assert of the storage count; spike S3: a five-parameter kernel infers without turbofish | done (Unit: check-ui fixtures, expansion tests, bless unchanged; Opus keep after one fix round; `a83a96e`) |
 | m2.d2 | Const layout assertions: per-field padding-free offsets, no tail padding, alignment 4 and `is_storage_v1` per struct; per-parameter element layout against its Rust size, alignment and stride; check-ui follows macro expansion to the user's line | done (Unit: check-ui fixtures `layout-outside-*`, expansion tests, bless unchanged; Opus keep after two fix rounds; `adeb7be`) |
 | m2.e | `StagedGraph::{write, run, run_indirect, read}` derive dependencies from typed calls (RAW, WAW, WAR; conservative, validated, insertion order kept); `validate` runs the limit pass for every node before any compile and rejects a read-write binding of an indirect node's arguments buffer | done (Gpu: graph tests, check-examples RTX 5090; spike S4 matched the pre-registered sets; Opus keep; `229bfbf`) |
 | m2.g | A hand-written `KernelDescriptor` that fails in slangc maps to its Rust line through `slang::compile`, both reflect paths and the native helper, independent of validator gaps (D33, M1 risk 5) | done (Slangc + Reflect; Opus keep after one fix round; `c6571d5`) |
 | m2.f1 | Examples vector-add, atomic-counter, polynomial, signal-pipeline on generated typed calls; `gust-wgpu`'s typed tests use the generated call | done (Gpu: check-examples, release runs of polynomial and signal-pipeline, RTX 5090; Spirv: check-artifacts; Opus keep; `ef52d86`) |
 | m2.f2 | Examples particle-step, typed-pipeline, staged-graph, component-pool on typed calls and derived graphs | done (Gpu: check-examples and four release runs, RTX 5090; Spirv: check-artifacts; derived sets as pre-registered; Opus keep; `2a4f3f6`) |
-| close-out | Shared workgroup-limit constant, pool-buffer layout assert, README/ARCHITECTURE/EXECUTION_GRAPH/VALIDATION, D34-D36, `check-full`, M2 sanity check | in progress (code and docs `009f86a`, Opus keep after fixes; D34-D36; check-full and sanity check next) |
+| close-out | Shared workgroup-limit constant, pool-buffer layout assert, README/ARCHITECTURE/EXECUTION_GRAPH/VALIDATION, D34-D36, `check-full`, M2 sanity check | done (Gpu: check-full RTX 5090 at `634a50e`; Opus keep after fixes; D34-D36; `009f86a`) |
+| sanity | Two sanity reviews (Fable and Codex: proceed with fixes, D37) and their fixes: indirect launches skip only the workgroup-count check, `DeviceLimit` docs, the uniform-kernel exception named, the instance-flag condition on indirect-count zeroing | done (Gpu: graph test with mutations, check-fast RTX 5090; Opus keep after fixes; `2d1880b`) |
 
 **Done: M1, diagnostics** (closed 2026-10-23, D33). Plan adopted 2026-10-23 (owner-delegated); slice details are in the
 coordinator's plan file, and each landed slice is recorded in STATUS.
@@ -93,7 +101,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | --- | --- | --- |
 | M0 Close-out and housekeeping | See Now and next | done (D28; M0.15 waits for 2026-10-30) |
 | M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | done (D33; M1.0 to M1.6) |
-| M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | in progress (close-out) |
+| M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | done (D37) |
 | M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[gpu(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[gpu(cpu = "unsupported")]` is the absence of the `Run` impl | planned |
 | M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run | planned |
 | M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; known-mismatch file; scalar `coretests` cases on the GPU | planned |

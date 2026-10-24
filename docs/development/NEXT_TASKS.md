@@ -39,6 +39,23 @@ test module; do not mix that mechanical move with behavior changes.
 - Culling -> compacted visibility -> indirect arguments -> rendering.
 - Entity identity/lifecycle and storage choices, guided by measured workloads.
 
+## M2 follow-ups (filed at M2 close, D37)
+
+- O5: `max_buffer_size` is not checked; buffer creation is infallible, so an oversized
+  buffer is still a wgpu panic. Take the error-scope route (`push_error_scope` /
+  `on_uncaptured_error`) rather than another host pre-check, with a test that pins
+  today's panic first. M10 API pass at the latest.
+- O8: deprecate the `F32Binding`/`U32Binding` slice paths once typed calls cover every
+  example's use (M10 API pass).
+- O4: access typestate on `GpuBuffer` (`GpuBuffer<T, A>`) so a read-only buffer passed
+  as read-write fails at compile time; changes every `create_*` signature and the pool.
+- O3: a `#[gpu]` parameter attribute for independent length, if D15's call-site
+  `Independent(&buf)` is revisited when M7's primitives need it.
+- Kernels with a `Uniform<T>`/`ConstantBuffer<T>` parameter have no generated typed call,
+  and the headless runtime rejects them (`Error::UnsupportedParameter`); plain value
+  parameters are rejected by the macro. Decide in M3 whether uniforms get a typed call
+  (with M6's uniform work) or such kernels stay without a CPU twin.
+
 ## Deferred language/runtime breadth
 
 Vectors/matrices, uniforms, textures, samplers, additional binding groups, and

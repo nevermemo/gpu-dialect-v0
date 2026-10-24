@@ -1,14 +1,26 @@
 # Current status
 
-## Active: roadmap M2 (2026-10-23)
+## Active: roadmap M3 (2026-10-24)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done except M0.15,
 which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 2026-10-23 (D33): M1.0 to M1.6 are done (per-item evidence in the roadmap), after a
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
-below. M2 (typed host API) is under way, one slice at a time.
+below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fable and
+Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds) is
+being planned.
 
+- M2 sanity-check fixes (`2d1880b`, D37): indirect launches check everything except the
+  workgroup count on both the validation and the execution path, so `with_limits` with a
+  lower `max_compute_workgroups_per_dimension` no longer rejects them through a placeholder
+  count (new graph test fails before the fix; three mutations caught); the `DeviceLimit`
+  doc says `validate` checks every node before any compile; a kernel with a
+  `Uniform<T>`/`ConstantBuffer<T>` parameter has no generated typed call and is rejected
+  by the runtime (`UnsupportedParameter`), now said in every doc that claimed "every
+  kernel"; wgpu zeroes over-limit indirect counts only under its default instance flags.
+  Evidence: fmt, clippy, gust-wgpu tests, check-ui, docs-check, lint, Unit suite, check-fast
+  green after two review rounds (Opus: keep after fixes).
 - M2 close-out (code and user docs, `009f86a`): `gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION`
   is pinned to `wgpu::Limits::default()` by a unit test and to the opened device by a GPU test, and replaces
   the examples' seven copies of 65 535. One runtime StorageV1 and size assertion now guards typed, pool and
@@ -16,8 +28,8 @@ below. M2 (typed host API) is under way, one slice at a time.
   `StagedGraph::dependency_indices` replaces the examples' copies. README, ARCHITECTURE, EXECUTION_GRAPH and
   VALIDATION describe the M2 code; decisions D34 (typed call surface, alias contract), D35 (derived edges)
   and D36 (launch limits and what stays unchecked). Evidence: fmt, clippy, gust-wgpu tests, docs-check, lint,
-  Unit suite and check-fast green after the review fix round (Opus: keep after fixes). Still to run:
-  `check-full` and the M2 sanity check.
+  Unit suite and check-fast green after the review fix round (Opus: keep after fixes); `check-full`
+  passed at `634a50e` (2026-10-24T05:44:34Z, RTX 5090).
 - M2 m2.f2: particle-step and typed-pipeline batch typed calls; staged-graph and
   component-pool build every frame with `StagedGraph::write/run/run_indirect/read`, so all
   edges are derived, and they assert the derived sets (`[[], [0], [0, 1], [2]]` and
@@ -90,9 +102,9 @@ below. M2 (typed host API) is under way, one slice at a time.
   read-write panicked in wgpu, read-write twice ran with the last writer winning; no
   example binds a buffer twice, and check-examples passes). Binding indices are checked
   against `max_bindings_per_bind_group` on every dispatch path. 19 GPU tests in
-  `tests/typed.rs`. Still open: the `_` arm on the `#[non_exhaustive]` `LengthRule`
-  would silently accept a new variant (the indirect-arguments alias is checked since m2.e)
-  (`119ece3`).
+  `tests/typed.rs`. The `_` arm on the `#[non_exhaustive]` `LengthRule` binds any
+  rule this crate does not know with the strictest one (`Shared`), by design (decided at
+  M2 close, D37); the indirect-arguments alias is checked since m2.e (`119ece3`).
 - M2 m2.a: typed call surface in `gust` (`dispatch.rs`). `TypedDevice` extends
   `Device` (unchanged) with a `Binding<'r>` type; `Resource`, `Arg`, `Independent`,
   `LengthRule` and `Call` describe one typed launch, and `Run<K, N>` submits it.
@@ -106,11 +118,10 @@ below. M2 (typed host API) is under way, one slice at a time.
   `Error::DeviceLimit`; before, wgpu panicked (measured: workgroup size 512 at pipeline
   creation, 65 536 workgroups at dispatch). The opened RTX 5090 device carries wgpu's
   default limits, not the adapter's. `HeadlessDevice::with_limits` only lowers limits
-  (five fields honoured). Known gaps: in a multi-node graph earlier nodes may compile
-  before an over-limit node fails (nothing is submitted; m2.e moves the check into graph
-  validation); the dispatch emitted by `render_wgpu_source` and buffers above
-  `max_buffer_size` are not checked yet; binding indices are checked since m2.c
-  (`151ef56`).
+  (five fields at the time; six since m2.c added the binding index). Known gaps: the
+  dispatch emitted by `render_wgpu_source` and buffers above `max_buffer_size` are not
+  checked (D36); the multi-node graph gap of this slice was closed by m2.e, whose
+  `validate` runs the limit pass for every node before any compile (`151ef56`).
 
 - M1.6: sanity-check fixes. Clippy `disallowed-methods`/`disallowed-macros` replace the
   hand-written uncoded-error scanner, and the exception is confined to `diagnostics.rs`
@@ -148,7 +159,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M2, slice by slice (see the roadmap's Now and next)
+claim: roadmap M3 planning (see the roadmap's Now and next)
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```
@@ -157,11 +168,12 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed at 2026-10-23T22:45:51Z on
-  NVIDIA GeForce RTX 5090 / Vulkan at `a6cbb8f` (clean tree, slangc 2026.13.1), through
-  the shared cargo slot wrapper: workspace tests, release-mode slang tests, all 8
-  examples (debug builds), and 13 SPIR-V artifacts through `spirv-val`. The Slangc and
-  Reflect suites passed at the same commit. The local `.ai/VALIDATION.json` record
+- Last full validation: `cargo xtask check-full` passed from 2026-10-24T05:40:27Z to
+  05:44:34Z on NVIDIA GeForce RTX 5090 / Vulkan at `634a50e` (clean tree), through the
+  shared cargo slot wrapper: workspace tests, release-mode slang tests, all 8 examples
+  (debug builds), and 13 SPIR-V artifacts through `spirv-val`. Release-mode example runs
+  are per-slice evidence (m2.f1, m2.f2 probe logs), not part of this record. The previous
+  full run (M1) was at `a6cbb8f`, together with the Slangc and Reflect suites. The local `.ai/VALIDATION.json` record
   stamps the commit and dirty state and contains no machine paths.
 - DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,
   `08a4843`, `3296885`).

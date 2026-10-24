@@ -3,10 +3,11 @@
 ## Current state
 
 - Branch: `main`
-- Active: roadmap M1 (diagnostics), slice by slice; see the "Now and next" section of
+- Active: roadmap M3 (dual test builds), planned next; see the "Now and next" section of
   [ROADMAP.md](../ROADMAP.md) and [STATUS.md](STATUS.md).
 - M0 is closed (D28). Its only open item is M0.15, making the CI `unit` job a required
-  check after a week of green runs (from 2026-10-30).
+  check after a week of green runs (from 2026-10-30). M1 (diagnostics) is closed (D33)
+  and M2 (typed host API) is closed (D37).
 - T13 GPU active-count proof is deferred by owner. Its work in progress is the git
   stash `WIP T13 active count deferred`, not the working tree. Do not apply,
   continue, validate, commit, or drop it without explicit direction.
@@ -22,10 +23,10 @@
 
 ## Evidence
 
-- Last release-level record: `cargo xtask check-full` passed at
-  2026-10-23T13:24:07Z on NVIDIA GeForce RTX 5090 / Vulkan at `8200431` (workspace
-  tests, release-mode slang tests, 8 examples, 13 SPIR-V artifacts validated).
-- CI `unit` job green on every push to main on 2026-10-23.
+- Last full record: `cargo xtask check-full` passed at 2026-10-24T05:44:34Z on NVIDIA
+  GeForce RTX 5090 / Vulkan at `634a50e` (workspace tests, release-mode slang tests,
+  8 examples in debug builds, 13 SPIR-V artifacts validated); details in STATUS.
+- CI `unit` and `msrv` jobs green on main.
 - Evidence tiers and labels: [VALIDATION.md](VALIDATION.md).
 
 Historical handoff records are in
