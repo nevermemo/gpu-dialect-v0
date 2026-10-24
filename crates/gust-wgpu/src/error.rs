@@ -41,6 +41,15 @@ pub enum Error {
         actual: usize,
     },
     ForeignPersistentBuffer,
+    /// One buffer is bound to two parameters of one dispatch and at least one of them is
+    /// read-write. Reported before any wgpu object is created or anything is written. Binding the
+    /// same buffer twice is accepted only when both bindings are read-only. `first` precedes
+    /// `second` in declaration order. Remedy: bind the buffer once, or use separate buffers.
+    AliasedBinding {
+        kernel: String,
+        first: String,
+        second: String,
+    },
     PersistentBufferAccess {
         parameter: String,
         buffer: GpuBufferAccess,
@@ -172,6 +181,14 @@ impl fmt::Display for Error {
                     "persistent buffer belongs to a different GPU device"
                 )
             }
+            Self::AliasedBinding {
+                kernel,
+                first,
+                second,
+            } => write!(
+                formatter,
+                "parameters `{first}` and `{second}` of kernel `{kernel}` are the same buffer and at least one of them is written; a buffer may be bound twice only read-only (bind it once, or use separate buffers)",
+            ),
             Self::PersistentBufferAccess {
                 parameter,
                 buffer,

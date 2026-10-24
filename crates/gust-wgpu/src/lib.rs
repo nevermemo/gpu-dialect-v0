@@ -5,6 +5,11 @@
 //! compiles descriptor Slang source to WGSL, dispatches it, and reads writable buffers back. A
 //! persistent typed-buffer path separates allocation, upload, dispatch, and
 //! readback so allocations can remain resident across repeated work.
+//!
+//! The backend-neutral typed surface of `gust` is implemented here: `GpuBuffer<T>` is a
+//! `gust::Resource`, and `HeadlessDevice` runs every `gust::Call` (`gust::Run`). A call is
+//! validated like `dispatch_buffers`: each binding is checked against `call.kernel()` at submit,
+//! and one buffer may be bound twice only read-only (`Error::AliasedBinding`).
 
 use std::{
     marker::PhantomData,
@@ -17,8 +22,8 @@ use std::{
 };
 
 use gust::{
-    Access, GpuPod, JobStatus, KernelDescriptor, ParameterDescriptor, ParameterKind,
-    ResourceLayout, pod_slice_as_bytes, slang,
+    Access, Call, GpuPod, JobStatus, Kernel, KernelDescriptor, LengthRule, ParameterDescriptor,
+    ParameterKind, Resource, ResourceLayout, Run, TypedDevice, pod_slice_as_bytes, slang,
 };
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
@@ -371,6 +376,119 @@ impl gust::Device for HeadlessDevice {
     }
 }
 
+/// Whether two handles are the same wgpu buffer. `wgpu::Buffer` equality compares the underlying
+/// allocation, not the address of the handle, so a cloned handle is the same buffer. Buffer identity
+/// in the typed-call alias rule is this comparison. `graph.rs` compares with `==` directly (same semantics); moving
+/// it onto this helper is m2.e work.
+pub(crate) fn same_buffer(first: &wgpu::Buffer, second: &wgpu::Buffer) -> bool {
+    first == second
+}
+
+impl TypedDevice for HeadlessDevice {
+    type Binding<'resources> = BufferBinding<'resources>;
+}
+
+/// The GPU runs every kernel: one blanket implementation. The call goes through `submit_batch`, so
+/// `validate_persistent_dispatch` checks each binding against `call.kernel()` (access, layout, device
+/// instance, length, aliasing), then the launch limits and the pipeline cache take over, exactly as for
+/// `dispatch_buffers`. A hand-built `Call` is therefore never trusted.
+impl<K: Kernel, const N: usize> Run<K, N> for HeadlessDevice {
+    fn submit_call<'device>(
+        &'device self,
+        call: &Call<'_, Self, K, N>,
+    ) -> Result<Self::Job<'device>, Self::Error> {
+        self.submit_batch(&[BufferDispatch::from(call)])
+    }
+}
+
+impl<'call, 'resources: 'call, K: Kernel, const N: usize>
+    From<&'call Call<'resources, HeadlessDevice, K, N>> for BufferDispatch<'call>
+{
+    /// Lets typed calls of different kernels share one `submit_batch`/`dispatch_batch`:
+    /// `device.dispatch_batch(&[(&first).into(), (&second).into()])`. The call must outlive the batch.
+    /// `Call` is invariant over the lifetime of the buffers it borrows, so the two lifetimes stay separate:
+    /// the dispatch borrows the call only for `'call`.
+    fn from(call: &'call Call<'resources, HeadlessDevice, K, N>) -> Self {
+        Self::new(call.kernel(), call.element_count(), call.bindings())
+    }
+}
+
+/// A persistent buffer is a typed resource of [`HeadlessDevice`]. In a generated `call` its element
+/// type is checked at compile time: a `GpuBuffer<u32>` where the kernel wants `f32` does not compile
+/// (rustc error E0271, reproduced in a scratch crate, 2026-10-24).
+///
+/// ```compile_fail
+/// # use gust::*;
+/// # use gust_wgpu::GpuBuffer;
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #     };
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32> + 'r,
+/// #     R1: Resource<Element = f32, Device = R0::Device> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// fn wrong(a: &GpuBuffer<f32>, b: &GpuBuffer<u32>) {
+///     let _ = call(1, a, b);
+/// }
+/// ```
+///
+/// The control differs in exactly one place (the element type of `b`):
+///
+/// ```
+/// # use gust::*;
+/// # use gust_wgpu::GpuBuffer;
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #     };
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32> + 'r,
+/// #     R1: Resource<Element = f32, Device = R0::Device> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// fn right(a: &GpuBuffer<f32>, b: &GpuBuffer<f32>) {
+///     let _ = call(1, a, b);
+/// }
+/// ```
+impl<T: GpuPod> Resource for GpuBuffer<T> {
+    type Element = T;
+    type Device = HeadlessDevice;
+
+    fn bind<'resources>(
+        &'resources self,
+        access: Access,
+        length: LengthRule,
+    ) -> BufferBinding<'resources> {
+        let binding = BufferBinding::new(self, access);
+        match length {
+            LengthRule::Independent => binding.independent_length(),
+            // `Shared` and any rule added later: the strictest rule (exactly `element_count`
+            // elements) is the safe reading of one this crate does not know.
+            _ => binding,
+        }
+    }
+}
+
 struct PreparedDispatch {
     cached_kernel: Arc<CachedKernel>,
     bind_group: wgpu::BindGroup,
@@ -554,8 +672,9 @@ impl HeadlessDevice {
     ///
     /// Only these fields are honoured by the launch checks:
     /// `max_compute_workgroup_size_x`, `max_compute_invocations_per_workgroup`,
-    /// `max_compute_workgroups_per_dimension`, `max_storage_buffers_per_shader_stage`
-    /// and `max_storage_buffer_binding_size`. Every other field is accepted if it is not
+    /// `max_compute_workgroups_per_dimension`, `max_storage_buffers_per_shader_stage`,
+    /// `max_storage_buffer_binding_size` and `max_bindings_per_bind_group` (every binding
+    /// index of a kernel must be below it). Every other field is accepted if it is not
     /// raised, but has no effect (`max_buffer_size` is never checked by GUST).
     pub fn with_limits(mut self, limits: wgpu::Limits) -> Result<Self, Error> {
         let mut raised = None;
@@ -1341,6 +1460,7 @@ impl HeadlessDevice {
             return Ok(0);
         }
         check_kernel_limits(&self.limits, kernel, resources.len())?;
+        check_binding_indices(&self.limits, kernel, resources)?;
         let workgroup_count = workgroup_count(&self.limits, kernel, element_count)?;
         for bytes in binding_bytes {
             check_binding_size(&self.limits, kernel, bytes)?;
@@ -1576,6 +1696,32 @@ fn check_kernel_limits(
     Ok(())
 }
 
+/// Every binding index must be below `max_bindings_per_bind_group`: wgpu rejects the bind group layout
+/// (an uncaptured-error panic) when an index is equal to or above it, however few bindings there are.
+/// `requested` is the highest index plus one, so it compares with the maximum like the other limits.
+fn check_binding_indices(
+    limits: &wgpu::Limits,
+    kernel: &KernelDescriptor,
+    resources: &[&ParameterDescriptor],
+) -> Result<(), Error> {
+    let maximum = u64::from(limits.max_bindings_per_bind_group);
+    let requested = resources
+        .iter()
+        .filter_map(|parameter| parameter.binding)
+        .map(|binding| u64::from(binding.binding) + 1)
+        .max()
+        .unwrap_or(0);
+    if requested > maximum {
+        return Err(device_limit(
+            kernel,
+            "max_bindings_per_bind_group",
+            requested,
+            maximum,
+        ));
+    }
+    Ok(())
+}
+
 /// Workgroups needed for `element_count` invocations, within the per-dimension limit.
 fn workgroup_count(
     limits: &wgpu::Limits,
@@ -1745,6 +1891,21 @@ fn validate_persistent_dispatch(
                 expected: element_count as usize,
                 actual: buffer.len,
             });
+        }
+    }
+    // One buffer may be bound twice only when both bindings are read-only. The access of each binding
+    // equals its parameter's access here, and the check names both parameters in declaration order.
+    for (index, (first_parameter, first)) in resources.iter().zip(bindings).enumerate() {
+        for (second_parameter, second) in resources.iter().zip(bindings).skip(index + 1) {
+            if same_buffer(first.raw, second.raw)
+                && (first.access == Access::ReadWrite || second.access == Access::ReadWrite)
+            {
+                return Err(Error::AliasedBinding {
+                    kernel: kernel.qualified_name().to_string(),
+                    first: first_parameter.name.to_owned(),
+                    second: second_parameter.name.to_owned(),
+                });
+            }
         }
     }
     Ok(resources)
@@ -2040,6 +2201,25 @@ mod tests {
         }
         let stats = device.pipeline_cache_stats();
         assert_eq!((stats.entries, stats.misses, stats.hits), (2, 2, 2));
+    }
+
+    #[test]
+    fn same_buffer_compares_the_allocation_not_the_handle_address() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter required");
+        let first = device.create_f32_buffer("identity first", &[0.0], GpuBufferAccess::ReadWrite);
+        let second =
+            device.create_f32_buffer("identity second", &[0.0], GpuBufferAccess::ReadWrite);
+        let cloned = first.raw.clone();
+        assert!(
+            !std::ptr::eq(&first.raw, &cloned),
+            "the clone is another handle, at another address"
+        );
+        assert!(
+            same_buffer(&first.raw, &cloned),
+            "a cloned handle is the same buffer"
+        );
+        assert!(same_buffer(&first.raw, &first.raw));
+        assert!(!same_buffer(&first.raw, &second.raw));
     }
 
     #[test]

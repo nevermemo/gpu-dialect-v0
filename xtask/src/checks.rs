@@ -70,6 +70,8 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 "reflection",
                 "--test",
                 "limits",
+                "--test",
+                "typed",
             ],
         ),
         "reflection" => {
@@ -358,7 +360,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
             "gpu-semantics: semantics/numeric/option/loops/struct assignment GPU differential tests"
         }
         "gpu-runtime" => {
-            "gpu-runtime: reflection gate, cache/runtime mismatch tests and launch-limit checks"
+            "gpu-runtime: reflection gate, cache/runtime mismatch tests, launch-limit checks and typed calls"
         }
         "reflection" => "reflection: native Slang helper + core/wgpu reflection contract",
         "loops" => "loops: bounded-loop golden/rejection test plus real-GPU loop differential test",
