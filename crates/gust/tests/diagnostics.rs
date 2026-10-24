@@ -14,12 +14,17 @@
 //! line, so this file needs only `slangc` on `PATH`, not the helper; the real
 //! helper is exercised by the reflection tests.
 //!
+//! One more fixture, `HANDWRITTEN`, is a `KernelDescriptor` literal with no macro
+//! behind it (an undeclared identifier in hand-written Slang), so it keeps failing
+//! in `slangc` even if the validator one day rejects every construct above.
+//!
 //! The compile copy carries `#line` directives (M1.3), so the compiler's own
 //! error location is the Rust file and line (`--> <file>:<line>:<column>`); the
 //! tests check that raw text as well as the appended `originating Rust` lines.
 
 use gust::{
-    Kernel, KernelDescriptor, SourceOrigin, reflect,
+    Access, GpuPod, Kernel, KernelDescriptor, LineSpan, ParameterDescriptor, ParameterKind,
+    ResourceBinding, ResourceLayout, SourceOrigin, reflect,
     slang::{self, Error, Target},
 };
 use std::{
@@ -286,6 +291,81 @@ mod recursion_in_loop {
         }
     }
 }
+
+// A hand-written descriptor (M1 risk 5). It never passes through `#[gpu]`, so no
+// GUST validator can reject its Slang: the fixture keeps a failing kernel even
+// when the validator learns to refuse the constructs above.
+
+/// The Rust file the hand-written line table points at (relative, `/` only).
+const HANDWRITTEN_FILE: &str = "crates/gust/tests/diagnostics.rs";
+
+/// The faulty line of `HANDWRITTEN_SLANG` (1-based): an undeclared identifier.
+const HANDWRITTEN_FAULTY_SLANG_LINE: u32 = 4;
+
+const HANDWRITTEN_SLANG: &str = concat!(
+    "[[vk::binding(0, 0)]] RWStructuredBuffer<uint> output;\n",
+    "[shader(\"compute\")] [numthreads(64, 1, 1)]\n",
+    "void handwritten_write(uint3 id : SV_DispatchThreadID) {\n",
+    "    output[id.x] = missing_value;\n",
+    "}\n",
+);
+
+const HANDWRITTEN_PARAMETERS: &[ParameterDescriptor] = &[
+    ParameterDescriptor {
+        name: "id",
+        rust_type: "SV_DispatchThreadID",
+        kind: ParameterKind::Invocation,
+        access: Access::NotApplicable,
+        resource_layout: None,
+        binding: None,
+    },
+    ParameterDescriptor {
+        name: "output",
+        rust_type: "RWStructuredBuffer<uint>",
+        kind: ParameterKind::Storage,
+        access: Access::ReadWrite,
+        resource_layout: Some(ResourceLayout::storage_v1(<u32 as GpuPod>::LAYOUT)),
+        binding: Some(ResourceBinding {
+            group: 0,
+            binding: 0,
+        }),
+    },
+];
+
+/// Two records, outer construct first: the whole kernel maps to a line that is
+/// not the marker, the faulty statement to the marked line (the innermost wins).
+const HANDWRITTEN: KernelDescriptor = KernelDescriptor {
+    module: "handwritten",
+    name: "write",
+    entry_point: "handwritten_write",
+    workgroup_size: [64, 1, 1],
+    parameters: HANDWRITTEN_PARAMETERS,
+    slang_source: HANDWRITTEN_SLANG,
+    source: SourceOrigin {
+        file: HANDWRITTEN_FILE,
+        lines: &[
+            LineSpan {
+                slang_start: 3,
+                slang_end: 5,
+                rust_line: line!(),
+            },
+            LineSpan {
+                slang_start: HANDWRITTEN_FAULTY_SLANG_LINE,
+                slang_end: HANDWRITTEN_FAULTY_SLANG_LINE,
+                rust_line: line!(), // FAILS: handwritten
+            },
+        ],
+    },
+};
+
+/// The same kernel with a file but an empty line table: nothing maps back.
+const HANDWRITTEN_UNMAPPED: KernelDescriptor = KernelDescriptor {
+    source: SourceOrigin {
+        file: HANDWRITTEN_FILE,
+        lines: &[],
+    },
+    ..HANDWRITTEN
+};
 
 /// The 1-based line of this file whose code ends with the `// FAILS: <what>` marker.
 fn marked_line(what: &str) -> u32 {
@@ -836,6 +916,130 @@ fn the_helper_path_without_a_line_table_keeps_the_text_from_before_the_table() {
         assert!(
             diagnostics.contains("kernel.slang(") && diagnostics.contains("scripted failure"),
             "{target:?}: {diagnostics}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The hand-written descriptor (M1 risk 5): a failing fixture that never passes
+// through the macro, so no validator change can remove it.
+
+#[test]
+fn a_handwritten_descriptor_fixture_is_what_the_tests_assume() {
+    let source = HANDWRITTEN.source;
+    assert_eq!(source.file, HANDWRITTEN_FILE);
+    // The hand-written path tracks the file the macro records.
+    assert_eq!(HANDWRITTEN_FILE, keyword_local::run::DESCRIPTOR.source.file);
+    assert_table_is_recorded(&HANDWRITTEN);
+    assert_eq!(source.lines.len(), 2);
+    // The faulty Slang line is the undeclared identifier.
+    let faulty = HANDWRITTEN
+        .slang_source
+        .lines()
+        .nth(HANDWRITTEN_FAULTY_SLANG_LINE as usize - 1);
+    assert_eq!(faulty, Some("    output[id.x] = missing_value;"));
+    // The outer record is another Rust line: only the innermost record names the marker.
+    let marker = marked_line("handwritten");
+    assert_eq!(source.lines[1].rust_line, marker);
+    assert_ne!(source.lines[0].rust_line, marker);
+    assert_eq!(
+        slang_line_of(&HANDWRITTEN, marker),
+        HANDWRITTEN_FAULTY_SLANG_LINE
+    );
+    assert_eq!(HANDWRITTEN_UNMAPPED.source.file, HANDWRITTEN_FILE);
+    assert!(HANDWRITTEN_UNMAPPED.source.lines.is_empty());
+    assert_eq!(HANDWRITTEN_UNMAPPED.slang_source, HANDWRITTEN.slang_source);
+}
+
+#[test]
+fn a_handwritten_descriptor_failure_names_the_marked_rust_line_on_every_path() {
+    let expected = marked_line("handwritten");
+    for target in [Target::Wgsl, Target::Spirv] {
+        let context = format!("{target:?}");
+        // `slang::compile` (real slangc).
+        let diagnostics = failure(&HANDWRITTEN, target);
+        assert!(
+            diagnostics.contains("undefined identifier 'missing_value'"),
+            "{context}: the failure is the undeclared identifier: {diagnostics}"
+        );
+        let (file, line) = rust_source(&diagnostics);
+        assert_eq!(file, HANDWRITTEN_FILE, "{context}: {diagnostics}");
+        assert_eq!(line, expected, "{context}: {diagnostics}");
+        assert_compiler_location(&diagnostics, &HANDWRITTEN, expected);
+        // No `// @rust kernel:` marker was written by hand: no construct is named.
+        assert!(
+            !diagnostics.contains("originating Rust construct"),
+            "{context}: {diagnostics}"
+        );
+
+        // `reflect::reflect` (real slangc).
+        let diagnostics = reflect_failure(&HANDWRITTEN, target);
+        assert_known_origin(&diagnostics, "handwritten::write", expected, &context);
+        assert_compiler_location(&diagnostics, &HANDWRITTEN, expected);
+        assert!(
+            diagnostics.contains("undefined identifier 'missing_value'"),
+            "{context}: {diagnostics}"
+        );
+
+        // `reflect::compile_reflected_with_helper` with the scripted stand-in
+        // helper (not the native helper): it reports the faulty Slang line from
+        // the table, and the annotation must map it back.
+        let line = slang_line_of(&HANDWRITTEN, expected);
+        let diagnostics = helper_failure(&HANDWRITTEN, target, line);
+        assert_known_origin(&diagnostics, "handwritten::write", expected, &context);
+        assert!(diagnostics.contains("reflection helper: "), "{diagnostics}");
+    }
+}
+
+#[test]
+fn a_handwritten_descriptor_without_a_line_table_reports_the_slang_line() {
+    let location = format!("kernel.slang:{HANDWRITTEN_FAULTY_SLANG_LINE}:");
+    for target in [Target::Wgsl, Target::Spirv] {
+        let context = format!("{target:?}");
+        let kernel = &HANDWRITTEN_UNMAPPED;
+
+        let diagnostics = failure(kernel, target);
+        assert!(
+            diagnostics.contains(&location),
+            "{context}: no `{location}` in:\n{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("undefined identifier 'missing_value'"),
+            "{context}: {diagnostics}"
+        );
+        assert!(
+            !diagnostics.contains("originating Rust source"),
+            "{context}: {diagnostics}"
+        );
+        assert!(
+            !diagnostics.contains("diagnostics.rs"),
+            "{context}: {diagnostics}"
+        );
+
+        // `reflect::reflect`: the compiler text, then the kernel name, and no source line.
+        let diagnostics = reflect_failure(kernel, target);
+        assert!(
+            diagnostics.contains(&location),
+            "{context}: no `{location}` in:\n{diagnostics}"
+        );
+        assert_unknown_origin(
+            &diagnostics,
+            "handwritten::write",
+            &["compiler exit: "],
+            &context,
+        );
+
+        // The scripted helper reports the same Slang line.
+        let diagnostics = helper_failure(kernel, target, HANDWRITTEN_FAULTY_SLANG_LINE);
+        assert_unknown_origin(
+            &diagnostics,
+            "handwritten::write",
+            &["compiler exit: ", "reflection helper: "],
+            &context,
+        );
+        assert!(
+            diagnostics.contains(&format!("kernel.slang({HANDWRITTEN_FAULTY_SLANG_LINE})")),
+            "{context}: {diagnostics}"
         );
     }
 }

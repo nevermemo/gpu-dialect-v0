@@ -226,6 +226,98 @@ fn the_native_helper_reports_a_slang_failure_at_the_rust_line() {
     assert!(!text.contains("reflection.rs"), "{text}");
 }
 
+/// A hand-written descriptor (no macro, no validator) whose Slang has an
+/// undeclared identifier on line 4, with a two-record line table whose faulty
+/// record points at the marked line below (M1 risk 5, native helper leg).
+const HANDWRITTEN_FAILING: KernelDescriptor = KernelDescriptor {
+    module: "reflection_test",
+    name: "handwritten_failure",
+    entry_point: "handwritten_write",
+    workgroup_size: [64, 1, 1],
+    parameters: PARAMETERS,
+    slang_source: concat!(
+        "[[vk::binding(0, 0)]] RWStructuredBuffer<float> output;\n",
+        "[shader(\"compute\")] [numthreads(64, 1, 1)]\n",
+        "void handwritten_write(uint3 id : SV_DispatchThreadID) {\n",
+        "    output[id.x] = missing_value;\n",
+        "}\n",
+    ),
+    source: gust::SourceOrigin {
+        file: "crates/gust-wgpu/tests/reflection.rs",
+        lines: &[
+            gust::LineSpan {
+                slang_start: 3,
+                slang_end: 5,
+                rust_line: line!(),
+            },
+            gust::LineSpan {
+                slang_start: 4,
+                slang_end: 4,
+                rust_line: line!(), // FAILS: native handwritten
+            },
+        ],
+    },
+};
+
+#[test]
+fn the_native_helper_reports_a_handwritten_failure_at_the_rust_line() {
+    let marker = "// FAILS: native handwritten";
+    let expected = include_str!("reflection.rs")
+        .lines()
+        .position(|line| line.trim_end().ends_with(marker) && line.contains("rust_line"))
+        .map(|index| index + 1)
+        .expect("marker line");
+    let kernel = HANDWRITTEN_FAILING;
+    // The recorded file is the one the macro records for this test file.
+    assert_eq!(
+        kernel.source.file,
+        rejected_by_slang::run::DESCRIPTOR.source.file
+    );
+    // The outer record is another Rust line, so only the innermost one is the marker.
+    assert_eq!(kernel.source.lines[1].rust_line as usize, expected);
+    assert_ne!(kernel.source.lines[0].rust_line as usize, expected);
+    for target in [Target::Wgsl, Target::Spirv] {
+        let error = gust::reflect::compile_reflected(&kernel, target).unwrap_err();
+        let gust::reflect::Error::Compiler(gust::slang::Error::CompilationFailed {
+            diagnostics,
+            ..
+        }) = error
+        else {
+            panic!("{target:?}: expected the helper to refuse the source, got {error}");
+        };
+        assert!(
+            diagnostics.contains("missing_value"),
+            "{target:?}: the failure is the undeclared identifier: {diagnostics}"
+        );
+        // The helper's own error location is the Rust file and line: only the
+        // compile copy's `#line` directives can put it there ...
+        let location = format!("--> {}:{expected}:", kernel.source.file);
+        assert!(
+            diagnostics.contains(&location),
+            "{target:?}: no `{location}` in:\n{diagnostics}"
+        );
+        // ... and the annotation names the same line.
+        assert!(
+            diagnostics.contains(&format!(
+                "originating Rust source: {}:{expected}\n",
+                kernel.source.file
+            )),
+            "{target:?}: {diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("reflection helper: "),
+            "{target:?}: {diagnostics}"
+        );
+    }
+    // With an empty table the helper reads the clean text: Slang coordinates.
+    let mut unmapped = kernel;
+    unmapped.source.lines = &[];
+    let error = gust::reflect::compile_reflected(&unmapped, Target::Wgsl).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("kernel.slang:4:"), "{text}");
+    assert!(!text.contains("reflection.rs"), "{text}");
+}
+
 #[gust::gpu]
 mod nested {
     pub struct Inner {
