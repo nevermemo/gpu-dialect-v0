@@ -9,6 +9,12 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.f2: particle-step and typed-pipeline batch typed calls; staged-graph and
+  component-pool build every frame with `StagedGraph::write/run/run_indirect/read`, so all
+  edges are derived, and they assert the derived sets (`[[], [0], [0, 1], [2]]` and
+  `[[], [0], [0, 1], [1]]`; the pool readback depends on `prepare`, the last writer of
+  `active`). Rejection tests keep the explicit API. Release runs of all four pass on the
+  RTX 5090; swapping `calibration` and `readings` in typed-pipeline is E0271 (`2a4f3f6`).
 - M2 m2.f1: vector-add, atomic-counter, polynomial and signal-pipeline dispatch through the
   generated typed calls (`<kernel>::dispatch`, `BufferDispatch::from(&call)` batches,
   `Independent(&buffer)`); host references, tolerances and export code are unchanged, and
