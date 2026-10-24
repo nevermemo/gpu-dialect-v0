@@ -9,6 +9,17 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.d1: `#[gpu]` generates `call`, `submit` and `dispatch` on every kernel handle:
+  one argument per storage parameter in declaration order, element and device pinned by
+  `Resource` bounds (each spanned on its parameter), access from the parameter. A
+  per-kernel const assert pins the storage count against `DESCRIPTOR`, so `cargo check`
+  catches a mismatch. Kernels with a `Uniform` parameter get no typed call; kernels with
+  no storage parameters take the device type (`call::<D>(..)`). Measured: component-pool's
+  five-parameter kernel infers without turbofish (spike S3); a wrong element type is
+  E0271 on the user's line; a device without `Run` shows `Run`'s `on_unimplemented` text.
+  A non-GUST argument gives two E0277 errors, so it has no fixture. Known limits: the
+  `__Gust` prefix of generated generics is not reserved; the `Into` and `Run` notes still
+  point at `#[gust::gpu]` (`a83a96e`).
 - M2 m2.d0: `check-ui` reads `cargo check --message-format json` and judges only the
   case's own diagnostics; a failing case must produce exactly one error. `expected.txt`
   pins it by keys: `code`, `file` and `line` (exact, on one primary span), `message`

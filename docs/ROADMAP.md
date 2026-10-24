@@ -41,7 +41,8 @@ run one at a time, and each landed slice is recorded in STATUS.
 | m2.a | Typed call surface in `gust`: `TypedDevice` (extends `Device`), `Resource`, `Arg`, `Independent`, `Call`, the `Run<K, N>` hook; the backend contract checks bindings against the kernel at submit | done (Unit + check-fast; Opus keep after one fix round; `3060072`) |
 | m2.c | `gust-wgpu` implements the typed surface: `HeadlessDevice` is a `TypedDevice` and runs `Call`s through the existing binding validation; one buffer bound twice is rejected when either binding writes; binding indices checked against the device limit | done (Gpu: check-fast and check-examples RTX 5090; Opus keep after one fix round; `119ece3`) |
 | m2.d0 | `check-ui` on JSON diagnostics: a failing case has exactly one error, pinned by `code`, `file`, `line`, `message` and `label` keys on one primary span (D33, M1 risk 6) | done (Unit: check-ui and xtask tests; Opus keep after one fix round; `a8b074f`) |
-| m2.d1, m2.d2, m2.e, m2.g, m2.f1, m2.f2 | Generated calls, const layout assertions, derived graph edges, a hand-written-descriptor diagnostics test, examples | planned, in this order |
+| m2.d1 | Generated `call`, `submit`, `dispatch` on every kernel handle, with a per-kernel const assert of the storage count; spike S3: a five-parameter kernel infers without turbofish | done (Unit: check-ui fixtures, expansion tests, bless unchanged; Opus keep after one fix round; `a83a96e`) |
+| m2.d2, m2.e, m2.g, m2.f1, m2.f2 | Const layout assertions, derived graph edges, a hand-written-descriptor diagnostics test, examples | planned, in this order |
 
 **Done: M1, diagnostics** (closed 2026-10-23, D33). Plan adopted 2026-10-23 (owner-delegated); slice details are in the
 coordinator's plan file, and each landed slice is recorded in STATUS.
