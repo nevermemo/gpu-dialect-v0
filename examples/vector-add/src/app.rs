@@ -3,7 +3,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use gust::{Access, ResourceBinding};
 use gust::{gpu, slang, spirv};
-use gust_wgpu::{F32Binding, HeadlessDevice, render_wgpu_source};
+use gust_wgpu::{GpuBufferAccess, HeadlessDevice, render_wgpu_source};
 
 #[gpu]
 mod vector_add {
@@ -33,27 +33,33 @@ pub fn main() {
     let descriptor = vector_add::add::DESCRIPTOR;
 
     let device = HeadlessDevice::new().expect("a Vulkan compute adapter should be available");
-    let result = device
-        .dispatch_f32(
-            &descriptor,
-            a.len() as u32,
-            &[
-                F32Binding::ReadOnly(&a),
-                F32Binding::ReadOnly(&b),
-                F32Binding::ReadWrite(&seed),
-            ],
-        )
+    let result = add_on_gpu(&device, &a, &b, &seed)
         .expect("Rust-to-Slang vector add should execute on the GPU");
 
     let artifact_directory = export_artifacts().expect("export generated shader artifacts");
     println!("Rust -> Slang -> WGSL -> wgpu (plus SPIR-V export)");
     println!("kernel: {}", descriptor.qualified_name());
     println!("adapter: {}", device.adapter_info().name);
-    println!("GPU result: {:?}", result.writable_buffers[0]);
+    println!("GPU result: {result:?}");
     println!("generated artifacts: {}", artifact_directory.display());
     println!("\nGenerated Slang:\n{}", descriptor.slang_source);
 
-    assert_eq!(result.writable_buffers[0], expected);
+    assert_eq!(result, expected);
+}
+
+/// Uploads the inputs, runs the generated typed `dispatch` (the element types and the device of the
+/// three buffers are checked at compile time) and reads the written buffer back.
+fn add_on_gpu(
+    device: &HeadlessDevice,
+    a: &[f32],
+    b: &[f32],
+    seed: &[f32],
+) -> Result<Vec<f32>, gust_wgpu::Error> {
+    let a = device.create_f32_buffer("vector add a", a, GpuBufferAccess::ReadOnly);
+    let b = device.create_f32_buffer("vector add b", b, GpuBufferAccess::ReadOnly);
+    let out = device.create_f32_buffer("vector add out", seed, GpuBufferAccess::ReadWrite);
+    vector_add::add::dispatch(device, seed.len() as u32, &a, &b, &out)?;
+    device.read_f32_buffer(&out)
 }
 
 fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -134,17 +140,7 @@ mod tests {
         let a = [2.0, 4.0, 8.0];
         let b = [3.0, 5.0, 7.0];
         let seed = [0.0; 3];
-        let result = device
-            .dispatch_f32(
-                &vector_add::add::DESCRIPTOR,
-                3,
-                &[
-                    F32Binding::ReadOnly(&a),
-                    F32Binding::ReadOnly(&b),
-                    F32Binding::ReadWrite(&seed),
-                ],
-            )
-            .expect("dispatch through Slang");
-        assert_eq!(result.writable_buffers[0], [5.0, 9.0, 15.0]);
+        let result = add_on_gpu(&device, &a, &b, &seed).expect("dispatch through Slang");
+        assert_eq!(result, [5.0, 9.0, 15.0]);
     }
 }

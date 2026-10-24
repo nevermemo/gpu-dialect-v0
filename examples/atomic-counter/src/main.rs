@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use gust::{gpu, slang, spirv};
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice, render_wgpu_source};
+use gust::{Independent, gpu, slang, spirv};
+use gust_wgpu::{GpuBufferAccess, HeadlessDevice, render_wgpu_source};
 
 #[gpu]
 mod atomic_counter {
@@ -21,12 +21,8 @@ pub fn main() {
     let device = HeadlessDevice::new().expect("a Vulkan compute adapter should be available");
     let counter =
         device.create_typed_buffer("atomic counter", &[0u32; 1], GpuBufferAccess::ReadWrite);
-    device
-        .dispatch_buffers(
-            &descriptor,
-            INVOCATIONS,
-            &[BufferBinding::read_write(&counter).independent_length()],
-        )
+    // The counter has one element, not `INVOCATIONS`: `Independent` is the call-site opt-in for that.
+    atomic_counter::increment::dispatch(&device, INVOCATIONS, Independent(&counter))
         .expect("atomic_add should execute on the GPU");
     let gpu_result = device
         .read_typed_buffer(&counter)
@@ -71,4 +67,22 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
         render_wgpu_source(descriptor)?,
     )?;
     Ok(directory.canonicalize().unwrap_or(directory))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
+    /// (gust-wgpu requests the default limits).
+    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
+
+    #[test]
+    fn invocation_count_stays_within_the_default_workgroup_limit() {
+        let groups = INVOCATIONS.div_ceil(atomic_counter::increment::DESCRIPTOR.workgroup_size[0]);
+        assert!(
+            groups <= MAX_WORKGROUPS_PER_DIMENSION,
+            "{INVOCATIONS} invocations need {groups} workgroups"
+        );
+    }
 }
