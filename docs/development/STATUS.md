@@ -9,6 +9,13 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.g: a hand-written `KernelDescriptor` whose Slang uses an undeclared identifier
+  fails in slangc with the error on its marked Rust line, through `slang::compile`, both
+  reflect paths and the native reflection helper (`#line`, not the table lookup); with an
+  empty line table the Slang line is reported and no Rust source. The fixture never
+  passes through `#[gpu]`, so later validator work cannot remove it (M1 risk 5, D33).
+  Known difference: without `// @rust kernel:` markers, `slang::compile` names no kernel,
+  while `reflect` and the helper add `originating Rust kernel` (`c6571d5`).
 - M2 m2.e: `StagedGraph` derives dependencies from typed calls. `write`, `run`,
   `run_indirect` and `read` record the latest earlier writer of every buffer a node
   touches (RAW, WAW) and, for a writing node, every reader since that writer (WAR); the

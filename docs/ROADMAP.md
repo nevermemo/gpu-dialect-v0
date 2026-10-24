@@ -44,7 +44,8 @@ run one at a time, and each landed slice is recorded in STATUS.
 | m2.d1 | Generated `call`, `submit`, `dispatch` on every kernel handle, with a per-kernel const assert of the storage count; spike S3: a five-parameter kernel infers without turbofish | done (Unit: check-ui fixtures, expansion tests, bless unchanged; Opus keep after one fix round; `a83a96e`) |
 | m2.d2 | Const layout assertions: per-field padding-free offsets, no tail padding, alignment 4 and `is_storage_v1` per struct; per-parameter element layout against its Rust size, alignment and stride; check-ui follows macro expansion to the user's line | done (Unit: check-ui fixtures `layout-outside-*`, expansion tests, bless unchanged; Opus keep after two fix rounds; `adeb7be`) |
 | m2.e | `StagedGraph::{write, run, run_indirect, read}` derive dependencies from typed calls (RAW, WAW, WAR; conservative, validated, insertion order kept); `validate` runs the limit pass for every node before any compile and rejects a read-write binding of an indirect node's arguments buffer | done (Gpu: graph tests, check-examples RTX 5090; spike S4 matched the pre-registered sets; Opus keep; `229bfbf`) |
-| m2.g, m2.f1, m2.f2 | A hand-written-descriptor diagnostics test, examples on typed calls and derived graphs | planned, in this order |
+| m2.g | A hand-written `KernelDescriptor` that fails in slangc maps to its Rust line through `slang::compile`, both reflect paths and the native helper, independent of validator gaps (D33, M1 risk 5) | done (Slangc + Reflect; Opus keep after one fix round; `c6571d5`) |
+| m2.f1, m2.f2 | Examples on typed calls and derived graphs | planned, in this order |
 
 **Done: M1, diagnostics** (closed 2026-10-23, D33). Plan adopted 2026-10-23 (owner-delegated); slice details are in the
 coordinator's plan file, and each landed slice is recorded in STATUS.
