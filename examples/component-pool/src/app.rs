@@ -5,14 +5,16 @@
 //! `prepare_dispatch` derives the active count and indirect workgroup arguments
 //! on the GPU from the pool's count buffer, clamped to the allocation and a
 //! settings budget; `integrate` then runs as an indirect dispatch over exactly
-//! that many particles. The host never learns the dispatched count.
+//! that many particles. The host never learns the dispatched count. The graph is
+//! built from typed calls, derives its dependencies, and is rebuilt after growth.
 
 use std::{path::PathBuf, time::Instant};
 
-use gust::{KernelDescriptor, gpu};
+use gust::{Independent, KernelDescriptor, gpu};
+#[cfg(test)]
+use gust_wgpu::{BufferBinding, BufferDispatch};
 use gust_wgpu::{
-    BufferBinding, BufferDispatch, GpuBufferAccess, GpuPool, GraphReport, HeadlessDevice,
-    StagedGraph, render_wgpu_source,
+    GpuBufferAccess, GpuPool, GraphReport, HeadlessDevice, StagedGraph, render_wgpu_source,
 };
 
 #[gpu]
@@ -104,6 +106,11 @@ mod pool {
 
 pub use pool::{Active, DispatchArgs, Particle, Settings};
 
+/// Particles integrated per frame at most. The indirect dispatch needs `BUDGET / 64` = 16 384 workgroups,
+/// within the 65 535 workgroups per dimension of the default limits; wgpu would silently zero a larger
+/// indirect dispatch, and the runtime cannot check it, so the kernel's clamp to the budget is what holds.
+const BUDGET: u32 = 1 << 20;
+
 pub fn spawn(first: usize, count: usize) -> Vec<Particle> {
     (first..first + count)
         .map(|index| Particle {
@@ -159,42 +166,65 @@ impl Frame {
     }
 }
 
-/// One frame: settings upload → prepare_dispatch → indirect integrate → read the
+/// One frame: settings write → prepare_dispatch → indirect integrate → read the
 /// GPU-derived active count back (the only readback; particles stay resident).
+#[cfg(test)]
 pub fn run_frame(
     device: &HeadlessDevice,
     frame: &Frame,
     particles: &GpuPool<Particle>,
     settings: &[Settings; 1],
 ) -> Result<(u32, GraphReport), gust_wgpu::Error> {
-    let prepare_bindings = [
-        BufferBinding::read_only(particles.count_buffer()).independent_length(),
-        BufferBinding::read_only(&frame.settings).independent_length(),
-        BufferBinding::read_only(particles.buffer()).independent_length(),
-        BufferBinding::read_write(&frame.active).independent_length(),
-        BufferBinding::read_write(&frame.args).independent_length(),
-    ];
-    let integrate_bindings = [
-        BufferBinding::read_only(&frame.active).independent_length(),
-        BufferBinding::read_only(&frame.settings).independent_length(),
-        BufferBinding::read_write(particles.buffer()).independent_length(),
-    ];
+    let (count, report, _edges) = run_frame_traced(device, frame, particles, settings)?;
+    Ok((count, report))
+}
+
+/// [`run_frame`] plus the dependency edges the graph derived, per node (node indices, ascending).
+///
+/// The graph is rebuilt every frame: growth replaces the pool's allocation, and the typed calls (locals
+/// built before the graph, which borrows them) bind the allocation the pool holds right now. Nothing
+/// is declared by the host. The readback of `active` depends on `prepare_dispatch`, its last writer;
+/// `integrate` only reads it.
+pub fn run_frame_traced(
+    device: &HeadlessDevice,
+    frame: &Frame,
+    particles: &GpuPool<Particle>,
+    settings: &[Settings; 1],
+) -> Result<(u32, GraphReport, Vec<Vec<usize>>), gust_wgpu::Error> {
+    // Every buffer is bound `Independent`: none has the dispatch's element count as its length (the
+    // pool's allocation is its capacity), and an indirect dispatch has no host element count at all.
+    let prepare_call = pool::prepare_dispatch::call(
+        1,
+        Independent(particles.count_buffer()),
+        Independent(&frame.settings),
+        Independent(particles.buffer()),
+        Independent(&frame.active),
+        Independent(&frame.args),
+    );
+    let integrate_call = pool::integrate::call(
+        0,
+        Independent(&frame.active),
+        Independent(&frame.settings),
+        Independent(particles.buffer()),
+    );
 
     let mut graph = StagedGraph::new();
-    let upload = graph.upload(&frame.settings, settings, &[]);
-    let prepare = graph.dispatch(
-        BufferDispatch::new(&pool::prepare_dispatch::DESCRIPTOR, 1, &prepare_bindings),
-        &[upload],
-    );
-    let integrate = graph.dispatch_indirect(
-        BufferDispatch::new(&pool::integrate::DESCRIPTOR, 0, &integrate_bindings),
-        &frame.args,
-        &[prepare],
-    );
-    let active = graph.readback(&frame.active, &[integrate]);
+    let write = graph.write(&frame.settings, settings);
+    let prepare = graph.run(&prepare_call);
+    let integrate = graph.run_indirect(&integrate_call, &frame.args);
+    let active = graph.read(&frame.active);
+    let edges = [write, prepare, integrate, active]
+        .map(|node| {
+            graph
+                .dependencies(node)
+                .iter()
+                .map(|id| id.index())
+                .collect()
+        })
+        .to_vec();
     let output = device.execute_graph(&graph)?;
     let count = output.readback::<Active>(active)?[0].count;
-    Ok((count, output.report))
+    Ok((count, output.report, edges))
 }
 
 pub fn descriptors() -> [&'static KernelDescriptor; 2] {
@@ -250,7 +280,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings {
         dt: 0.016,
         gravity: -9.8,
-        budget: 1 << 20,
+        budget: BUDGET,
     };
 
     let initial = if cfg!(debug_assertions) {
@@ -267,9 +297,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let frames = 6;
     let mut total_copied = 0;
+    let mut last_edges = Vec::new();
     for frame_index in 0..frames {
         let started = Instant::now();
-        let (active, report) = run_frame(&device, &frame, &particles, &[settings])?;
+        let (active, report, edges) = run_frame_traced(&device, &frame, &particles, &[settings])?;
+        last_edges = edges;
         let frame_elapsed = started.elapsed();
         let cpu_started = Instant::now();
         let expected_active = step_cpu(&mut reference, &settings);
@@ -303,6 +335,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         particles.retired_allocations()
     );
     println!("adapter: {}", device.adapter_info().name);
+    println!(
+        "derived dependencies per node (write, prepare_dispatch, integrate, read; declared: none): {last_edges:?}"
+    );
     println!("pipeline cache: {:?}", device.pipeline_cache_stats());
     println!("generated artifacts: {}", artifacts.display());
     Ok(())
@@ -319,6 +354,19 @@ mod tests {
             gravity: -2.0,
             budget,
         }
+    }
+
+    /// wgpu's default `Limits::default().max_compute_workgroups_per_dimension`
+    /// (gust-wgpu requests the default limits).
+    const MAX_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
+
+    #[test]
+    fn the_budget_keeps_the_indirect_dispatch_within_the_default_workgroup_limit() {
+        let groups = BUDGET.div_ceil(pool::integrate::DESCRIPTOR.workgroup_size[0]);
+        assert!(
+            groups <= MAX_WORKGROUPS_PER_DIMENSION,
+            "a budget of {BUDGET} particles needs {groups} workgroups"
+        );
     }
 
     #[test]
@@ -374,8 +422,12 @@ mod tests {
         // The mutated state from frame 1 is intact after two copies, and frame 2
         // integrates all 70 (two workgroups, partial second) through the indirect path.
         assert_close(&device.pool_read(&particles).unwrap(), &reference);
-        let (active, report) = run_frame(&device, &frame, &particles, &[settings(1000)]).unwrap();
+        let (active, report, edges) =
+            run_frame_traced(&device, &frame, &particles, &[settings(1000)]).unwrap();
         assert_eq!(active, 70);
+        // The readback of `active` depends on prepare_dispatch (its last writer), not on integrate.
+        assert_eq!(edges, [vec![], vec![0], vec![0, 1], vec![1]]);
+        assert_eq!((report.derived_edges, report.declared_edges), (4, 0));
         assert_eq!(report.indirect_dispatches, 1);
         assert_eq!(report.dispatches, 2);
         assert_eq!(report.readback_bytes, size_of::<Active>() as u64);
@@ -447,22 +499,22 @@ mod tests {
         let frame = Frame::new(&device).unwrap();
         let mut reference = spawn(0, 64);
         let mut particles = device.create_pool("particles", &reference, 64);
-        let bindings = [
-            BufferBinding::read_only(&frame.active).independent_length(),
-            BufferBinding::read_only(&frame.settings).independent_length(),
-            BufferBinding::read_write(particles.buffer()).independent_length(),
-        ];
         device
             .write_typed_buffer(&frame.settings, &[settings(1000)])
             .unwrap();
         device
             .write_typed_buffer(&frame.active, &[Active { count: 64 }])
             .unwrap();
-        // Submit without waiting, then grow immediately; the binding borrow of the
-        // old allocation ends here, so `pool_push` can take the pool mutably.
-        let job = device
-            .submit_buffers(&pool::integrate::DESCRIPTOR, 64, &bindings)
-            .unwrap();
+        // Submit without waiting, then grow immediately; the typed call borrowed the old allocation
+        // only inside `submit`, so `pool_push` can take the pool mutably.
+        let job = pool::integrate::submit(
+            &device,
+            64,
+            Independent(&frame.active),
+            Independent(&frame.settings),
+            Independent(particles.buffer()),
+        )
+        .unwrap();
         let spawned = spawn(64, 64);
         let growth = device.pool_push(&mut particles, &spawned).unwrap().unwrap();
         assert_eq!((growth.old_capacity, growth.new_capacity), (64, 128));
@@ -550,5 +602,45 @@ mod tests {
                 producer: 1
             })
         ));
+
+        // The derived graph over the same buffers gets the edge the rejected graph lacked: integrate
+        // depends on prepare_dispatch (through `args`, `active` and the particles) without a declared
+        // edge, and the readback depends on prepare_dispatch, not integrate.
+        let prepare_call = pool::prepare_dispatch::call(
+            1,
+            Independent(particles.count_buffer()),
+            Independent(&frame.settings),
+            Independent(particles.buffer()),
+            Independent(&frame.active),
+            Independent(&frame.args),
+        );
+        let integrate_call = pool::integrate::call(
+            0,
+            Independent(&frame.active),
+            Independent(&frame.settings),
+            Independent(particles.buffer()),
+        );
+        let mut derived = StagedGraph::new();
+        let write = derived.write(&frame.settings, &settings);
+        let prepare = derived.run(&prepare_call);
+        let integrate = derived.run_indirect(&integrate_call, &frame.args);
+        let read = derived.read(&frame.active);
+        let edges = |node| {
+            derived
+                .dependencies(node)
+                .iter()
+                .map(|id| id.index())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            [edges(write), edges(prepare), edges(integrate), edges(read)],
+            [vec![], vec![0], vec![0, 1], vec![1]]
+        );
+        let output = device.execute_graph(&derived).unwrap();
+        assert_eq!(
+            (output.report.derived_edges, output.report.declared_edges),
+            (4, 0)
+        );
+        assert_eq!(output.readback::<Active>(read).unwrap()[0].count, 8);
     }
 }

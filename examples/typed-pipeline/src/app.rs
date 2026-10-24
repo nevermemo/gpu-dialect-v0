@@ -4,8 +4,7 @@ use std::{path::PathBuf, time::Instant};
 use gust::GpuPod;
 use gust::{KernelDescriptor, gpu};
 use gust_wgpu::{
-    BufferBinding, BufferDispatch, GpuBufferAccess, HeadlessDevice, PipelineCacheStats,
-    render_wgpu_source,
+    BufferDispatch, GpuBufferAccess, HeadlessDevice, PipelineCacheStats, render_wgpu_source,
 };
 
 #[gpu]
@@ -303,36 +302,16 @@ fn run_gpu(device: &HeadlessDevice, inputs: &Inputs) -> Result<PipelineOutput, g
     let alerts = device.create_typed_buffer("alerts", &alert_seed, GpuBufferAccess::ReadWrite);
     let reports = device.create_typed_buffer("reports", &report_seed, GpuBufferAccess::ReadWrite);
 
-    let calibrate_bindings = [
-        BufferBinding::read_only(&readings),
-        BufferBinding::read_only(&calibration),
-        BufferBinding::read_write(&samples),
-    ];
-    let classify_bindings = [
-        BufferBinding::read_only(&samples),
-        BufferBinding::read_only(&thresholds),
-        BufferBinding::read_write(&alerts),
-    ];
-    let finalize_bindings = [
-        BufferBinding::read_only(&alerts),
-        BufferBinding::read_write(&reports),
-    ];
+    // Typed calls are locals: the generated `call` checks every buffer's element type and device at compile
+    // time, and the batch entries borrow the calls.
+    let count = count as u32;
+    let calibrate = sensor_pipeline::calibrate::call(count, &readings, &calibration, &samples);
+    let classify = sensor_pipeline::classify::call(count, &samples, &thresholds, &alerts);
+    let finalize = sensor_pipeline::finalize::call(count, &alerts, &reports);
     let dispatches = [
-        BufferDispatch::new(
-            &sensor_pipeline::calibrate::DESCRIPTOR,
-            count as u32,
-            &calibrate_bindings,
-        ),
-        BufferDispatch::new(
-            &sensor_pipeline::classify::DESCRIPTOR,
-            count as u32,
-            &classify_bindings,
-        ),
-        BufferDispatch::new(
-            &sensor_pipeline::finalize::DESCRIPTOR,
-            count as u32,
-            &finalize_bindings,
-        ),
+        BufferDispatch::from(&calibrate),
+        BufferDispatch::from(&classify),
+        BufferDispatch::from(&finalize),
     ];
     device.dispatch_batch(&dispatches)?;
 
