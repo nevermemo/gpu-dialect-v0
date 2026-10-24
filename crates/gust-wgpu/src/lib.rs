@@ -465,6 +465,9 @@ pub struct HeadlessDevice {
     adapter_info: wgpu::AdapterInfo,
     pipeline_cache: Mutex<PipelineCache>,
     timestamp_profiler: Option<Mutex<TimestampProfiler>>,
+    /// Limits every launch check reads: the opened device's, or lower ones installed
+    /// by `with_limits`.
+    limits: wgpu::Limits,
 }
 
 impl HeadlessDevice {
@@ -517,6 +520,7 @@ impl HeadlessDevice {
             .map_err(|error| Error::RequestDevice(error.to_string()))?;
         let timestamp_profiler =
             timestamp_queries.then(|| Mutex::new(TimestampProfiler::new(&device)));
+        let limits = device.limits();
 
         Ok(Self {
             id: NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed),
@@ -525,11 +529,52 @@ impl HeadlessDevice {
             adapter_info,
             pipeline_cache: Mutex::new(PipelineCache::default()),
             timestamp_profiler,
+            limits,
         })
     }
 
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
+    }
+
+    /// The limits launches are checked against: those the device was opened with
+    /// (wgpu's defaults, not the adapter's), or the lower ones from `with_limits`.
+    pub fn limits(&self) -> &wgpu::Limits {
+        &self.limits
+    }
+
+    /// Check launches against `limits` instead of the opened device's, for emulating a
+    /// weaker target and for tests. The limits may only be lowered: a value that is
+    /// better than the one the device was opened with is rejected with
+    /// `Error::LimitRaised` and never clamped, because wgpu would keep enforcing the
+    /// device's own. The replacement is compared with the opened device, not with
+    /// limits installed earlier, so a lowered limit can be raised back up to it. The
+    /// pipeline cache is kept; the checks run before it is consulted. A rejected call
+    /// consumes the device, like any failing builder step.
+    ///
+    /// Only these fields are honoured by the launch checks:
+    /// `max_compute_workgroup_size_x`, `max_compute_invocations_per_workgroup`,
+    /// `max_compute_workgroups_per_dimension`, `max_storage_buffers_per_shader_stage`
+    /// and `max_storage_buffer_binding_size`. Every other field is accepted if it is not
+    /// raised, but has no effect (`max_buffer_size` is never checked by GUST).
+    pub fn with_limits(mut self, limits: wgpu::Limits) -> Result<Self, Error> {
+        let mut raised = None;
+        limits.check_limits_with_fail_fn(
+            &self.device.limits(),
+            true,
+            |limit, requested, device| {
+                raised = Some(Error::LimitRaised {
+                    limit,
+                    requested,
+                    device,
+                });
+            },
+        );
+        if let Some(error) = raised {
+            return Err(error);
+        }
+        self.limits = limits;
+        Ok(self)
     }
 
     pub fn supports_coherent_storage(&self) -> bool {
@@ -559,6 +604,10 @@ impl HeadlessDevice {
     }
 
     /// Allocate and initialize a persistent storage buffer for any GPU POD type.
+    ///
+    /// The signature is infallible, so GUST does not check `max_buffer_size` here; an
+    /// allocation above it is wgpu's to reject. Launch limits (workgroup shape, workgroup
+    /// count, storage buffer count and binding size) are checked at dispatch time.
     pub fn create_typed_buffer<T: GpuPod>(
         &self,
         label: &str,
@@ -964,6 +1013,14 @@ impl HeadlessDevice {
             });
         }
 
+        let workgroup_count = self.check_launch(
+            kernel,
+            element_count,
+            &resources,
+            bindings
+                .iter()
+                .map(|binding| size_of_val(binding.values()) as u64),
+        )?;
         let label = kernel.qualified_name().to_string();
         let cached_kernel = self.cached_kernel(kernel, &resources)?;
 
@@ -1030,7 +1087,7 @@ impl HeadlessDevice {
             });
             pass.set_pipeline(&cached_kernel.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(element_count.div_ceil(kernel.workgroup_size[0]), 1, 1);
+            pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         for (gpu_buffer, readback) in gpu_buffers.iter().zip(&readback_buffers) {
             if let Some(readback) = readback {
@@ -1096,6 +1153,14 @@ impl HeadlessDevice {
             });
         }
 
+        let workgroup_count = self.check_launch(
+            kernel,
+            element_count,
+            &resources,
+            bindings
+                .iter()
+                .map(|binding| size_of_val(binding.values()) as u64),
+        )?;
         let label = kernel.qualified_name().to_string();
         let cached_kernel = self.cached_kernel(kernel, &resources)?;
 
@@ -1162,7 +1227,7 @@ impl HeadlessDevice {
             });
             pass.set_pipeline(&cached_kernel.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(element_count.div_ceil(kernel.workgroup_size[0]), 1, 1);
+            pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
         for (gpu_buffer, readback) in gpu_buffers.iter().zip(&readback_buffers) {
             if let Some(readback) = readback {
@@ -1213,17 +1278,24 @@ impl HeadlessDevice {
         let validated = dispatches
             .iter()
             .map(|dispatch| {
-                validate_persistent_dispatch(
+                let resources = validate_persistent_dispatch(
                     self.id,
                     dispatch.kernel,
                     dispatch.element_count,
                     dispatch.bindings,
-                )
+                )?;
+                let workgroup_count = self.check_launch(
+                    dispatch.kernel,
+                    dispatch.element_count,
+                    &resources,
+                    dispatch.bindings.iter().map(|binding| binding.raw.size()),
+                )?;
+                Ok((resources, workgroup_count))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, Error>>()?;
 
         let mut prepared = Vec::with_capacity(dispatches.len());
-        for (dispatch, resources) in dispatches.iter().zip(validated) {
+        for (dispatch, (resources, workgroup_count)) in dispatches.iter().zip(validated) {
             if dispatch.element_count == 0 {
                 continue;
             }
@@ -1248,12 +1320,32 @@ impl HeadlessDevice {
             prepared.push(PreparedDispatch {
                 cached_kernel,
                 bind_group,
-                workgroup_count: dispatch
-                    .element_count
-                    .div_ceil(dispatch.kernel.workgroup_size[0]),
+                workgroup_count,
             });
         }
         Ok(prepared)
+    }
+
+    /// Check one non-empty launch against the stored limits and return its workgroup
+    /// count. Runs after `validate_*` and before the pipeline-cache lookup, so no
+    /// compilation, cache hit or wgpu object can precede a limit error. A launch of
+    /// zero elements does no GPU work and is not checked.
+    fn check_launch(
+        &self,
+        kernel: &KernelDescriptor,
+        element_count: u32,
+        resources: &[&ParameterDescriptor],
+        binding_bytes: impl IntoIterator<Item = u64>,
+    ) -> Result<u32, Error> {
+        if element_count == 0 {
+            return Ok(0);
+        }
+        check_kernel_limits(&self.limits, kernel, resources.len())?;
+        let workgroup_count = workgroup_count(&self.limits, kernel, element_count)?;
+        for bytes in binding_bytes {
+            check_binding_size(&self.limits, kernel, bytes)?;
+        }
+        Ok(workgroup_count)
     }
 
     fn cached_kernel(
@@ -1431,6 +1523,94 @@ fn with_f32_dispatches<R>(
         })
         .collect::<Vec<_>>();
     run(&typed)
+}
+
+fn device_limit(
+    kernel: &KernelDescriptor,
+    limit: &'static str,
+    requested: u64,
+    maximum: u64,
+) -> Error {
+    Error::DeviceLimit {
+        kernel: kernel.qualified_name().to_string(),
+        limit,
+        requested,
+        maximum,
+    }
+}
+
+/// Limits a pipeline for `kernel` must respect. `validate_kernel` already restricts
+/// workgroups to one dimension, so the invocation count equals the width.
+fn check_kernel_limits(
+    limits: &wgpu::Limits,
+    kernel: &KernelDescriptor,
+    storage_buffers: usize,
+) -> Result<(), Error> {
+    let width = u64::from(kernel.workgroup_size[0]);
+    let invocations = kernel
+        .workgroup_size
+        .iter()
+        .map(|&dimension| u64::from(dimension))
+        .product::<u64>();
+    for (limit, requested, maximum) in [
+        (
+            "max_compute_workgroup_size_x",
+            width,
+            u64::from(limits.max_compute_workgroup_size_x),
+        ),
+        (
+            "max_compute_invocations_per_workgroup",
+            invocations,
+            u64::from(limits.max_compute_invocations_per_workgroup),
+        ),
+        (
+            "max_storage_buffers_per_shader_stage",
+            storage_buffers as u64,
+            u64::from(limits.max_storage_buffers_per_shader_stage),
+        ),
+    ] {
+        if requested > maximum {
+            return Err(device_limit(kernel, limit, requested, maximum));
+        }
+    }
+    Ok(())
+}
+
+/// Workgroups needed for `element_count` invocations, within the per-dimension limit.
+fn workgroup_count(
+    limits: &wgpu::Limits,
+    kernel: &KernelDescriptor,
+    element_count: u32,
+) -> Result<u32, Error> {
+    let count = element_count.div_ceil(kernel.workgroup_size[0]);
+    let maximum = limits.max_compute_workgroups_per_dimension;
+    if count > maximum {
+        return Err(device_limit(
+            kernel,
+            "max_compute_workgroups_per_dimension",
+            u64::from(count),
+            u64::from(maximum),
+        ));
+    }
+    Ok(count)
+}
+
+/// One storage binding of `bytes` bytes against `max_storage_buffer_binding_size`.
+fn check_binding_size(
+    limits: &wgpu::Limits,
+    kernel: &KernelDescriptor,
+    bytes: u64,
+) -> Result<(), Error> {
+    let maximum = limits.max_storage_buffer_binding_size;
+    if bytes > maximum {
+        return Err(device_limit(
+            kernel,
+            "max_storage_buffer_binding_size",
+            bytes,
+            maximum,
+        ));
+    }
+    Ok(())
 }
 
 fn validate_binding_layout(
@@ -1900,5 +2080,96 @@ mod tests {
         assert!(source.contains("gust::slang::compile_wgsl"));
         assert!(source.contains("out: f32 [storage-v1; size=4, align=4, stride=4]"));
         assert!(source.contains("pass.dispatch_workgroups(element_count.div_ceil(64), 1, 1);"));
+    }
+    #[test]
+    fn binding_size_is_checked_against_the_stored_limit() {
+        let limits = wgpu::Limits {
+            max_storage_buffer_binding_size: 16,
+            ..wgpu::Limits::default()
+        };
+        assert!(check_binding_size(&limits, &DESCRIPTOR, 16).is_ok());
+        assert!(matches!(
+            check_binding_size(&limits, &DESCRIPTOR, 17),
+            Err(Error::DeviceLimit {
+                kernel,
+                limit: "max_storage_buffer_binding_size",
+                requested: 17,
+                maximum: 16,
+            }) if kernel == "test::kernel"
+        ));
+    }
+
+    #[test]
+    fn workgroup_count_rounds_up_and_stops_at_the_limit() {
+        let limits = wgpu::Limits {
+            max_compute_workgroups_per_dimension: 3,
+            ..wgpu::Limits::default()
+        };
+        assert_eq!(workgroup_count(&limits, &DESCRIPTOR, 0).unwrap(), 0);
+        assert_eq!(workgroup_count(&limits, &DESCRIPTOR, 1).unwrap(), 1);
+        assert_eq!(workgroup_count(&limits, &DESCRIPTOR, 192).unwrap(), 3);
+        assert!(matches!(
+            workgroup_count(&limits, &DESCRIPTOR, 193),
+            Err(Error::DeviceLimit {
+                limit: "max_compute_workgroups_per_dimension",
+                requested: 4,
+                maximum: 3,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn kernel_limits_name_the_first_exceeded_limit() {
+        let mut limits = wgpu::Limits::default();
+        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 8).is_ok());
+        assert!(matches!(
+            check_kernel_limits(&limits, &DESCRIPTOR, 9),
+            Err(Error::DeviceLimit {
+                limit: "max_storage_buffers_per_shader_stage",
+                requested: 9,
+                maximum: 8,
+                ..
+            })
+        ));
+        limits.max_compute_invocations_per_workgroup = 32;
+        assert!(matches!(
+            check_kernel_limits(&limits, &DESCRIPTOR, 1),
+            Err(Error::DeviceLimit {
+                limit: "max_compute_invocations_per_workgroup",
+                requested: 64,
+                maximum: 32,
+                ..
+            })
+        ));
+        limits.max_compute_workgroup_size_x = 32;
+        assert!(matches!(
+            check_kernel_limits(&limits, &DESCRIPTOR, 1),
+            Err(Error::DeviceLimit {
+                limit: "max_compute_workgroup_size_x",
+                requested: 64,
+                maximum: 32,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn device_limit_error_text_names_kernel_limit_and_remedy() {
+        let error = device_limit(
+            &DESCRIPTOR,
+            "max_compute_workgroups_per_dimension",
+            65536,
+            65535,
+        );
+        assert_eq!(
+            error.to_string(),
+            "kernel `test::kernel` needs 65536 for `max_compute_workgroups_per_dimension`, the limit is 65535; split the work into several dispatches (multi-dimensional dispatch is roadmap M7)"
+        );
+        let error = device_limit(&DESCRIPTOR, "max_storage_buffer_binding_size", 20, 16);
+        assert_eq!(
+            error.to_string(),
+            "kernel `test::kernel` needs 20 for `max_storage_buffer_binding_size`, the limit is 16"
+        );
     }
 }
