@@ -516,9 +516,10 @@ struct StorageArgument {
 /// validator rejects it in user code) and the generic parameters carry `__Gust`, so a user parameter named
 /// `element_count` or `device`, or an element type named `R0` or `D`, cannot collide with them.
 ///
-/// A kernel with a `Uniform` or plain value parameter gets none of this: the runtime rejects non-storage
-/// resources (`UnsupportedResourceLayout`), so a typed call could never run. The handle and its
-/// descriptor are unchanged.
+/// A kernel with a `Uniform` parameter gets none of this: the runtime rejects non-storage resources
+/// (`gust_wgpu::Error::UnsupportedParameter`), so a typed call could never run. The handle and its
+/// descriptor are unchanged. A plain value parameter never reaches this function: the emitter rejects it
+/// at expansion (GUST-E0801), so only uniform parameters take that path.
 ///
 /// Returns the doc text for the kernel's handle struct (users read it on `kernel_name`; it states both
 /// rules above for the user) and the items.
@@ -539,6 +540,8 @@ fn typed_call_items(
             ParameterFlavor::Invocation => continue,
             ParameterFlavor::StorageRead => quote!(::gust::Access::ReadOnly),
             ParameterFlavor::StorageReadWrite => quote!(::gust::Access::ReadWrite),
+            // `Value` is defensive: the emitter rejects a plain value parameter (GUST-E0801) before
+            // this runs, so in practice only a uniform parameter gets here.
             ParameterFlavor::Uniform | ParameterFlavor::Value => {
                 return Ok((
                     format!(

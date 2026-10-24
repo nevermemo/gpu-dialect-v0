@@ -160,8 +160,10 @@ impl<'a> StagedGraph<'a> {
     /// `dispatch.element_count` is ignored; every binding must opt in with
     /// `independent_length()` and be non-empty, and `args` must come from
     /// `HeadlessDevice::create_indirect_buffer`. The runtime cannot bound the
-    /// count: wgpu silently zeroes a dispatch that exceeds the device's
-    /// per-dimension workgroup limit, so the kernel that writes `args` must clamp.
+    /// count: with wgpu's default instance flags (`InstanceFlags::VALIDATION_INDIRECT_CALL`) wgpu
+    /// silently zeroes a dispatch that exceeds the device's per-dimension workgroup limit on Vulkan
+    /// (wgpu-core also needs `INDIRECT_EXECUTION` and `COMPUTE_SHADERS` downlevel support, which
+    /// Vulkan adapters have), and without them the count is unvalidated, so the kernel that writes `args` must clamp.
     pub fn dispatch_indirect<T: GpuPod>(
         &mut self,
         dispatch: BufferDispatch<'a>,
@@ -198,9 +200,13 @@ impl<'a> StagedGraph<'a> {
     /// the GPU and the call's element count is ignored. Every argument of the call must be bound
     /// `Independent`; `args` is read, never written, by the dispatch.
     ///
-    /// The runtime cannot bound the count: wgpu silently zeroes a dispatch that exceeds the per-dimension
-    /// workgroup limit, so the kernel that writes `args` must clamp. wgpu checks the limits of the real
-    /// device, so a limit lowered with `HeadlessDevice::with_limits` never applies to indirect counts.
+    /// The runtime cannot bound the count: with wgpu's default instance flags
+    /// (`InstanceFlags::VALIDATION_INDIRECT_CALL`) wgpu silently zeroes a dispatch that exceeds the
+    /// per-dimension workgroup limit on Vulkan (wgpu-core also needs `INDIRECT_EXECUTION` and
+    /// `COMPUTE_SHADERS` downlevel support, which Vulkan adapters have), and without them the count
+    /// is unvalidated, so the kernel that writes `args` must clamp. wgpu checks the limits of the
+    /// real device, so a limit lowered with `HeadlessDevice::with_limits` never applies to indirect
+    /// counts; every other limit GUST checks still does.
     pub fn run_indirect<'r: 'a, K: Kernel, const N: usize, A: GpuPod>(
         &mut self,
         call: &'a Call<'r, HeadlessDevice, K, N>,
@@ -410,11 +416,10 @@ impl<'a> StagedGraph<'a> {
                             });
                         }
                     }
-                    // The count is a placeholder, as in execution: only the kernel shape, the binding
-                    // indices and the binding sizes can be checked on the host (D16).
-                    device.check_launch(
+                    // The host never sees the count (D16): only the kernel shape, the binding indices
+                    // and the binding sizes are checked, never the workgroup count.
+                    device.check_indirect_launch(
                         dispatch.kernel,
-                        1,
                         &resources,
                         dispatch.bindings.iter().map(|binding| binding.raw.size()),
                     )?;
@@ -592,9 +597,10 @@ impl HeadlessDevice {
                 }
                 NodeKind::DispatchIndirect { dispatch, args } => {
                     // Validation already fixed every binding length; the count is
-                    // irrelevant to pipeline and bind-group preparation.
+                    // irrelevant to pipeline and bind-group preparation, and the workgroup count limit
+                    // does not apply to it.
                     let placeholder = BufferDispatch::new(dispatch.kernel, 1, dispatch.bindings);
-                    for prepared in self.prepare_batch(std::slice::from_ref(&placeholder))? {
+                    for prepared in self.prepare_indirect(&placeholder)? {
                         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                             label: Some("GUST staged graph indirect compute pass"),
                             timestamp_writes: None,

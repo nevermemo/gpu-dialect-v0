@@ -911,3 +911,64 @@ fn an_indirect_node_may_read_its_arguments_buffer() {
     assert_eq!(output.report.indirect_dispatches, 1);
     assert_eq!(device.read_typed_buffer(&seen).unwrap(), [101]);
 }
+
+#[test]
+fn an_indirect_node_ignores_the_workgroup_count_limit_but_not_the_others() {
+    let device = device();
+    let mut limits = device.limits().clone();
+    // No direct launch fits, however small; the host never sees an indirect count.
+    limits.max_compute_workgroups_per_dimension = 0;
+    let device = device.with_limits(limits.clone()).unwrap();
+    let args = device
+        .create_indirect_buffer("args", &[indirect::DispatchArgs { x: 1, y: 1, z: 1 }])
+        .unwrap();
+    let seen = device.create_typed_buffer("seen", &[0_u32], GpuBufferAccess::ReadWrite);
+
+    // The same kernel launched directly still fails the count check: one element needs one workgroup.
+    let direct = indirect::inspect::call(1, Independent(&args), Independent(&seen));
+    let mut graph = StagedGraph::new();
+    graph.run(&direct);
+    match device.execute_graph(&graph).err().expect("over the limit") {
+        Error::DeviceLimit {
+            limit,
+            requested,
+            maximum,
+            ..
+        } => assert_eq!(
+            (limit, requested, maximum),
+            ("max_compute_workgroups_per_dimension", 1, 0)
+        ),
+        other => panic!("expected DeviceLimit, got {other:?}"),
+    }
+
+    // Indirect launches, explicit and typed, run.
+    let inspect = indirect::inspect::call(0, Independent(&args), Independent(&seen));
+    let mut graph = StagedGraph::new();
+    graph.run_indirect(&inspect, &args);
+    let output = device.execute_graph(&graph).unwrap();
+    assert_eq!(output.report.indirect_dispatches, 1);
+    assert_eq!(device.read_typed_buffer(&seen).unwrap(), [101]);
+    let mut explicit = StagedGraph::new();
+    explicit.dispatch_indirect((&inspect).into(), &args, &[]);
+    let output = device.execute_graph(&explicit).unwrap();
+    assert_eq!(output.report.indirect_dispatches, 1);
+    assert_eq!(output.report.dispatches, 1);
+
+    // Every other limit still applies to an indirect node: `inspect` binds two storage buffers.
+    limits.max_storage_buffers_per_shader_stage = 1;
+    let device = device.with_limits(limits).unwrap();
+    let mut graph = StagedGraph::new();
+    graph.run_indirect(&inspect, &args);
+    match device.execute_graph(&graph).err().expect("over the limit") {
+        Error::DeviceLimit {
+            limit,
+            requested,
+            maximum,
+            ..
+        } => assert_eq!(
+            (limit, requested, maximum),
+            ("max_storage_buffers_per_shader_stage", 2, 1)
+        ),
+        other => panic!("expected DeviceLimit, got {other:?}"),
+    }
+}

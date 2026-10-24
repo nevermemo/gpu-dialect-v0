@@ -1,6 +1,7 @@
 //! Backend-neutral typed dispatch surface (roadmap M2, slice m2.a).
 //!
-//! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions; `call` turns
+//! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, except a kernel
+//! with a `Uniform<T>`/`ConstantBuffer<T>` parameter, which gets none of the three; `call` turns
 //! typed buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
 //! storage parameter. This module holds only what that generated code and the backends share:
 //!
@@ -66,7 +67,7 @@ pub trait TypedDevice: Device {
 /// when the call returns. Backends check every binding against `call.kernel()` (see the module documentation).
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot run the kernel `{K}`",
-    label = "this device has no executable form of the kernel; GPU devices run every kernel, CPU twins only those emitted for them"
+    label = "this device has no executable form of the kernel; GPU devices run every kernel that has a typed call (not one with a uniform parameter), CPU twins only those emitted for them"
 )]
 pub trait Run<K: Kernel, const N: usize>: TypedDevice {
     /// Start the call and return a job to wait on.
