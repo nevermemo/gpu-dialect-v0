@@ -2316,3 +2316,42 @@ fn the_element_assert_covers_everything_the_runtime_checks() {
         "{text}"
     );
 }
+
+/// The `mismatch` fixture (known-mismatch ledger probes) has many kernels and no `run`, so its
+/// golden holds every kernel's emitted source in declaration order, each under a marker line.
+fn translate_every_kernel(source: &str) -> syn::Result<String> {
+    let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source)?;
+    validate_module(&module)?;
+    let mut text = String::new();
+    for item in &module.content.as_ref().unwrap().1 {
+        let syn::Item::Fn(function) = item else {
+            continue;
+        };
+        let Some(options) = kernel_options(function)? else {
+            continue;
+        };
+        text.push_str(&format!("// ==== kernel {} ====\n", function.sig.ident));
+        text.push_str(
+            &emit_kernel(&module, function, options)?
+                .source
+                .replace("\r\n", "\n"),
+        );
+    }
+    Ok(text)
+}
+
+#[test]
+fn mismatch_golden() {
+    let source =
+        translate_every_kernel(include_str!("../../../../tests/fixtures/mismatch.rs")).unwrap();
+    assert_eq!(
+        source.matches("// ==== kernel ").count(),
+        13,
+        "the mismatch fixture declares 13 kernels"
+    );
+    assert_golden(
+        &source,
+        "mismatch.slang",
+        &include_str!("../../../../tests/fixtures/mismatch.slang").replace("\r\n", "\n"),
+    );
+}

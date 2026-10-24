@@ -180,6 +180,19 @@ pub(crate) const RELEASE_SLANG_TESTS: [&str; 7] = [
     "slang",
 ];
 
+/// The known-mismatch ledger in the release profile (the Full mode). The ledger asserts the plain-Rust outcome
+/// of every row for the `overflow-checks` mode it detects at run time (D38); the debug run (Gpu suite) covers
+/// checks on, this run covers checks off, so both branches of every mode-keyed row run on every full gate.
+pub(crate) const RELEASE_LEDGER_TEST: [&str; 7] = [
+    "test",
+    "--locked",
+    "--release",
+    "-p",
+    "gust-wgpu",
+    "--test",
+    "mismatch",
+];
+
 /// Every cargo call a mode makes after its prerequisite checks, in order, as the arguments
 /// after `cargo`. `verify_inner` runs exactly this list, so a test of it is a test of the mode:
 /// the Full mode is the release gate and must not lose a step unnoticed.
@@ -214,6 +227,7 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
         VerifyMode::Full => {
             calls.push(workspace_test_args());
             calls.push(owned(&RELEASE_SLANG_TESTS));
+            calls.push(owned(&RELEASE_LEDGER_TEST));
         }
         VerifyMode::Examples | VerifyMode::Artifacts => {}
     }

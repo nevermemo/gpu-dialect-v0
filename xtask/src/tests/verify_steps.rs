@@ -1,4 +1,4 @@
-use super::{RELEASE_SLANG_TESTS, VerifyMode, cargo_calls, example_run_args};
+use super::{RELEASE_LEDGER_TEST, RELEASE_SLANG_TESTS, VerifyMode, cargo_calls, example_run_args};
 use crate::workspace::{EXAMPLES, SMOKE_EXAMPLES, workspace_test_args};
 
 const ALL_MODES: [VerifyMode; 6] = [
@@ -40,7 +40,8 @@ fn example_runs(examples: &[&str]) -> Vec<Vec<String>> {
 }
 
 #[test]
-fn the_full_gate_is_fmt_clippy_workspace_tests_release_slang_tests_examples_and_runs_in_order() {
+fn the_full_gate_is_fmt_clippy_workspace_tests_release_slang_and_ledger_tests_examples_and_runs_in_order()
+ {
     let mut expected = vec![owned(&FMT), owned(&CLIPPY), workspace_test_args()];
     expected.push(owned(&[
         "test",
@@ -50,6 +51,15 @@ fn the_full_gate_is_fmt_clippy_workspace_tests_release_slang_tests_examples_and_
         "gust",
         "--lib",
         "slang",
+    ]));
+    expected.push(owned(&[
+        "test",
+        "--locked",
+        "--release",
+        "-p",
+        "gust-wgpu",
+        "--test",
+        "mismatch",
     ]));
     expected.extend(ignored_example_tests());
     expected.extend(example_runs(EXAMPLES));
@@ -73,6 +83,38 @@ fn only_the_full_gate_runs_the_release_slang_tests_and_exactly_once() {
     assert!(position(&workspace_test_args()) < position(&release));
     assert!(position(&release) < position(&ignored_example_tests()[0]));
     assert!(position(&release) < position(&example_runs(EXAMPLES)[0]));
+}
+
+#[test]
+fn only_the_full_gate_runs_the_release_ledger_and_exactly_once() {
+    // The known-mismatch ledger's checks-off branch (D38) runs nowhere else: debug builds detect
+    // `overflow-checks` on, so a release pass is the only way every mode-keyed row is exercised.
+    let ledger = owned(&RELEASE_LEDGER_TEST);
+    assert_eq!(
+        ledger,
+        owned(&[
+            "test",
+            "--locked",
+            "--release",
+            "-p",
+            "gust-wgpu",
+            "--test",
+            "mismatch"
+        ])
+    );
+    for mode in ALL_MODES {
+        let count = cargo_calls(mode)
+            .iter()
+            .filter(|call| **call == ledger)
+            .count();
+        assert_eq!(count, usize::from(mode == VerifyMode::Full), "{mode:?}");
+    }
+    // It follows the release Slang tests and precedes the examples.
+    let calls = cargo_calls(VerifyMode::Full);
+    let position = |wanted: &Vec<String>| calls.iter().position(|call| call == wanted).unwrap();
+    assert!(position(&owned(&RELEASE_SLANG_TESTS)) < position(&ledger));
+    assert!(position(&ledger) < position(&ignored_example_tests()[0]));
+    assert!(position(&ledger) < position(&example_runs(EXAMPLES)[0]));
 }
 
 #[test]
