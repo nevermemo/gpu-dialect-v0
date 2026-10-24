@@ -1,11 +1,11 @@
 //! CPU twin backend (roadmap M3): runs a `#[gpu]` kernel's Rust shadow body on the CPU.
 //!
-//! This module is the backend that the macro-emitted twin will use (planned, slice m3.c): per kernel with a typed
-//! call, the macro will emit an `impl Run<Kernel, N> for CpuDevice` under `cfg(any(test, gust_dual))` that calls the
-//! shadow body once per invocation. Until then, `impl Run<Kernel, N> for CpuDevice` is written by hand (as the tests
-//! of this module and of `dispatch` do). The module holds everything such an impl needs, so the emitted code will
-//! contain no downcast: [`validate`], [`read`], [`write`], [`invocations`] and [`FromGlobalId`] (all
-//! `#[doc(hidden)]` macro support). The module is a testing twin, not a production CPU target: the kernel body is
+//! This module is the backend that the macro-emitted twin uses (slice m3.c): per kernel with a typed call, the macro
+//! emits an `impl Run<Kernel, N> for CpuDevice` under `cfg(any(test, gust_dual))` (`cfg(test)` of the crate that
+//! defines the kernel) that calls the shadow body once per invocation; `#[kernel(cpu = "unsupported")]` opts out. The
+//! tests of this module and of `dispatch` write the same impl by hand for their own kernels. The module holds
+//! everything such an impl needs, so the emitted code contains no downcast: [`validate`], [`read`], [`write`],
+//! [`invocations`] and [`FromGlobalId`] (all `#[doc(hidden)]` macro support). The module is a testing twin, not a production CPU target: the kernel body is
 //! the Rust shadow body as written, executed one invocation after another.
 //!
 //! A [`CpuDevice`] hands out [`CpuBuffer`]s; the typed `call`/`dispatch` functions of a kernel take them like the
@@ -472,8 +472,10 @@ pub fn validate<K: Kernel, const N: usize>(
 /// Borrow the bound buffer for reading as `Vec<T>`.
 ///
 /// The element type is decided by `TypeId`, not by layout: two distinct types with one layout are different
-/// element types here ([`Error::ElementType`]). This and [`write`] hold the only downcast of the backend. Macro
-/// support.
+/// element types here ([`Error::ElementType`]). The binding's access must be read-only ([`Error::Access`] otherwise,
+/// checked after the element type): [`validate`] has already compared the binding's access with the descriptor's, so
+/// this catches a call site that acquires a parameter in the wrong mode. This and [`write`] hold the only downcast of
+/// the backend. Macro support.
 #[doc(hidden)]
 pub fn read<'b, T: GpuPod>(
     binding: CpuBinding<'b>,
@@ -484,12 +486,20 @@ pub fn read<'b, T: GpuPod>(
         .as_any()
         .downcast_ref::<RefCell<Vec<T>>>()
         .ok_or(Error::ElementType { parameter })?;
+    if binding.access != Access::ReadOnly {
+        return Err(Error::Access {
+            parameter,
+            expected: Access::ReadOnly,
+            actual: binding.access,
+        });
+    }
     cells
         .try_borrow()
         .map_err(|_| Error::Borrowed { parameter })
 }
 
-/// Borrow the bound buffer for writing as `Vec<T>`; the same rules as [`read`]. Macro support.
+/// Borrow the bound buffer for writing as `Vec<T>`; the same rules as [`read`], with a read-write binding required.
+/// Macro support.
 #[doc(hidden)]
 pub fn write<'b, T: GpuPod>(
     binding: CpuBinding<'b>,
@@ -500,6 +510,13 @@ pub fn write<'b, T: GpuPod>(
         .as_any()
         .downcast_ref::<RefCell<Vec<T>>>()
         .ok_or(Error::ElementType { parameter })?;
+    if binding.access != Access::ReadWrite {
+        return Err(Error::Access {
+            parameter,
+            expected: Access::ReadWrite,
+            actual: binding.access,
+        });
+    }
     cells
         .try_borrow_mut()
         .map_err(|_| Error::Borrowed { parameter })
@@ -1205,6 +1222,35 @@ mod tests {
         let first_binding = firsts.bind(Access::ReadOnly, LengthRule::Shared);
         let right = read::<First>(first_binding, "p").unwrap();
         assert_eq!((right[0].left, right[0].right), (1, 2));
+    }
+
+    #[test]
+    fn read_and_write_refuse_a_binding_of_the_other_access() {
+        let cpu = CpuDevice::new();
+        let buffer = cpu.buffer(&[1.0f32, 2.0]);
+        let read_only = buffer.bind(Access::ReadOnly, LengthRule::Shared);
+        let read_write = buffer.bind(Access::ReadWrite, LengthRule::Shared);
+
+        assert_eq!(
+            write::<f32>(read_only, "x").map(|values| values.len()),
+            Err(Error::Access {
+                parameter: "x",
+                expected: Access::ReadWrite,
+                actual: Access::ReadOnly,
+            })
+        );
+        assert_eq!(
+            read::<f32>(read_write, "y").map(|values| values.len()),
+            Err(Error::Access {
+                parameter: "y",
+                expected: Access::ReadOnly,
+                actual: Access::ReadWrite,
+            })
+        );
+        // The refused calls borrowed nothing; the right modes work.
+        assert_eq!(read::<f32>(read_only, "x").unwrap().len(), 2);
+        write::<f32>(read_write, "y").unwrap()[0] = 5.0;
+        assert_eq!(buffer.read(), [5.0, 2.0]);
     }
 
     // ---- invocations ----

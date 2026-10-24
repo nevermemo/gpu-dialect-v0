@@ -11,6 +11,17 @@ pub struct KernelOptions {
     pub workgroup_size: [u32; 3],
 }
 
+/// Whether a kernel gets a CPU twin (roadmap M3): the `cpu` option of `#[kernel]`. It is kept beside
+/// [`KernelOptions`], not inside it, because only the expander reads it; the Slang emitter never does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CpuTwin {
+    /// The default: the kernel runs on `gust::cpu::CpuDevice` under `cfg(any(test, gust_dual))`.
+    #[default]
+    Emitted,
+    /// `cpu = "unsupported"`: no twin is emitted.
+    Unsupported,
+}
+
 pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
     crate::validate::validate_module(&module)?;
     let original_module = module.clone();
@@ -32,7 +43,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
         let syn::Item::Fn(function) = item else {
             continue;
         };
-        let Some(options) = kernel_options(function)? else {
+        let Some((options, cpu)) = kernel_attribute(function)? else {
             continue;
         };
         let original_name = function.sig.ident.clone();
@@ -48,6 +59,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
         let [x, y, z] = options.workgroup_size;
         let (handle_doc, typed_calls) = typed_call_items(&original_name, &function.sig.inputs)?;
         let element_assertions = element_layout_assertions(&original_name, &function.sig.inputs)?;
+        let cpu_twin = cpu_twin_items(&original_name, &typecheck_name, &function.sig.inputs, cpu)?;
 
         function
             .attrs
@@ -80,6 +92,8 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
 
             #typed_calls
 
+            #cpu_twin
+
             #element_assertions
         });
     }
@@ -92,6 +106,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
     Ok(quote! {
         #(#module_attrs)*
         #[allow(dead_code)]
+        #[allow(unexpected_cfgs)]
         #module_vis mod #module_ident {
             #(#content)*
             #(#generated)*
@@ -338,7 +353,15 @@ fn find_function<'a>(module: &'a syn::ItemMod, name: &str) -> &'a syn::ItemFn {
         .expect("kernel exists in original module")
 }
 
+/// The options the Slang emitter needs. Every caller other than the expander wants only these; the `cpu`
+/// option is parsed (and rejected when it is wrong) by [`kernel_attribute`], which this wraps.
 pub fn kernel_options(function: &syn::ItemFn) -> syn::Result<Option<KernelOptions>> {
+    Ok(kernel_attribute(function)?.map(|(options, _)| options))
+}
+
+/// All options of a `#[kernel]` attribute: `workgroup_size(x, y, z)` and `cpu = "unsupported"`, each at
+/// most once. `None` when the function has no `#[kernel]`.
+pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOptions, CpuTwin)>> {
     if function
         .attrs
         .iter()
@@ -360,12 +383,16 @@ pub fn kernel_options(function: &syn::ItemFn) -> syn::Result<Option<KernelOption
         return Ok(None);
     };
     if matches!(attribute.meta, syn::Meta::Path(_)) {
-        return Ok(Some(KernelOptions {
-            workgroup_size: [64, 1, 1],
-        }));
+        return Ok(Some((
+            KernelOptions {
+                workgroup_size: [64, 1, 1],
+            },
+            CpuTwin::Emitted,
+        )));
     }
 
     let mut result = None;
+    let mut cpu = None;
     // The options below report their own coded errors. Failures `syn` words itself (a
     // missing comma, a literal that is not an integer) get the malformed-attribute code.
     diagnostics::parse_nested_meta(attribute, Code::MalformedKernelAttribute, |meta| {
@@ -401,17 +428,38 @@ pub fn kernel_options(function: &syn::ItemFn) -> syn::Result<Option<KernelOption
             }
             result = Some(dimensions);
             Ok(())
+        } else if meta.path.is_ident("cpu") {
+            if cpu.is_some() {
+                return Err(diagnostics::meta_error(
+                    &meta,
+                    Code::DuplicateCpuOption,
+                    "duplicate cpu option",
+                ));
+            }
+            let value: syn::LitStr = meta.value()?.parse()?;
+            if value.value() != "unsupported" {
+                return Err(diagnostics::meta_error(
+                    &meta,
+                    Code::UnknownCpuValue,
+                    "unknown `cpu` value; the only value is `\"unsupported\"`",
+                ));
+            }
+            cpu = Some(CpuTwin::Unsupported);
+            Ok(())
         } else {
             Err(diagnostics::meta_error(
                 &meta,
                 Code::UnknownKernelOption,
-                "expected `workgroup_size(x, y, z)`",
+                "expected `workgroup_size(x, y, z)` or `cpu = \"unsupported\"`",
             ))
         }
     })?;
-    Ok(Some(KernelOptions {
-        workgroup_size: result.unwrap_or([64, 1, 1]),
-    }))
+    Ok(Some((
+        KernelOptions {
+            workgroup_size: result.unwrap_or([64, 1, 1]),
+        },
+        cpu.unwrap_or_default(),
+    )))
 }
 
 fn parameter_descriptors(
@@ -585,7 +633,9 @@ fn typed_call_items(
     );
     let handle_doc = format!(
         "Handle of the GUST kernel `{kernel}`, with the typed host API `call`, `submit` and `dispatch` \
-         (storage parameters only: a kernel with a uniform parameter has none of them).{turbofish}"
+         (storage parameters only: a kernel with a uniform parameter has none of them).{turbofish} \
+         Under `cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, the kernel also runs on \
+         `gust::cpu::CpuDevice` (its CPU twin), unless `#[kernel(cpu = \"unsupported\")]`."
     );
     let submit_doc = format!(
         "Submit `{kernel}`: `__gust_device`, `__gust_element_count`, {order}. Returns a job to wait on."
@@ -730,6 +780,85 @@ fn typed_call_items(
             }
         },
     ))
+}
+
+/// The CPU twin of one kernel (roadmap M3): `impl Run<Kernel, N> for ::gust::cpu::CpuDevice` under
+/// `cfg(any(test, gust_dual))`. It calls the shadow body (the renamed typecheck function) as written, once per
+/// invocation, and reaches the bindings only through `::gust::cpu::{validate, read, write, invocations}`: no body
+/// copy, no rewrite, no IR and no downcast in the emitted code. `gust/src/cpu.rs` holds a hand-written impl of this
+/// exact shape in its tests, which is the specification.
+///
+/// Nothing is emitted for `cpu = "unsupported"` and for a kernel with a uniform parameter, which has no typed call
+/// to run (see [`typed_call_items`]). Locals take the user's parameter names (the validator reserves `__gust_`, so
+/// they cannot collide with `__gust_call` and `__gust_id`).
+fn cpu_twin_items(
+    kernel: &syn::Ident,
+    typecheck: &syn::Ident,
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+    cpu: CpuTwin,
+) -> syn::Result<TokenStream> {
+    if cpu == CpuTwin::Unsupported {
+        return Ok(TokenStream::new());
+    }
+    let mut names = Vec::new();
+    let mut acquisitions = Vec::new();
+    let mut arguments = Vec::new();
+    for input in inputs {
+        // `parameter_descriptors` has already rejected a receiver or a non-identifier pattern.
+        let syn::FnArg::Typed(input) = input else {
+            continue;
+        };
+        let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
+            continue;
+        };
+        let name = &pattern.ident;
+        let label = name.to_string();
+        match crate::slang::parameter_flavor(&input.ty) {
+            ParameterFlavor::Invocation => {
+                let ty = &input.ty;
+                arguments.push(quote! {
+                    <#ty as ::gust::cpu::FromGlobalId>::from_global_id(__gust_id)
+                });
+            }
+            ParameterFlavor::StorageRead => {
+                let element = crate::slang::wrapper_element_type(&input.ty)?;
+                names.push(name.clone());
+                acquisitions.push(quote! {
+                    let #name = ::gust::cpu::read::<#element>(#name, #label)?;
+                });
+                arguments.push(quote!(::gust::Storage::new(&#name)));
+            }
+            ParameterFlavor::StorageReadWrite => {
+                let element = crate::slang::wrapper_element_type(&input.ty)?;
+                names.push(name.clone());
+                acquisitions.push(quote! {
+                    let mut #name = ::gust::cpu::write::<#element>(#name, #label)?;
+                });
+                arguments.push(quote!(::gust::StorageMut::new(&mut #name)));
+            }
+            ParameterFlavor::Uniform | ParameterFlavor::Value => return Ok(TokenStream::new()),
+        }
+    }
+    let count = proc_macro2::Literal::usize_unsuffixed(names.len());
+    Ok(quote! {
+        #[cfg(any(test, gust_dual))]
+        impl ::gust::Run<#kernel, #count> for ::gust::cpu::CpuDevice {
+            fn submit_call(
+                &self,
+                __gust_call: &::gust::Call<'_, Self, #kernel, #count>,
+            ) -> ::core::result::Result<::gust::cpu::CpuJob, ::gust::cpu::Error> {
+                ::gust::cpu::validate(self, __gust_call)?;
+                let [#(#names),*] = *__gust_call.bindings();
+                #(#acquisitions)*
+                for __gust_id in
+                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.element_count())
+                {
+                    #typecheck(#(#arguments),*);
+                }
+                ::core::result::Result::Ok(::gust::cpu::CpuJob::complete())
+            }
+        }
+    })
 }
 
 /// A type as written, for a message: rustc's token spacing (`super :: Outside`, `Vec < u32 >`) without the spaces

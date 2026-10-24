@@ -256,10 +256,14 @@ codes! {
     WorkgroupDimensionCount = 705 => "GUST-E0705";
     /// A workgroup dimension of zero.
     WorkgroupDimensionZero = 706 => "GUST-E0706";
-    /// A `#[kernel(..)]` option other than `workgroup_size`.
+    /// A `#[kernel(..)]` option other than `workgroup_size` and `cpu`.
     UnknownKernelOption = 707 => "GUST-E0707";
     /// A `#[kernel(..)]` argument list that does not parse.
     MalformedKernelAttribute = 708 => "GUST-E0708";
+    /// A `cpu` option whose value is not `"unsupported"`.
+    UnknownCpuValue = 709 => "GUST-E0709";
+    /// `cpu` given twice.
+    DuplicateCpuOption = 710 => "GUST-E0710";
 
     // E08xx: rejections only the emitter makes, after validation passed.
     /// A kernel parameter that is neither a resource nor the dispatch thread.

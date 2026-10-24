@@ -1,0 +1,10 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). `cargo check` sets neither `cfg(test)` nor `--cfg gust_dual`, so the CPU twin
+# is absent and `gust::cpu::CpuDevice` has no `Run` impl for the kernel: the wording of
+# `#[diagnostic::on_unimplemented]` on `Run` and the user's file and line (the device argument of the
+# generated `dispatch`) are compared. This is the production-exclusion proof of the twin.
+code: E0277
+file: typed-call-no-cpu-twin/src/main.rs
+line: 30
+message: `CpuDevice` cannot run the kernel `scale`
+label: this device has no executable form of the kernel; GPU devices run every kernel that has a typed call (not one with a uniform parameter), CPU twins only those emitted for them

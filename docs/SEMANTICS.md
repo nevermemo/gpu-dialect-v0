@@ -6,9 +6,11 @@ confirmed by the owner in D39. The cases outside the domain are written as limit
 position is that such differences are expected edge cases that developers avoid anyway, so GUST documents them and
 does not try to make the targets match.
 
-The CPU twin does not exist yet. Roadmap M3 delivers it in slices m3.b (`gust::cpu`), m3.c (the macro-emitted twin)
-and m3.d (executable atomics and the twin column of the ledger). Every statement about the twin below is in the
-future tense and marked **planned**: it describes the intended behaviour and is not evidence.
+The CPU twin exists: `gust::cpu` (slice m3.b) is its backend and the `#[gpu]` macro emits the twin of every kernel with
+a typed call (slice m3.c). What is still to come is marked **planned**: the twin column of the ledger and the twin
+assertions in the fixture tests (m3.d), the remaining examples (m3.e1, m3.e2), the `--cfg gust_dual` checks and the
+cross-crate proof (m3.f1, m3.f2) and `cargo xtask check-cpu` (m3.c2). A planned statement describes the intended
+behaviour and is not evidence.
 
 ## 1. Scope
 
@@ -19,13 +21,14 @@ future tense and marked **planned**: it describes the intended behaviour and is 
   undefined. The test `the_emitted_wgsl_uses_plain_operators_and_conversions` checks that division, remainder,
   shifts, signed subtraction and multiplication, negation and the float-to-integer casts reach the WGSL as plain
   operators and `i32()` / `u32()` conversions; it does not check `+`, unsigned arithmetic or the float operators.
-- **CPU twin (planned).** In a test build (`cfg(test)` or `--cfg gust_dual`, D26) the macro is planned to emit a CPU
-  version that runs the rustc-checked body of each kernel, one invocation at a time in ascending `global_id.x`. A
-  production build holds one target (D21). The production CPU target belongs to a later milestone (M5) and is not
-  described here.
-- **Not executed by the twin (planned).** Kernels with a `Uniform<T>` parameter (they have no typed call), indirect
-  dispatch and staged graphs stay GPU-only. A kernel can opt out explicitly with `#[kernel(cpu = "unsupported")]`
-  (D26). Examples that use graphs will carry kernel-level twin evidence only.
+- **CPU twin (exists).** In a test build (`cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, D26)
+  the macro emits an `impl Run` for `gust::cpu::CpuDevice` that runs the rustc-checked body of each kernel, one
+  invocation at a time in ascending `global_id.x`. A production build holds one target (D21): the twin is absent from
+  it, which the check-ui fixture `typed-call-no-cpu-twin` proves for the defining crate (the cross-crate proof is
+  planned, m3.f1). The production CPU target belongs to a later milestone (M5) and is not described here.
+- **Not executed by the twin.** Kernels with a `Uniform<T>` parameter (they have no typed call), indirect dispatch
+  and staged graphs stay GPU-only. A kernel can opt out explicitly with `#[kernel(cpu = "unsupported")]` (D26).
+  Examples that use graphs will carry kernel-level twin evidence only (planned, m3.e1, m3.e2).
 - **Language subset.** 32-bit `f32`, `i32`, `u32`, `bool` and module structs of them (README, "Current subset"). Float
   arithmetic is `+ - * /`, comparisons and casts: the validator accepts no other method than `.len()`,
   `.global_id()` and the `Option` / `Result` helpers, so there is no `sqrt`, `fma` or trigonometry to bound.
@@ -54,8 +57,9 @@ Every statement about GPU behaviour carries one of these, and they are never mer
 
 "Rust" in the ledger is the plain-Rust result in the crate that compiled the test. "Checks on" and "checks off" mean
 the consuming build has `overflow-checks` enabled or not (D38); the test detects the mode at run time and asserts the
-matching column. The twin is planned to be compiled in the consumer's crate and so to follow the same mode; GUST pins
-no profile.
+matching column. The twin is compiled in the crate that defines the kernel and so follows that build's mode; GUST
+pins no profile. The overflow-mode evidence across crates (the m3.d replacement of the ledger's private mode detector
+and the m3.f1 fixture) is still planned.
 
 ## 3. The defined domain, and what lies outside it
 
@@ -68,7 +72,7 @@ WGSL specification leaves open (NaN and infinity, subnormals, NaN conversions, o
 included: they are recorded as one-adapter observations and never fail a test. Outcomes the specification fixes, and
 the plain-Rust outcomes, are still pinned and fail the test when they change.
 
-Inside the domain the GPU and the twin (planned) give the same bits for integers, `bool` and control flow, and the
+Inside the domain the GPU and the twin give the same bits for integers, `bool` and control flow, and the
 float rules of section 4 apply. The domain is:
 
 1. `+`, `-`, `*` and unary `-` on `u32` and `i32` give a result that fits the type (KM-10).
@@ -132,7 +136,7 @@ normal, unless the row says more. ULP is the unit in the last place of the resul
 The last column is a spec-allowed
 bound, not an observation.
 
-| Operation | Domain | CPU twin (planned) | GPU, spec-allowed | Twin versus GPU |
+| Operation | Domain | CPU twin | GPU, spec-allowed | Twin versus GPU |
 | --- | --- | --- | --- | --- |
 | `x + y`, `x - y`, `x * y` | domain | Nearest rounding: within 0.5 ULP of the exact result. | "Correctly rounded": either neighbour of the exact result, so within 1 ULP. | At most 1 ULP; identical when the exact result is representable. |
 | `-x` | domain | Exact. | Exact ("Correctly rounded"). | Identical, except that the sign of a zero may differ (15.7.2). |
@@ -148,15 +152,16 @@ bound, not an observation.
 Nothing in this table has been measured on a GPU except through the ledger rows, and the table is not a claim about
 the RTX 5090. Several existing tests compare float results exactly with a host value (for example
 `translated_semantics_execute_on_gpu` and two tests in `typed.rs`), but on exactly representable inputs, so no
-existing test exercises float rounding. The first such test is planned in m3.c. None of this makes a row above proven.
+existing test exercises float rounding. The first such test is the polynomial example's twin-versus-GPU assertion
+(m3.c, below). None of this makes a row above proven.
 
 **Limitation: reassociation.** WGSL 15.7.5 lets an implementation regroup a chain of additions with no accuracy
-condition, so the GPU may add in a different order than the source. The twin (planned) adds in the written order.
+condition, so the GPU may add in a different order than the source. The twin adds in the written order.
 Two correct programs can therefore differ by more than the per-operation bounds suggest, and a bound must be derived
 over the worst grouping.
 
-**Deriving a tolerance for a kernel (planned, slices m3.c and m3.e1).** An expression-level tolerance is derived per
-test from these bounds and the test's input domain, and written in the test's doc comment. It is never an observed
+**Deriving a tolerance for a kernel (done for polynomial in m3.c; planned for the other examples, m3.e1).** An
+expression-level tolerance is derived per test from these bounds and the test's input domain, and written in the test's doc comment. It is never an observed
 maximum. Method: list the kernel's operations in order; mark the exact ones (multiplication by a power of two,
 addition of 0, negation); bound each intermediate's magnitude from the input domain; give each inexact operation a
 relative error of at most `u = 2^-24` on the twin and at most `2u` on the GPU for `+ - *` (one ULP of a normal
@@ -173,8 +178,10 @@ power of two is exact. Twin, in the written order: `squared` u, `cubed` 2u, `2.0
 plus u times its magnitude bound 3), plus `linear` 10.5u, plus 1.0 15u. GPU, with the worst grouping of the four
 terms (magnitudes 1, 2, 0.5, 1): `squared` 2u, `cubed` 4u and `2.0 * squared` 4u from the products, then three
 additions whose partial sums have magnitude at most 3, 4 and 4.5, costing 2u each time that magnitude, so 8u +
-23u = 31u. The twin-versus-GPU bound is 15u + 31u = 46u, about 2.74e-6 absolute. Slice m3.c (planned) will assert
-48u = 48 * 2^-24, about 2.86e-6, where the extra 2u is the margin for second-order terms.
+23u = 31u. The twin-versus-GPU bound is 15u + 31u = 46u, about 2.74e-6 absolute. The polynomial example's test
+(slice m3.c) asserts 48u = 48 * 2^-24, about 2.86e-6, where the extra 2u is the margin for second-order terms.
+Observation, not a tolerance: on the RTX 5090 the largest absolute twin-versus-GPU difference over the whole input
+domain was 2.38e-7 (4u), and the twin equalled the host reference to the last bit.
 
 ## 5. Memory preconditions
 
@@ -191,7 +198,7 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   that another writes, except through the atomic functions. On the GPU a race is a dynamic error, which section 2.2
   says "may or may not be detectable"; after a dynamic error the program "may not behave as described in the rest of
   this specification". Parameter alias rejection (D34) is a different guarantee and does not prevent this.
-- **Why the twin cannot help (planned).** The twin runs invocations one at a time in ascending `global_id.x`, so it
+- **Why the twin cannot help.** The twin runs invocations one at a time in ascending `global_id.x`, so it
   produces one definite order. A racy kernel gives a clean twin result that matches a reference computed in the same
   order and proves nothing about the GPU, where the order is unspecified. Every reference in a fixture or example is
   therefore order-independent by construction: each written index has exactly one writer, or the kernel uses
@@ -203,7 +210,7 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   adapter's `max_compute_workgroups_per_dimension` (and any lower `with_limits` value). For example 5,000,000 elements
   at workgroup width 64 need 78125 workgroups: they run on the CPU backend and are `DeviceLimit` under wgpu's default
   limits (65535 workgroups). This is a documented difference (D39), not something to match; split the work into
-  several dispatches for the GPU. The macro twin that will use the CPU backend is still planned (m3.c).
+  several dispatches for the GPU. The macro-emitted twin uses this backend (m3.c).
 
 ## 6. Atomics
 

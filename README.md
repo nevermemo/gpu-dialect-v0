@@ -474,7 +474,10 @@ Around the translator, the host side currently provides:
 - `GpuPool<T>` and indirect dispatch whose workgroup count the GPU writes and the
   host does not check.
 
-It does not yet provide a CPU backend for typed calls, multi-dimensional dispatch
+Its CPU backend, `gust::cpu`, runs the Rust body of each kernel that has a typed call, unless it opts out with
+`cpu = "unsupported"`, as a test-only twin (emitted under
+`cfg(test)` or `--cfg gust_dual`, never in a production build; a production CPU target is
+roadmap M5). It does not yet provide multi-dimensional dispatch
 (roadmap M7), a compile-time portable limit floor (roadmap M8), fallible buffer
 creation against `max_buffer_size`, or an access mode in the buffer type.
 
