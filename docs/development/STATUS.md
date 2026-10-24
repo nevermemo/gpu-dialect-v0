@@ -9,6 +9,14 @@ which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) is under way, one slice at a time.
 
+- M2 m2.a: typed call surface in `gust` (`dispatch.rs`). `TypedDevice` extends
+  `Device` (unchanged) with a `Binding<'r>` type; `Resource`, `Arg`, `Independent`,
+  `LengthRule` and `Call` describe one typed launch, and `Run<K, N>` submits it.
+  `Call::new` takes the descriptor from the kernel type and asserts the binding count
+  at monomorphisation; order, access, element and device are checked by generated
+  calls (types) and by each backend at submit (contract). Only test mocks implement it
+  so far (a recording mock and a CPU-shaped `RefCell` mock); `gust-wgpu` follows in
+  m2.c, the macro in m2.d1 (`3060072`).
 - M2 m2.b: launch-limit checks. Every dispatch path checks the kernel and its bindings
   against the opened device's limits before any compile or cache lookup and returns
   `Error::DeviceLimit`; before, wgpu panicked (measured: workgroup size 512 at pipeline
